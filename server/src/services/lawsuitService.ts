@@ -5,38 +5,27 @@ export const lawsuitService = {
   async calculateVerdict(
     lawsuit: any,
     defense: string,
-    prisma: PrismaClient,
   ): Promise<Verdict> {
-    const plaintiffCompany = await prisma.company.findUnique({
-      where: { playerId: lawsuit.plaintiffId },
-    });
-
-    const defendantCompany = await prisma.company.findUnique({
-      where: { playerId: lawsuit.defendantId },
-    });
+    // Companies are now pre-loaded via include in resolutionPhase
+    const plaintiffCompany = lawsuit.plaintiff?.company;
+    const defendantCompany = lawsuit.defendant?.company;
 
     if (!plaintiffCompany || !defendantCompany) {
       return Verdict.LOST;
     }
 
-    // Calculate verdict based on:
-    // 1. Claim amount vs defendant cash (larger claims harder to defend)
-    // 2. Defense strength (length of defense text, capped at 1000 chars)
-    // 3. Random factor for unpredictability
-
-    const claimRatio = Math.min(lawsuit.claimAmount / Math.max(defendantCompany.cash, 1), 2);
+    const claimRatio = Math.min(Number(lawsuit.claimAmount) / Math.max(Number(defendantCompany.cash), 1), 2);
     const defenseStrength = Math.min(defense.length / 500, 1);
-    const randomFactor = Math.random() * 0.2 - 0.1; // -0.1 to +0.1
+    const plaintiffRandom = Math.random() * 0.2 - 0.1;
+    const defendantRandom = Math.random() * 0.2 - 0.1;
 
-    // Plaintiff score: higher with larger claims
-    const plaintiffScore = 0.4 + claimRatio * 0.3 + randomFactor;
-    // Defendant score: higher with stronger defense, lower with large claims
-    const defendantScore = 0.4 + defenseStrength * 0.3 - claimRatio * 0.15 + randomFactor;
+    const plaintiffScore = 0.4 + claimRatio * 0.3 + plaintiffRandom;
+    const defendantScore = 0.4 + defenseStrength * 0.3 - claimRatio * 0.15 + defendantRandom;
 
     if (defendantScore >= plaintiffScore) {
-      return Verdict.LOST; // Defendant wins
+      return Verdict.LOST;
     }
 
-    return Verdict.WON; // Plaintiff wins
+    return Verdict.WON;
   },
 };

@@ -27,36 +27,37 @@ model Room {
   maxPlayers        Int          @default(6)
   currentPhaseRound Int          @default(1)
   createdAt         DateTime     @default(now())
+
   players           Player[]
-  createdAtDesc     DateTime     @default(now()) @map("created_at")
 
   @@index([status])
-  @@index([createdAtDesc])
+  @@index([createdAt])
 }
 
 model Player {
-  id          String     @id @default(cuid())
-  name        String
-  roomId      String
-  room        Room       @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  isReady     Boolean    @default(false)
-  bankrupt    Boolean    @default(false)
-  createdAt   DateTime   @default(now())
-  companyId   String?    @unique
-  company     Company?
-  lawsuitsFiled   Lawsuit[] @relation("FiledLawsuit")
+  id           String     @id @default(cuid())
+  name         String
+  roomId       String
+  room         Room       @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  isReady      Boolean    @default(false)
+  bankrupt     Boolean    @default(false)
+  socketId     String?
+  createdAt    DateTime   @default(now())
+  companyId    String?    @unique
+  company      Company?
+  lawsuitsFiled    Lawsuit[] @relation("FiledLawsuit")
   lawsuitsReceived Lawsuit[] @relation("ReceivedLawsuit")
 
   @@index([roomId])
-  @@index([bankrupt])
+  @@index([roomId, bankrupt])
 }
 
 model Company {
-  id             String    @id @default(cuid())
-  playerId       String    @unique
-  player         Player    @relation(fields: [playerId], references: [id], onDelete: Cascade)
-  cash           Float     @default(100000)
-  assets         Asset[]
+  id       String  @id @default(cuid())
+  playerId String  @unique
+  player   Player  @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  cash     Decimal @default(100000) @db.Decimal(15, 2)
+  assets   Asset[]
 
   @@index([playerId])
 }
@@ -66,7 +67,7 @@ model Asset {
   companyId String
   company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   type      String
-  value     Float
+  value     Decimal  @db.Decimal(15, 2)
 
   @@index([companyId])
 }
@@ -77,14 +78,14 @@ model Lawsuit {
   plaintiff   Player   @relation("FiledLawsuit", fields: [plaintiffId], references: [id], onDelete: Cascade)
   defendantId String
   defendant   Player   @relation("ReceivedLawsuit", fields: [defendantId], references: [id], onDelete: Cascade)
-  claimAmount Float
+  claimAmount Decimal  @db.Decimal(15, 2)
   grounds     String
   resolved    Boolean  @default(false)
   verdict     Verdict?
   resolution  String?  @default("")
   createdAt   DateTime @default(now())
 
-  @@index([plaintiffId])
-  @@index([defendantId])
+  @@index([plaintiffId, resolved])
+  @@index([defendantId, resolved])
   @@index([resolved])
 }

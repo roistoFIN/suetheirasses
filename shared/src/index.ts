@@ -47,7 +47,7 @@ export interface Player {
   isReady: boolean;
   bankrupt: boolean;
   companyId?: string | null;
-  socketId?: string;
+  socketId?: string | null;
 }
 
 // ============================================================
@@ -247,7 +247,7 @@ export interface RoomState {
   room: Room;
   players: Map<string, Player>;
   submissions: Map<string, StrategySubmitPayload>;
-  timer: NodeJS.Timeout | null;
+  timer: ReturnType<typeof setInterval> | null;
   timerValue: number;
 }
 

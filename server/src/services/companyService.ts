@@ -21,7 +21,7 @@ export const companyService = {
     for (const action of actions) {
       switch (action.type) {
         case StrategyActionType.INVEST: {
-          const amount = action.amount || 10000;
+          const amount = action.amount ?? 10000;
           if (company.cash < amount) {
             changes.push(`Insufficient funds for investment of $${amount}`);
             continue;
@@ -31,7 +31,7 @@ export const companyService = {
           break;
         }
         case StrategyActionType.EXPAND: {
-          const cost = action.amount || 15000;
+          const cost = action.amount ?? 15000;
           if (company.cash < cost) {
             changes.push(`Insufficient funds for expansion costing $${cost}`);
             continue;
@@ -41,13 +41,13 @@ export const companyService = {
           break;
         }
         case StrategyActionType.LAYOFF: {
-          const savings = action.amount || 5000;
+          const savings = action.amount ?? 5000;
           totalCashDelta += savings;
           changes.push(`Laid off employees, saving $${savings}/turn`);
           break;
         }
         case StrategyActionType.AD_CAMPAIGN: {
-          const cost = action.amount || 8000;
+          const cost = action.amount ?? 8000;
           if (company.cash < cost) {
             changes.push(`Insufficient funds for ad campaign costing $${cost}`);
             continue;
@@ -57,7 +57,7 @@ export const companyService = {
           break;
         }
         case StrategyActionType.RESEARCH_AND_DEVELOPMENT: {
-          const cost = action.amount || 12000;
+          const cost = action.amount ?? 12000;
           if (company.cash < cost) {
             changes.push(`Insufficient funds for R&D costing $${cost}`);
             continue;

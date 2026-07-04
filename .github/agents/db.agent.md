@@ -1,7 +1,7 @@
 ---
 name: db
 description: 'Database optimization agent. Reviews schema architecture and updates.'
-tools: ['search', 'execute']
+tools: ['search', 'execute', 'terminal']
 ---
 
 # Role

@@ -22,9 +22,17 @@ export const strategyPhase = {
           changes: result.changes.map((change) => ({
             type: 'STRATEGY_EXECUTED',
             description: change,
-            cashDelta: 0, // Changes are already applied to DB
+            cashDelta: 0, // Individual changes don't have separate deltas
           })),
         });
+        // Add total cash delta as summary
+        if (result.cashDelta !== 0) {
+          outcomes[outcomes.length - 1].changes.push({
+            type: 'TOTAL_CASH_CHANGE',
+            description: `Total cash change: $${result.cashDelta}`,
+            cashDelta: result.cashDelta,
+          });
+        }
       } catch (error: any) {
         console.error(`Strategy execution failed for player ${playerId}:`, error.message);
         outcomes.push({

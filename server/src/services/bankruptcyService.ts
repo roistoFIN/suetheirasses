@@ -16,21 +16,20 @@ export const bankruptcyService = {
     io: Server,
   ): Promise<BankruptcyResult> {
     const players = await prisma.player.findMany({
-      where: { roomId },
+      where: { roomId, bankrupt: false },
       include: { company: true },
     });
 
-    const bankruptPlayers: string[] = [];
+    if (players.length === 0) {
+      return { bankruptPlayers: [], gameOver: false, winner: null, standings: [] };
+    }
+
+    const bankruptPlayerIds: string[] = [];
 
     for (const player of players) {
       if (!player.bankrupt && player.company) {
-        if (player.company.cash <= 0 || player.company.cash < -10000) {
-          bankruptPlayers.push(player.id);
-          await prisma.player.update({
-            where: { id: player.id },
-            data: { bankrupt: true },
-          });
-
+        if (Number(player.company.cash) <= 0 || Number(player.company.cash) < -10000) {
+          bankruptPlayerIds.push(player.id);
           io.to(roomId).emit(ServerEvents.PLAYER_BANKRUPT, {
             playerId: player.id,
             playerName: player.name,
@@ -39,17 +38,30 @@ export const bankruptcyService = {
       }
     }
 
-    // Check if game is over
-    const activePlayers = players.filter((p) => !p.bankrupt);
-    const standings: PlayerStanding[] = players
+    // Batch update all bankrupt players in a single query
+    if (bankruptPlayerIds.length > 0) {
+      await prisma.player.updateMany({
+        where: { id: { in: bankruptPlayerIds } },
+        data: { bankrupt: true },
+      });
+    }
+
+    // Re-fetch all players for standings (including newly bankrupt)
+    const allPlayers = await prisma.player.findMany({
+      where: { roomId },
+      include: { company: true },
+    });
+
+    const activePlayers = allPlayers.filter((p) => !p.bankrupt);
+    const standings: PlayerStanding[] = allPlayers
       .sort((a, b) => {
-        const aCash = a.company?.cash || 0;
-        const bCash = b.company?.cash || 0;
+        const aCash = Number(a.company?.cash ?? 0);
+        const bCash = Number(b.company?.cash ?? 0);
         return bCash - aCash;
       })
       .map((p, index) => ({
-        player: p,
-        company: p.company,
+        player: p as any,
+        company: p.company as any,
         rank: index + 1,
       }));
 
@@ -59,9 +71,9 @@ export const bankruptcyService = {
         finalStandings: standings,
       });
 
-      return { bankruptPlayers, gameOver: true, winner: activePlayers[0] || null, standings };
+      return { bankruptPlayers: bankruptPlayerIds, gameOver: true, winner: activePlayers[0] || null, standings };
     }
 
-    return { bankruptPlayers, gameOver: false, winner: null, standings };
+    return { bankruptPlayers: bankruptPlayerIds, gameOver: false, winner: null, standings };
   },
 };

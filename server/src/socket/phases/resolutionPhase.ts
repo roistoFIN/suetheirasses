@@ -12,11 +12,12 @@ export const resolutionPhase = {
     io: Server,
     prisma: PrismaClient,
   ): Promise<void> {
+    // Fetch lawsuit with plaintiff, defendant, and both companies in one query
     const lawsuit = await prisma.lawsuit.findUnique({
       where: { id: payload.lawsuitId },
       include: {
-        plaintiff: true,
-        defendant: true,
+        plaintiff: { include: { company: true } },
+        defendant: { include: { company: true } },
       },
     });
 
@@ -32,62 +33,60 @@ export const resolutionPhase = {
       throw new Error('This lawsuit has already been resolved');
     }
 
-    // Resolve the lawsuit using lawsuitService
-    const verdict = await lawsuitService.calculateVerdict(lawsuit, payload.defense, prisma);
+    // Resolve the lawsuit (companies are pre-loaded, no extra queries)
+    const verdict = await lawsuitService.calculateVerdict(lawsuit, payload.defense);
     const resolution = this.generateResolution(lawsuit, verdict, payload);
 
-    await prisma.lawsuit.update({
-      where: { id: lawsuit.id },
-      data: {
-        resolved: true,
-        verdict,
-        resolution,
-      },
+    // Use transaction for all money transfers
+    await prisma.$transaction(async (tx) => {
+      await tx.lawsuit.update({
+        where: { id: lawsuit.id },
+        data: { resolved: true, verdict, resolution },
+      });
+
+      if (verdict === Verdict.WON) {
+        await tx.company.update({
+          where: { playerId: lawsuit.defendant.id },
+          data: { cash: { decrement: lawsuit.claimAmount } },
+        });
+        await tx.company.update({
+          where: { playerId: lawsuit.plaintiff.id },
+          data: { cash: { increment: lawsuit.claimAmount } },
+        });
+      } else if (verdict === Verdict.SETTLED && payload.settlementOffer) {
+        const settlementAmount = Math.min(Number(lawsuit.claimAmount), payload.settlementOffer);
+        await tx.company.update({
+          where: { playerId: lawsuit.defendant.id },
+          data: { cash: { decrement: settlementAmount } },
+        });
+        await tx.company.update({
+          where: { playerId: lawsuit.plaintiff.id },
+          data: { cash: { increment: settlementAmount } },
+        });
+      }
     });
-
-    // Apply verdict consequences
-    if (verdict === Verdict.WON) {
-      await prisma.company.updateMany({
-        where: { playerId: lawsuit.defendantId },
-        data: { cash: { decrement: lawsuit.claimAmount } },
-      });
-
-      await prisma.company.updateMany({
-        where: { playerId: lawsuit.plaintiffId },
-        data: { cash: { increment: lawsuit.claimAmount } },
-      });
-    } else if (verdict === Verdict.SETTLED && payload.settlementOffer) {
-      const settlementAmount = Math.min(payload.settlementOffer, lawsuit.claimAmount);
-      await prisma.company.updateMany({
-        where: { playerId: lawsuit.defendantId },
-        data: { cash: { decrement: settlementAmount } },
-      });
-
-      await prisma.company.updateMany({
-        where: { playerId: lawsuit.plaintiffId },
-        data: { cash: { increment: settlementAmount } },
-      });
-    }
 
     // Check for bankruptcy
     const bankruptcyResult = await bankruptcyService.checkBankruptcy(roomId, prisma, io);
 
-    // Notify all players
     io.to(roomId).emit(ServerEvents.BOARD_UPDATE, {
       message: `${lawsuit.plaintiff.name} vs ${lawsuit.defendant.name}: ${verdict}`,
     });
 
-    // If game is not over, advance to next phase
     if (!bankruptcyResult.gameOver) {
-      const nextIdx = PHASE_ORDER.indexOf(RoomStatus.RESOLVING) + 1;
-      if (nextIdx < PHASE_ORDER.length) {
-        const nextPhase = PHASE_ORDER[nextIdx];
-        io.to(roomId).emit(ServerEvents.PHASE_CHANGED, {
-          phase: nextPhase,
-          round: 1,
-          timeLimit: PHASE_TIMERS[nextPhase],
-        });
-      }
+      await prisma.room.update({
+        where: { id: roomId },
+        data: {
+          status: RoomStatus.STRATEGY,
+          currentPhaseRound: { increment: 1 },
+        },
+      });
+
+      io.to(roomId).emit(ServerEvents.PHASE_CHANGED, {
+        phase: RoomStatus.STRATEGY,
+        round: bankruptcyResult.standings[0]?.rank || 1,
+        timeLimit: PHASE_TIMERS[RoomStatus.STRATEGY],
+      });
     }
   },
 

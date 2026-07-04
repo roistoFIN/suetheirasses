@@ -12,7 +12,6 @@ import {
   type RoomState,
 } from '@suetheirasses/shared';
 import { strategyPhase } from './phases/strategyPhase';
-import { resultsPhase } from './phases/resultsPhase';
 import { lawsuitsPhase } from './phases/lawsuitsPhase';
 import { resolutionPhase } from './phases/resolutionPhase';
 import {
@@ -46,28 +45,54 @@ export class GameEngine {
 
   async createRoom(player: Player): Promise<RoomState> {
     const roomId = crypto.randomUUID();
-    const room = await this.prisma.room.create({
-      data: {
-        id: roomId,
-        status: RoomStatus.WAITING,
-        maxPlayers: 6,
-        players: { create: { ...player, isReady: true } },
-      },
-      include: {
-        players: { include: { company: true } },
-      },
+
+    // Use transaction for atomic room + player + company creation
+    const room = await this.prisma.$transaction(async (tx) => {
+      return tx.room.create({
+        data: {
+          id: roomId,
+          status: RoomStatus.WAITING,
+          maxPlayers: 6,
+          players: {
+            create: {
+              name: player.name,
+              isReady: true,
+              socketId: player.socketId,
+              company: {
+                create: {
+                  cash: 100000,
+                },
+              },
+            },
+          },
+        },
+        include: {
+          players: { include: { company: true } },
+        },
+      });
     });
 
+    const dbPlayer = room.players[0];
+    const syncedPlayer: Player = {
+      id: dbPlayer.id,
+      name: dbPlayer.name,
+      roomId: room.id,
+      isReady: dbPlayer.isReady,
+      bankrupt: dbPlayer.bankrupt,
+      companyId: dbPlayer.companyId ?? undefined,
+      socketId: dbPlayer.socketId ?? player.socketId,
+    };
+
     const roomState: RoomState = {
-      room,
-      players: new Map([[player.id, player]]),
+      room: room as any,
+      players: new Map([[dbPlayer.id, syncedPlayer]]),
       submissions: new Map(),
       timer: null,
       timerValue: 0,
     };
 
     this.rooms.set(room.id, roomState);
-    this.playerToRoom.set(player.id, room.id);
+    this.playerToRoom.set(player.socketId!, room.id);
 
     return roomState;
   }
@@ -83,35 +108,94 @@ export class GameEngine {
     }
 
     const existingPlayer = Array.from(roomState.players.values())
-      .find((p) => p.name === player.name);
+      .find((p: Player) => p.name === player.name);
     if (existingPlayer) {
       throw new Error('Player name already taken');
     }
 
-    const dbPlayer = await this.prisma.player.create({
-      data: {
-        id: player.id,
-        name: player.name,
-        roomId,
-        isReady: false,
-      },
-      include: { company: true },
+    // Use transaction for atomic player + company creation
+    const dbPlayer = await this.prisma.$transaction(async (tx) => {
+      return tx.player.create({
+        data: {
+          name: player.name,
+          roomId,
+          isReady: false,
+          socketId: player.socketId,
+          company: {
+            create: {
+              cash: 100000,
+            },
+          },
+        },
+        include: { company: true },
+      });
     });
 
-    roomState.players.set(player.id, { ...player, companyId: dbPlayer.companyId ?? undefined });
-    this.playerToRoom.set(player.id, roomId);
+    const syncedPlayer: Player = {
+      id: dbPlayer.id,
+      name: dbPlayer.name,
+      roomId,
+      isReady: dbPlayer.isReady,
+      bankrupt: dbPlayer.bankrupt,
+      companyId: dbPlayer.companyId ?? undefined,
+      socketId: dbPlayer.socketId ?? player.socketId,
+    };
+
+    roomState.players.set(dbPlayer.id, syncedPlayer);
+    this.playerToRoom.set(player.socketId!, roomId);
 
     return roomState;
   }
 
-  removePlayer(socketId: string): void {
+  async removePlayer(socketId: string): Promise<void> {
     const roomId = this.playerToRoom.get(socketId);
     if (!roomId) return;
 
     const roomState = this.rooms.get(roomId);
     if (!roomState) return;
 
-    roomState.players.delete(socketId);
+    // Find the player by socketId in the room
+    const player = Array.from(roomState.players.values()).find(
+      (p: Player) => p.socketId === socketId
+    ) as Player | undefined;
+
+    if (player) {
+      // Clean up database records atomically using transaction
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          const company = await tx.company.findUnique({
+            where: { playerId: player.id },
+          });
+          if (company) {
+            await tx.asset.deleteMany({
+              where: { companyId: company.id },
+            });
+            await tx.company.delete({
+              where: { id: company.id },
+            });
+          }
+
+          // Delete all lawsuits involving this player (as plaintiff or defendant)
+          await tx.lawsuit.deleteMany({
+            where: {
+              OR: [
+                { plaintiffId: player.id },
+                { defendantId: player.id },
+              ],
+            },
+          });
+
+          await tx.player.delete({
+            where: { id: player.id },
+          });
+        });
+      } catch (error) {
+        console.error(`Failed to clean up player ${player.id} from DB:`, error);
+      }
+
+      roomState.players.delete(player.id);
+    }
+
     this.playerToRoom.delete(socketId);
 
     if (roomState.players.size === 0) {
@@ -119,7 +203,7 @@ export class GameEngine {
     }
   }
 
-  advancePhase(roomId: string): void {
+  async advancePhase(roomId: string): Promise<void> {
     const roomState = this.rooms.get(roomId);
     if (!roomState) return;
 
@@ -136,6 +220,9 @@ export class GameEngine {
 
     // Reset submissions for new phase
     roomState.submissions.clear();
+
+    // Persist phase change to database
+    await this.syncRoomToDB(roomId);
 
     // Start timer if applicable
     this.clearTimer(roomId);
@@ -179,6 +266,26 @@ export class GameEngine {
     }
   }
 
+  async syncRoomToDB(roomId: string): Promise<void> {
+    const roomState = this.rooms.get(roomId);
+    if (!roomState) return;
+
+    await this.prisma.room.update({
+      where: { id: roomId },
+      data: {
+        status: roomState.room.status,
+        currentPhaseRound: roomState.room.currentPhaseRound,
+      },
+    });
+  }
+
+  async syncPlayerToDB(playerId: string, data: { isReady?: boolean; bankrupt?: boolean }): Promise<void> {
+    await this.prisma.player.update({
+      where: { id: playerId },
+      data,
+    });
+  }
+
   private broadcastTimer(roomId: string, timeLeft: number): void {
     this.io.to(roomId).emit(ServerEvents.TIMER_UPDATE, { timeLeft });
   }
@@ -205,11 +312,11 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): void {
     console.log(`Player connected: ${socket.id}`);
 
     // Matchmaking handlers
-    socket.on(ClientEvents.ROOM_JOIN, async (payload) => {
+    socket.on(ClientEvents.ROOM_JOIN, async (payload: any) => {
       try {
         const validated = validateRoomJoin(payload);
-        const player = {
-          id: socket.id,
+        const player: Player = {
+          id: '', // Will be set by DB
           name: validated.playerName,
           roomId: '',
           isReady: false,
@@ -243,10 +350,19 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): void {
           roomState = await engine.createRoom(player);
         }
 
+        // Get the actual player from the room state (now has DB-generated ID)
+        const actualPlayer = Array.from(roomState.players.values())[0] as Player;
+
         // Send room state to the joining player
         socket.emit(ServerEvents.ROOM_JOINED, {
           room: roomState.room,
-          player: { id: player.id, name: player.name, isReady: true, bankrupt: false, roomId: roomState.room.id },
+          player: {
+            id: actualPlayer.id,
+            name: actualPlayer.name,
+            isReady: actualPlayer.isReady,
+            bankrupt: actualPlayer.bankrupt,
+            roomId: roomState.room.id,
+          },
           companies: [],
         });
 
@@ -254,7 +370,7 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): void {
         engine.broadcastRoomState(
           roomState.room.id,
           ServerEvents.ROOM_PLAYER_READY,
-          { playerId: player.id, playerName: player.name, isReady: true },
+          { playerId: actualPlayer.id, playerName: actualPlayer.name, isReady: actualPlayer.isReady },
         );
 
         // Join socket room
@@ -276,10 +392,16 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): void {
       const roomState = engine.rooms.get(roomId);
       if (!roomState) return;
 
-      const player = roomState.players.get(socket.id);
+      // Find player by socketId since players are now stored by DB ID
+      const player = Array.from(roomState.players.values()).find(
+        (p: Player) => p.socketId === socket.id
+      );
       if (!player) return;
 
       player.isReady = !player.isReady;
+
+      // Sync to database
+      await engine.syncPlayerToDB(player.id, { isReady: player.isReady });
 
       engine.broadcastRoomState(roomId, ServerEvents.ROOM_PLAYER_READY, {
         playerId: player.id,
@@ -292,6 +414,7 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): void {
       if (allReady && roomState.room.status === RoomStatus.WAITING) {
         roomState.room.status = RoomStatus.STRATEGY;
         roomState.room.currentPhaseRound = 1;
+        await engine.syncRoomToDB(roomId);
         engine.startTimer(roomId, PHASE_TIMERS[RoomStatus.STRATEGY]);
 
         socket.to(roomId).emit(ServerEvents.PHASE_CHANGED, {
@@ -366,9 +489,9 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): void {
     });
 
     // Disconnect
-    socket.on('disconnect', () => {
+    socket.on('disconnect', async () => {
       console.log(`Player disconnected: ${socket.id}`);
-      engine.removePlayer(socket.id);
+      await engine.removePlayer(socket.id);
     });
   });
 }

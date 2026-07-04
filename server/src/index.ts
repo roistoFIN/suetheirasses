@@ -9,6 +9,10 @@ const app = express();
 const httpServer = createServer(app);
 const PORT = process.env.PORT || 3001;
 
+const prisma = new PrismaClient({
+  log: process.env.NODE_ENV === 'development' ? ['query', 'warn', 'error'] : ['error'],
+});
+
 const io = new Server(httpServer, {
   cors: {
     origin: process.env.CLIENT_URL || 'http://localhost:5173',
@@ -26,18 +30,22 @@ app.use(cors({
 app.use(express.json());
 
 // Health check endpoint
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+app.get('/health', async (_req, res) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({ status: 'ok', timestamp: new Date().toISOString(), db: 'connected' });
+  } catch {
+    res.status(503).json({ status: 'degraded', timestamp: new Date().toISOString(), db: 'disconnected' });
+  }
 });
 
 // REST endpoint: get room info
-const prisma = new PrismaClient();
 app.get('/api/room/:roomId', async (req, res) => {
   try {
     const room = await prisma.room.findUnique({
       where: { id: req.params.roomId },
       include: {
-        players: { include: { company: true } },
+        players: { include: { company: { include: { assets: true } } } },
       },
     });
     if (!room) {
@@ -63,9 +71,21 @@ process.on('SIGINT', async () => {
   });
 });
 
-httpServer.listen(PORT, () => {
-  console.log(`Game server running on port ${PORT}`);
-  console.log(`Socket.IO server ready`);
-});
+// Start server with DB readiness check
+async function start() {
+  try {
+    await prisma.$connect();
+    console.log('Database connected');
+    httpServer.listen(PORT, () => {
+      console.log(`Game server running on port ${PORT}`);
+      console.log(`Socket.IO server ready`);
+    });
+  } catch (error) {
+    console.error('Failed to connect to database:', error);
+    process.exit(1);
+  }
+}
+
+start();
 
 export { io, prisma };
