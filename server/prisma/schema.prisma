@@ -57,6 +57,7 @@ model Company {
   playerId String  @unique
   player   Player  @relation(fields: [playerId], references: [id], onDelete: Cascade)
   cash     Decimal @default(100000) @db.Decimal(15, 2)
+  debt     Decimal @default(0)      @db.Decimal(15, 2)
   assets   Asset[]
 
   @@index([playerId])

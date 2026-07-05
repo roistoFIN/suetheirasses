@@ -58,5 +58,8 @@ jobs:
       - name: Build server
         run: npm run build --workspace=server
 
-      - name: Run tests
-        run: npm run test --workspace=server
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run all tests (unit, API, E2E)
+        run: npm run test:all

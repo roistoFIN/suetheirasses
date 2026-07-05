@@ -53,8 +53,14 @@ export const resolutionPhase = {
           where: { playerId: lawsuit.plaintiff.id },
           data: { cash: { increment: lawsuit.claimAmount } },
         });
-      } else if (verdict === Verdict.SETTLED && payload.settlementOffer) {
-        const settlementAmount = Math.min(Number(lawsuit.claimAmount), payload.settlementOffer);
+      } else if (verdict === Verdict.SETTLED) {
+        // Auto-settle at 50% of claim when defendant has strong defense but
+        // the claim is large relative to their cash (risking bankruptcy).
+        const defendantCompany = lawsuit.defendant?.company;
+        const settlementAmount = Math.min(
+          Math.floor(Number(lawsuit.claimAmount) * 0.5),
+          defendantCompany ? Number(defendantCompany.cash) : 0,
+        );
         await tx.company.update({
           where: { playerId: lawsuit.defendant.id },
           data: { cash: { decrement: settlementAmount } },

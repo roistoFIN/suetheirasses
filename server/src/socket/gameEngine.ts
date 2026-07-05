@@ -268,14 +268,6 @@ export class GameEngine {
         this.clearTimer(roomId);
         this.advancePhase(roomId).catch((error) => {
           console.error(`Timer-triggered phase advance failed for room ${roomId}:`, error);
-        }).catch((error) => {
-          console.error(`Timer-triggered phase advance failed for room ${roomId}:`, error);
-        }).catch((error) => {
-          console.error(`Timer-triggered phase advance failed for room ${roomId}:`, error);
-        }).catch((error) => {
-          console.error(`Timer-triggered phase advance failed for room ${roomId}:`, error);
-        }).catch((error) => {
-          console.error(`Timer-triggered phase advance failed for room ${roomId}:`, error);
         });
       }
     }, 1000);
@@ -466,7 +458,7 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): void {
         if (roomState.submissions.size === roomState.players.size) {
           engine.clearTimer(roomId);
           await strategyPhase.resolve(roomId, roomState, io, prisma);
-          // Transition to Results phase (15s passive display)
+          // Transition to Results phase (passive display)
           await engine.advancePhase(roomId);
         }
       } catch (error: any) {

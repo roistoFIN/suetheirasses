@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { GameEngine } from './gameEngine';
-import { RoomStatus, ServerEvents, PHASE_TIMERS, PHASE_ORDER } from '@suetheirasses/shared';
+import { RoomStatus, ServerEvents, PHASE_TIMERS, PHASE_ORDER, RESULTS_DISPLAY_DURATION } from '@suetheirasses/shared';
 import type { Server, Socket } from 'socket.io';
 import type { PrismaClient, Room as PrismaRoom, Player as PrismaPlayer, Company as PrismaCompany } from '@prisma/client';
 
@@ -725,7 +725,7 @@ describe('GameEngine', () => {
       expect(roomState.room.status).toBe(lastPhase);
     });
 
-    it('should start timer for RESULTS phase (15s passive display)', async () => {
+    it('should start timer for RESULTS phase', async () => {
       const player = {
         id: '',
         name: 'Alice',
@@ -742,9 +742,9 @@ describe('GameEngine', () => {
       await engine.advancePhase(roomState.room.id);
 
       expect(roomState.room.status).toBe(RoomStatus.RESULTS);
-      // RESULTS phase should have an active timer for the 15s passive display
+      // RESULTS phase should have an active timer for the passive display
       expect(roomState.timer).not.toBeNull();
-      expect(roomState.timerValue).toBe(PHASE_TIMERS[RoomStatus.RESULTS]);
+      expect(roomState.timerValue).toBe(RESULTS_DISPLAY_DURATION);
     });
 
     it('should sync room state to database', async () => {

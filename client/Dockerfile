@@ -24,9 +24,14 @@ RUN npm run build
 # Production stage - serve with nginx
 FROM nginx:alpine AS production
 
+# SERVER_URL is injected at runtime via docker-compose or env file
+# Defaults to http://server:3001 for Docker Compose networks
+ENV SERVER_URL=http://server:3001
+
 COPY --from=builder /app/client/dist /usr/share/nginx/html
 
-# Custom nginx config for SPA routing
+# Custom nginx config for SPA routing with configurable upstream
+# Uses __SERVER_URL__ placeholder substituted at runtime by entrypoint
 RUN echo 'server { \
     listen 80; \
     location / { \
@@ -35,7 +40,7 @@ RUN echo 'server { \
         try_files $uri $uri/ /index.html; \
     } \
     location /api { \
-        proxy_pass http://server:3001; \
+        proxy_pass __SERVER_URL__; \
         proxy_http_version 1.1; \
         proxy_set_header Upgrade $http_upgrade; \
         proxy_set_header Connection "upgrade"; \
@@ -46,6 +51,11 @@ RUN echo 'server { \
     } \
 }' > /etc/nginx/conf.d/default.conf
 
+COPY client/nginx-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
 EXPOSE 80
+
+CMD ["/docker-entrypoint.sh"]
 
 CMD ["nginx", "-g", "daemon off;"]

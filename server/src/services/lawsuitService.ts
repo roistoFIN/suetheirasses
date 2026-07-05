@@ -22,6 +22,13 @@ export const lawsuitService = {
     const plaintiffScore = 0.4 + claimRatio * 0.3 + plaintiffRandom;
     const defendantScore = 0.4 + defenseStrength * 0.3 - claimRatio * 0.15 + defendantRandom;
 
+    // SETTLED: Defendant has a strong defense (likely to win) but the claim is
+    // large relative to their cash (risking bankruptcy). A settlement at a
+    // reduced amount is the rational outcome.
+    if (defendantScore >= plaintiffScore && claimRatio > 0.7) {
+      return Verdict.SETTLED;
+    }
+
     if (defendantScore >= plaintiffScore) {
       return Verdict.LOST;
     }

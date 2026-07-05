@@ -26,8 +26,8 @@ When given a task, follow this exact mental loop before writing a single line of
 - Modern Idioms: Use the latest stable language features, standard libraries, and best practices for the requested language stack.
 - Completeness: Never use placeholders like `// TODO: implement later` or `// ... rest of code`. Provide full, functional code blocks unless explicitly asked to provide a snippet.
 
-## Test tools
-- Write test cases for React UI, Zustand stores, and Zod schemas using **Vitest + TypeScript**.
+## Unit testing
+- Write unit test cases for all the code you are creating using **Vitest + TypeScript**.
 
 ## Output Format
 Structure your response exactly like this:

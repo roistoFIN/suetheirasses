@@ -22,7 +22,7 @@ export const companyService = {
       switch (action.type) {
         case StrategyActionType.INVEST: {
           const amount = action.amount ?? 10000;
-          if (company.cash < amount) {
+          if (Number(company.cash) < amount) {
             changes.push(`Insufficient funds for investment of $${amount}`);
             continue;
           }
@@ -32,7 +32,7 @@ export const companyService = {
         }
         case StrategyActionType.EXPAND: {
           const cost = action.amount ?? 15000;
-          if (company.cash < cost) {
+          if (Number(company.cash) < cost) {
             changes.push(`Insufficient funds for expansion costing $${cost}`);
             continue;
           }
@@ -48,7 +48,7 @@ export const companyService = {
         }
         case StrategyActionType.AD_CAMPAIGN: {
           const cost = action.amount ?? 8000;
-          if (company.cash < cost) {
+          if (Number(company.cash) < cost) {
             changes.push(`Insufficient funds for ad campaign costing $${cost}`);
             continue;
           }
@@ -58,7 +58,7 @@ export const companyService = {
         }
         case StrategyActionType.RESEARCH_AND_DEVELOPMENT: {
           const cost = action.amount ?? 12000;
-          if (company.cash < cost) {
+          if (Number(company.cash) < cost) {
             changes.push(`Insufficient funds for R&D costing $${cost}`);
             continue;
           }

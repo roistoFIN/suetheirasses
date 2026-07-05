@@ -28,7 +28,9 @@ export const bankruptcyService = {
 
     for (const player of players) {
       if (!player.bankrupt && player.company) {
-        if (Number(player.company.cash) <= 0 || Number(player.company.cash) < -10000) {
+        const isCashInsolvent = Number(player.company.cash) <= 0;
+        const isOverleveraged = Number(player.company.debt) > 10000;
+        if (isCashInsolvent || isOverleveraged) {
           bankruptPlayerIds.push(player.id);
           io.to(roomId).emit(ServerEvents.PLAYER_BANKRUPT, {
             playerId: player.id,

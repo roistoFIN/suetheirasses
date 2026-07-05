@@ -221,7 +221,11 @@ describe('resolutionPhase.respondToLawsuit', () => {
 
   it('should not change cash on LOST verdict', async () => {
     // Mock Math.random to ensure deterministic LOST verdict
-    const randomStub = vi.spyOn(global, 'Math', 'random').mockReturnValue(0); // Both plaintiff and defendant get 0 random
+    // claimRatio = 50000/100000 = 0.5, defenseStrength = 1.0 (5000 chars)
+    // With both random = 0: plaintiffScore = 0.4 + 0.5*0.3 + 0 = 0.55
+    // defendantScore = 0.4 + 1.0*0.3 - 0.5*0.15 + 0 = 0.625
+    // defendantScore >= plaintiffScore => LOST (not SETTLED because claimRatio 0.5 < 0.7)
+    const randomStub = vi.spyOn(global.Math, 'random').mockReturnValue(0);
 
     const payload: LawsuitRespondPayload = {
       lawsuitId: 'lawsuit-1',
@@ -237,6 +241,66 @@ describe('resolutionPhase.respondToLawsuit', () => {
       (call: [{ data?: { cash?: { decrement?: number; increment?: number } } }, ...unknown[]]) => call[0]?.data?.cash?.decrement || call[0]?.data?.cash?.increment,
     );
     expect(cashUpdates.length).toBe(0);
+  });
+
+  it('should decrement defendant cash and increment plaintiff cash on SETTLED verdict', async () => {
+    // Mock Math.random to produce SETTLED:
+    // claimRatio = 50000/100000 = 0.5, defenseStrength = 1.0 (1000 chars)
+    // Need defendantScore >= plaintiffScore AND claimRatio > 0.7
+    // With claimRatio=0.5: plaintiffScore = 0.4 + 0.15 + pr = 0.55 + pr
+    // defendantScore = 0.4 + 0.3 - 0.075 + dr = 0.625 + dr
+    // With pr=-0.1, dr=0: plaintiff=0.45, defendant=0.625 => defendant >= plaintiff
+    // But claimRatio 0.5 < 0.7, so this gives LOST, not SETTLED
+    // Need higher claimRatio: use claimAmount=80000, defendantCash=50000 => claimRatio=1.6
+    // plaintiffScore = 0.4 + 0.48 + pr = 0.88 + pr
+    // defendantScore = 0.4 + 0.3 - 0.24 + dr = 0.46 + dr
+    // Need 0.46 + dr >= 0.88 + pr => dr - pr >= 0.42, but max dr-pr = 0.2
+    // This CANNOT produce SETTLED with current formula!
+    // Use claimAmount=40000, defendantCash=50000 => claimRatio=0.8
+    // plaintiffScore = 0.4 + 0.24 + pr = 0.64 + pr
+    // defendantScore = 0.4 + 0.3 - 0.12 + dr = 0.58 + dr
+    // With pr=-0.1, dr=0.1: plaintiff=0.54, defendant=0.68 => SETTLED!
+    let randomCallCount = 0;
+    const randomStub = vi.spyOn(global.Math, 'random').mockImplementation(() => {
+      randomCallCount++;
+      return randomCallCount === 1 ? 0.0 : 1.0; // plaintiff: -0.1, defendant: 0.1
+    });
+
+    // Override the mock lawsuit with higher claimRatio
+    const settlementLawsuit = {
+      ...baseLawsuit,
+      claimAmount: 40000,
+    };
+    const settlementDefendantCompany = createMockCompany('p2', 50000);
+    mockPrisma = createMockPrisma(
+      settlementLawsuit,
+      plaintiff,
+      defendant,
+      plaintiffCompany,
+      settlementDefendantCompany,
+    );
+
+    const payload: LawsuitRespondPayload = {
+      lawsuitId: 'lawsuit-1',
+      defense: 'a'.repeat(1000), // Strong defense
+    };
+
+    await resolutionPhase.respondToLawsuit('p2', 'room-1', payload, mockIo, mockPrisma);
+
+    randomStub.mockRestore();
+
+    const calls = (mockPrisma.company.update as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toHaveLength(2);
+
+    // Defendant should pay 50% of claim (20000)
+    expect(calls[0][0]).toEqual(expect.objectContaining({
+      where: { playerId: 'p2' },
+      data: expect.objectContaining({ cash: { decrement: 20000 } }),
+    }));
+    expect(calls[1][0]).toEqual(expect.objectContaining({
+      where: { playerId: 'p1' },
+      data: expect.objectContaining({ cash: { increment: 20000 } }),
+    }));
   });
 
   it('should notify all players about the verdict', async () => {

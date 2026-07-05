@@ -21,11 +21,12 @@ const createMockPlayer = (
     company,
   } satisfies PrismaPlayer & { company: PrismaCompany | null });
 
-const createMockCompany = (cash: number): PrismaCompany =>
+const createMockCompany = (cash: number, debt: number = 0): PrismaCompany =>
   ({
     id: `company-${cash}`,
     playerId: `player-${cash}`,
     cash,
+    debt,
     createdAt: new Date(),
   } satisfies PrismaCompany);
 
@@ -108,9 +109,9 @@ describe('bankruptcyService.checkBankruptcy', () => {
       expect(mockIo.emit).toHaveBeenCalled();
     });
 
-    it('should mark player as bankrupt when cash is below -10000', async () => {
+    it('should mark player as bankrupt when debt exceeds 10000', async () => {
       const players = [
-        createMockPlayer('p1', 'Player 1', false, createMockCompany(-10001)),
+        createMockPlayer('p1', 'Player 1', false, createMockCompany(50000, 10001)),
         createMockPlayer('p2', 'Player 2', false, createMockCompany(50000)),
       ];
       mockPrisma = createMockPrisma(players);
@@ -118,6 +119,18 @@ describe('bankruptcyService.checkBankruptcy', () => {
       const result = await bankruptcyService.checkBankruptcy('room-1', mockPrisma, mockIo);
 
       expect(result.bankruptPlayers).toContain('p1');
+    });
+
+    it('should not mark player as bankrupt when debt is exactly 10000', async () => {
+      const players = [
+        createMockPlayer('p1', 'Player 1', false, createMockCompany(50000, 10000)),
+        createMockPlayer('p2', 'Player 2', false, createMockCompany(50000)),
+      ];
+      mockPrisma = createMockPrisma(players);
+
+      const result = await bankruptcyService.checkBankruptcy('room-1', mockPrisma, mockIo);
+
+      expect(result.bankruptPlayers).toEqual([]);
     });
 
     it('should not mark player as bankrupt when cash is positive', async () => {

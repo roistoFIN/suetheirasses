@@ -18,10 +18,12 @@ export const PHASE_ORDER: RoomStatus[] = [
   RoomStatus.RESOLVING,
 ];
 
+export const RESULTS_DISPLAY_DURATION = 15;
+
 export const PHASE_TIMERS: Record<RoomStatus, number> = {
   [RoomStatus.WAITING]: 0,
   [RoomStatus.STRATEGY]: 120,
-  [RoomStatus.RESULTS]: 15,
+  [RoomStatus.RESULTS]: RESULTS_DISPLAY_DURATION,
   [RoomStatus.LAWSUITS]: 90,
   [RoomStatus.RESOLVING]: 90,
 };
@@ -58,6 +60,7 @@ export interface Company {
   id: string;
   playerId: string;
   cash: number;
+  debt: number;
   assets: Asset[];
   lawsuitsFiled: Lawsuit[];
   lawsuitsReceived: Lawsuit[];
