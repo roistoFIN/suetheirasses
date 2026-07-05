@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { strategyPhase } from './strategyPhase';
-import { RoomStatus, ServerEvents, type RoomState, type PhaseOutcome } from '@suetheirasses/shared';
+import { RoomStatus, ServerEvents, type RoomState } from '@suetheirasses/shared';
 import type { Server } from 'socket.io';
 import type { PrismaClient } from '@prisma/client';
 
@@ -21,7 +21,7 @@ const createMockPrisma = () => ({
 
 const createMockRoomState = (
   status: RoomStatus,
-  submissions: Map<string, any>,
+  submissions: Map<string, { actions: { type: string; amount?: number }[] }>,
   playerNames: Map<string, string>,
 ): RoomState => ({
   room: {
@@ -31,11 +31,11 @@ const createMockRoomState = (
     currentPhaseRound: 1,
     players: [],
     createdAt: new Date(),
-  } as any,
+  },
   players: new Map(
     Array.from(playerNames.entries()).map(([id, name]) => [
       id,
-      { id, name, roomId: 'room-1', isReady: true, bankrupt: false } as any,
+      { id, name, roomId: 'room-1', isReady: true, bankrupt: false },
     ]),
   ),
   submissions,
@@ -78,7 +78,7 @@ describe('strategyPhase.resolve', () => {
       ServerEvents.RESULTS_REVEAL,
       expect.objectContaining({ outcomes: expect.any(Array) }),
     );
-    expect(roomState.room.status).toBe(RoomStatus.RESULTS);
+    // Phase status is NOT changed here — the game engine handles phase transitions
   });
 
   it('should include player names in outcomes', async () => {
@@ -91,10 +91,10 @@ describe('strategyPhase.resolve', () => {
 
     await strategyPhase.resolve('room-1', roomState, mockIo, mockPrisma);
 
-    const emitCalls = (mockIo.emit as any).mock.calls;
-    const resultsCall = emitCalls.find((call: any[]) => call[0] === ServerEvents.RESULTS_REVEAL);
+    const emitCalls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls;
+    const resultsCall = emitCalls.find((call: [string, ...unknown[]]) => call[0] === ServerEvents.RESULTS_REVEAL);
     expect(resultsCall).toBeDefined();
-    expect(resultsCall[1].outcomes[0].playerName).toBe('Alice');
+    expect((resultsCall as [string, { outcomes: { playerName: string }[] }])[1].outcomes[0].playerName).toBe('Alice');
   });
 
   it('should handle empty submissions', async () => {
@@ -104,11 +104,10 @@ describe('strategyPhase.resolve', () => {
 
     await strategyPhase.resolve('room-1', roomState, mockIo, mockPrisma);
 
-    expect(roomState.room.status).toBe(RoomStatus.RESULTS);
-    const emitCalls = (mockIo.emit as any).mock.calls;
-    const resultsCall = emitCalls.find((call: any[]) => call[0] === ServerEvents.RESULTS_REVEAL);
+    const emitCalls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls;
+    const resultsCall = emitCalls.find((call: [string, ...unknown[]]) => call[0] === ServerEvents.RESULTS_REVEAL);
     expect(resultsCall).toBeDefined();
-    expect(resultsCall[1].outcomes).toHaveLength(0);
+    expect((resultsCall as [string, { outcomes: unknown[] }])[1].outcomes).toHaveLength(0);
   });
 
   it('should clear submissions after resolving', async () => {
@@ -121,37 +120,18 @@ describe('strategyPhase.resolve', () => {
     expect(roomState.submissions.size).toBe(0);
   });
 
-  it('should auto-advance to next phase after RESULTS timer', async () => {
+  it('should NOT auto-advance to next phase — that is handled by the game engine', async () => {
     const submissions = new Map();
     const playerNames = new Map();
     const roomState = createMockRoomState(RoomStatus.STRATEGY, submissions, playerNames);
 
     await strategyPhase.resolve('room-1', roomState, mockIo, mockPrisma);
 
-    // Fast-forward timer to trigger auto-advance
-    vi.advanceTimersByTime(15000); // 15 seconds in ms
-
-    expect(roomState.room.status).toBe(RoomStatus.LAWSUITS);
-    expect(mockIo.emit).toHaveBeenCalledWith(
-      ServerEvents.PHASE_CHANGED,
-      expect.objectContaining({ phase: RoomStatus.LAWSUITS }),
-    );
-  });
-
-  it('should broadcast phase change on auto-advance', async () => {
-    const submissions = new Map();
-    const playerNames = new Map();
-    const roomState = createMockRoomState(RoomStatus.STRATEGY, submissions, playerNames);
-
-    await strategyPhase.resolve('room-1', roomState, mockIo, mockPrisma);
-
-    vi.advanceTimersByTime(15000);
-
-    const emitCalls = (mockIo.emit as any).mock.calls;
-    const phaseCall = emitCalls.find((call: any[]) => call[0] === ServerEvents.PHASE_CHANGED);
-    expect(phaseCall).toBeDefined();
-    expect(phaseCall[1].phase).toBe(RoomStatus.LAWSUITS);
-    expect(phaseCall[1].timeLimit).toBe(90);
+    // Strategy phase should NOT auto-advance — the game engine timer handles this
+    expect(roomState.room.status).toBe(RoomStatus.STRATEGY);
+    const emitCalls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls;
+    const phaseCall = emitCalls.find((call: [string, ...unknown[]]) => call[0] === ServerEvents.PHASE_CHANGED);
+    expect(phaseCall).toBeUndefined();
   });
 
   it('should use "Unknown" for missing player names', async () => {
@@ -161,8 +141,8 @@ describe('strategyPhase.resolve', () => {
 
     await strategyPhase.resolve('room-1', roomState, mockIo, mockPrisma);
 
-    const emitCalls = (mockIo.emit as any).mock.calls;
-    const resultsCall = emitCalls.find((call: any[]) => call[0] === ServerEvents.RESULTS_REVEAL);
-    expect(resultsCall[1].outcomes[0].playerName).toBe('Unknown');
+    const emitCalls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls;
+    const resultsCall = emitCalls.find((call: [string, ...unknown[]]) => call[0] === ServerEvents.RESULTS_REVEAL);
+    expect((resultsCall as [string, { outcomes: { playerName: string }[] }])[1].outcomes[0].playerName).toBe('Unknown');
   });
 });

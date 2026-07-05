@@ -185,6 +185,12 @@ suetheirasses/
 │   ├── tsconfig.json
 │   └── package.json
 │
+├── tests/                           # Dedicated Integration/E2E Root
+│   ├── integration/
+│   │   ├── api/                     # Supertest API Test (Devs/QA)
+│   │   └── db/                      # Prisma + Testcontainers Test
+│   └── e2e/                         # Playwright E2E Test (QA/SDETs)
+│
 ├── docker-compose.yml               # PostgreSQL + Redis services
 ├── package.json                     # Monorepo root
 ├── .gitignore

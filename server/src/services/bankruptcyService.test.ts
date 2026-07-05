@@ -19,7 +19,7 @@ const createMockPlayer = (
     socketId: `socket-${id}`,
     companyId: company?.id ?? null,
     company,
-  }) as any;
+  } satisfies PrismaPlayer & { company: PrismaCompany | null });
 
 const createMockCompany = (cash: number): PrismaCompany =>
   ({
@@ -27,7 +27,7 @@ const createMockCompany = (cash: number): PrismaCompany =>
     playerId: `player-${cash}`,
     cash,
     createdAt: new Date(),
-  }) as any;
+  } satisfies PrismaCompany);
 
 const createMockIo = () => ({
   to: vi.fn().mockReturnThis(),
@@ -38,8 +38,8 @@ const createMockPrisma = (players: (PrismaPlayer & { company: PrismaCompany | nu
   ({
     player: {
       findMany: vi.fn().mockResolvedValue(players),
-      update: vi.fn().mockImplementation(({ data }) => {
-        const player = players.find((p) => p.id === (data as any)?.id);
+      update: vi.fn().mockImplementation(({ data }: { data?: Record<string, unknown> }) => {
+        const player = players.find((p) => p.id === (data as Record<string, unknown>)?.id);
         if (player) {
           Object.assign(player, data);
         }
@@ -168,8 +168,8 @@ describe('bankruptcyService.checkBankruptcy', () => {
       await bankruptcyService.checkBankruptcy('room-1', mockPrisma, mockIo);
 
       // Should emit for each bankrupt player
-      const emitCalls = (mockIo.emit as any).mock.calls;
-      const bankruptEmits = emitCalls.filter((call: any[]) => call[0] === 'player:bankrupt');
+      const emitCalls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls;
+      const bankruptEmits = emitCalls.filter((call: [string, ...unknown[]]) => call[0] === 'player:bankrupt');
       expect(bankruptEmits.length).toBe(2);
     });
   });
@@ -225,8 +225,8 @@ describe('bankruptcyService.checkBankruptcy', () => {
 
       await bankruptcyService.checkBankruptcy('room-1', mockPrisma, mockIo);
 
-      const gameOverCalls = (mockIo.emit as any).mock.calls.filter(
-        (call: any[]) => call[0] === 'game:over',
+      const gameOverCalls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (call: [string, ...unknown[]]) => call[0] === 'game:over',
       );
       expect(gameOverCalls.length).toBe(1);
       expect(gameOverCalls[0][1]).toHaveProperty('winner');

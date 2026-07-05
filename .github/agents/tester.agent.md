@@ -28,16 +28,11 @@ When running in `--clean` or `--repair` mode:
 3. **Prune Obsolete:** If functions, endpoints, or classes have been entirely deleted from the codebase, locate their corresponding test blocks or test files and remove them to keep the suite lean.
 
 # Execution Directives
-1. **Unit Tests:** Write test cases for React UI, Zustand stores, and Zod schemas using **Vitest + TypeScript**.
-2. **API Integration Tests:** Write test cases for Express endpoints using **Vitest + Supertest**.
-3. **DB Integration Tests:** Write test cases for Prisma code using **Testcontainers** (spinning up PostgreSQL & Redis in Docker).
-4. **End-to-End Tests:** Write test cases for full application flows using **Playwright**.
-5. **Unit Test Strategy:** Test:
-   - 1. The "Happy Path" (Core Logic)
-   - 2. Boundary and Edge Cases
-   - 3. Sad Paths and Error Handling
-   - 4. Business Rules and Logic Transitions (Parse `README.md` to extract explicit business rules)
-6. **Integration Test Strategy:** Test:
+1. **Unit Tests:** Are handled by coder. Do not create new unit tests. Only repair or prune existing ones.
+1. **API Integration Tests:** Write test cases for Express endpoints using **Vitest + Supertest**.
+2. **DB Integration Tests:** Write test cases for Prisma code using **Testcontainers** (spinning up PostgreSQL & Redis in Docker).
+3. **End-to-End Tests:** Write test cases for full application flows using **Playwright**.
+4. **Integration Test Strategy:** Test:
    - 1. Data Persistence (The Database Layer via Prisma)
    - 2. External APIs and Network Services
    - 3. Component Interoperability (Internal Modules)

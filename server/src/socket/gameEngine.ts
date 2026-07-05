@@ -29,6 +29,8 @@ export class GameEngine {
   private playerToRoom: Map<string, string> = new Map();
   private prisma: PrismaClient;
   private io: Server;
+  // Lock to prevent concurrent phase advances (race condition guard)
+  private advancingRooms: Set<string> = new Set();
 
   constructor(io: Server, prisma: PrismaClient) {
     this.io = io;
@@ -204,38 +206,51 @@ export class GameEngine {
   }
 
   async advancePhase(roomId: string): Promise<void> {
-    const roomState = this.rooms.get(roomId);
-    if (!roomState) return;
+    // Mutex: skip if already advancing this room (prevents concurrent phase transitions)
+    if (this.advancingRooms.has(roomId)) return;
+    this.advancingRooms.add(roomId);
 
-    const currentIdx = PHASE_ORDER.indexOf(roomState.room.status);
-    const nextIdx = currentIdx + 1;
+    try {
+      const roomState = this.rooms.get(roomId);
+      if (!roomState) return;
 
-    if (nextIdx >= PHASE_ORDER.length) {
-      // Game over - handled by resolution phase
-      return;
-    }
+      const currentIdx = PHASE_ORDER.indexOf(roomState.room.status);
+      const nextIdx = currentIdx + 1;
 
-    const nextPhase = PHASE_ORDER[nextIdx];
-    roomState.room.status = nextPhase;
+      if (nextIdx >= PHASE_ORDER.length) {
+        // Game over - handled by resolution phase
+        return;
+      }
 
-    // Reset submissions for new phase
-    roomState.submissions.clear();
+      const nextPhase = PHASE_ORDER[nextIdx];
 
-    // Persist phase change to database
-    await this.syncRoomToDB(roomId);
+      // Persist phase change to database BEFORE mutating in-memory state
+      // This prevents inconsistency if DB write fails
+      await this.syncRoomToDB(roomId);
 
-    // Start timer if applicable
-    this.clearTimer(roomId);
-    if (nextPhase !== RoomStatus.RESULTS) {
+      // Now mutate in-memory state (safe - DB is already consistent)
+      roomState.room.status = nextPhase;
+
+      // Reset submissions for new phase
+      roomState.submissions.clear();
+
+      // Start timer if applicable
+      this.clearTimer(roomId);
       this.startTimer(roomId, PHASE_TIMERS[nextPhase]);
-    }
 
-    // Broadcast phase change
-    this.broadcastRoomState(roomId, ServerEvents.PHASE_CHANGED, {
-      phase: nextPhase,
-      round: roomState.room.currentPhaseRound,
-      timeLimit: PHASE_TIMERS[nextPhase],
-    });
+      // Broadcast phase change
+      this.broadcastRoomState(roomId, ServerEvents.PHASE_CHANGED, {
+        phase: nextPhase,
+        round: roomState.room.currentPhaseRound,
+        timeLimit: PHASE_TIMERS[nextPhase],
+      });
+    } catch (error) {
+      console.error(`Failed to advance phase for room ${roomId}:`, error);
+      throw error;
+    } finally {
+      // Always release the lock, even on error
+      this.advancingRooms.delete(roomId);
+    }
   }
 
   startTimer(roomId: string, seconds: number): void {
@@ -251,7 +266,17 @@ export class GameEngine {
 
       if (roomState.timerValue <= 0) {
         this.clearTimer(roomId);
-        this.advancePhase(roomId);
+        this.advancePhase(roomId).catch((error) => {
+          console.error(`Timer-triggered phase advance failed for room ${roomId}:`, error);
+        }).catch((error) => {
+          console.error(`Timer-triggered phase advance failed for room ${roomId}:`, error);
+        }).catch((error) => {
+          console.error(`Timer-triggered phase advance failed for room ${roomId}:`, error);
+        }).catch((error) => {
+          console.error(`Timer-triggered phase advance failed for room ${roomId}:`, error);
+        }).catch((error) => {
+          console.error(`Timer-triggered phase advance failed for room ${roomId}:`, error);
+        });
       }
     }, 1000);
   }
@@ -441,6 +466,8 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): void {
         if (roomState.submissions.size === roomState.players.size) {
           engine.clearTimer(roomId);
           await strategyPhase.resolve(roomId, roomState, io, prisma);
+          // Transition to Results phase (15s passive display)
+          await engine.advancePhase(roomId);
         }
       } catch (error: any) {
         socket.emit(ServerEvents.ERROR, {

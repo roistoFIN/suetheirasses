@@ -11,18 +11,18 @@ const createMockIo = () => ({
 }) as unknown as Server;
 
 const createMockPrisma = () => {
-  let createdPlayers: any[] = [];
-  let createdCompanies: any[] = [];
+  const createdPlayers: Record<string, unknown>[] = [];
+  const createdCompanies: PrismaCompany[] = [];
 
   const mockRoom = {
-    create: vi.fn().mockImplementation(({ data }: any) => {
+    create: vi.fn().mockImplementation(({ data }: { data: Record<string, unknown> }) => {
       const dbPlayer = {
         id: `db-player-${Date.now()}`,
-        name: data.players.create.name,
-        roomId: data.id,
-        isReady: data.players.create.isReady,
+        name: (data.players.create as Record<string, unknown>).name as string,
+        roomId: data.id as string,
+        isReady: (data.players.create as Record<string, unknown>).isReady as boolean,
         bankrupt: false,
-        socketId: data.players.create.socketId,
+        socketId: (data.players.create as Record<string, unknown>).socketId as string,
         companyId: `company-${Date.now()}`,
         company: {
           id: `company-${Date.now()}`,
@@ -34,46 +34,46 @@ const createMockPrisma = () => {
       createdPlayers.push(dbPlayer);
 
       const room: PrismaRoom = {
-        id: data.id,
-        status: data.status,
-        maxPlayers: data.maxPlayers,
-        currentPhaseRound: data.currentPhaseRound,
-        createdAt: data.createdAt || new Date(),
-      } as any;
+        id: data.id as string,
+        status: data.status as RoomStatus,
+        maxPlayers: data.maxPlayers as number,
+        currentPhaseRound: data.currentPhaseRound as number,
+        createdAt: (data.createdAt as Date) || new Date(),
+      };
 
       return Promise.resolve({
         ...room,
         players: [dbPlayer],
       });
     }),
-    findFirst: vi.fn().mockImplementation(({ where }: any) => {
+    findFirst: vi.fn().mockImplementation(({ where }: { where: Record<string, unknown> }) => {
       return Promise.resolve(null);
     }),
-    findUnique: vi.fn().mockImplementation(({ where }: any) => {
+    findUnique: vi.fn().mockImplementation(({ where }: { where: Record<string, unknown> }) => {
       return Promise.resolve(null);
     }),
     update: vi.fn().mockResolvedValue({}),
   };
 
   const mockPlayer = {
-    create: vi.fn().mockImplementation(({ data }: any) => {
+    create: vi.fn().mockImplementation(({ data }: { data: Record<string, unknown> }) => {
       const playerId = `db-player-${Date.now()}`;
       const companyId = `company-${playerId}`;
       const player: PrismaPlayer & { company: PrismaCompany } = {
         id: playerId,
-        name: data.name,
-        roomId: data.roomId,
-        isReady: data.isReady,
-        bankrupt: data.bankrupt || false,
-        socketId: data.socketId,
+        name: data.name as string,
+        roomId: data.roomId as string,
+        isReady: data.isReady as boolean,
+        bankrupt: (data.bankrupt as boolean) || false,
+        socketId: data.socketId as string,
         companyId,
         company: {
           id: companyId,
           playerId,
-          cash: data.company?.create?.cash ?? 100000,
+          cash: ((data.company as Record<string, unknown>)?.create as Record<string, unknown>)?.cash as number ?? 100000,
           createdAt: new Date(),
         },
-      } as any;
+      };
       createdPlayers.push(player);
       createdCompanies.push(player.company);
       return Promise.resolve(player);
@@ -84,14 +84,14 @@ const createMockPrisma = () => {
   };
 
   const mockCompany = {
-    findUnique: vi.fn().mockImplementation(({ where }: any) => {
-      return Promise.resolve(createdCompanies.find((c: any) => c.playerId === where.playerId) || null);
+    findUnique: vi.fn().mockImplementation(({ where }: { where: { playerId: string } }) => {
+      return Promise.resolve(createdCompanies.find((c) => c.playerId === where.playerId) || null);
     }),
     delete: vi.fn().mockResolvedValue({}),
     update: vi.fn().mockResolvedValue({}),
   };
 
-  const mockPrisma: any = {
+  const mockPrisma: Partial<PrismaClient> = {
     room: mockRoom,
     player: mockPlayer,
     company: mockCompany,
@@ -101,8 +101,8 @@ const createMockPrisma = () => {
     lawsuit: {
       deleteMany: vi.fn().mockResolvedValue({}),
     },
-    $transaction: vi.fn().mockImplementation(async (fn: any) => {
-      return fn(mockPrisma);
+    $transaction: vi.fn().mockImplementation(async (fn: (tx: Partial<PrismaClient>) => Promise<unknown>) => {
+      return fn(mockPrisma as Partial<PrismaClient>);
     }),
   };
 
@@ -119,11 +119,11 @@ describe('GameEngine', () => {
     mockIo = createMockIo();
     mockPrisma = createMockPrisma();
     // Update prismaRef to point to the newly created mock
-    (mockPrisma as any).room = mockPrisma.room;
-    (mockPrisma as any).player = mockPrisma.player;
-    (mockPrisma as any).company = mockPrisma.company;
-    (mockPrisma as any).asset = mockPrisma.asset;
-    (mockPrisma as any).lawsuit = mockPrisma.lawsuit;
+    (mockPrisma as Partial<PrismaClient>).room = mockPrisma.room;
+    (mockPrisma as Partial<PrismaClient>).player = mockPrisma.player;
+    (mockPrisma as Partial<PrismaClient>).company = mockPrisma.company;
+    (mockPrisma as Partial<PrismaClient>).asset = mockPrisma.asset;
+    (mockPrisma as Partial<PrismaClient>).lawsuit = mockPrisma.lawsuit;
     engine = new GameEngine(mockIo, mockPrisma);
   });
 
@@ -159,7 +159,7 @@ describe('GameEngine', () => {
 
       await engine.createRoom(player);
 
-      const createCall = (mockPrisma.room.create as any).mock.calls[0];
+      const createCall = (mockPrisma.room.create as ReturnType<typeof vi.fn>).mock.calls[0];
       expect(createCall[0].data.status).toBe(RoomStatus.WAITING);
     });
 
@@ -175,7 +175,7 @@ describe('GameEngine', () => {
 
       await engine.createRoom(player);
 
-      const createCall = (mockPrisma.room.create as any).mock.calls[0];
+      const createCall = (mockPrisma.room.create as ReturnType<typeof vi.fn>).mock.calls[0];
       expect(createCall[0].data.players.create.company.create.cash).toBe(100000);
     });
 
@@ -603,8 +603,8 @@ describe('GameEngine', () => {
 
       await new Promise((resolve) => setTimeout(resolve, 1100));
 
-      const emitCalls = (mockIo.emit as any).mock.calls;
-      const timerCalls = emitCalls.filter((call: any[]) => call[0] === ServerEvents.TIMER_UPDATE);
+      const emitCalls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls;
+      const timerCalls = emitCalls.filter((call: [string, ...unknown[]]) => call[0] === ServerEvents.TIMER_UPDATE);
       expect(timerCalls.length).toBeGreaterThan(1);
     });
   });
@@ -725,7 +725,7 @@ describe('GameEngine', () => {
       expect(roomState.room.status).toBe(lastPhase);
     });
 
-    it('should not start timer for RESULTS phase', async () => {
+    it('should start timer for RESULTS phase (15s passive display)', async () => {
       const player = {
         id: '',
         name: 'Alice',
@@ -742,8 +742,9 @@ describe('GameEngine', () => {
       await engine.advancePhase(roomState.room.id);
 
       expect(roomState.room.status).toBe(RoomStatus.RESULTS);
-      // RESULTS phase should not have an active interval timer
-      expect(roomState.timer).toBeNull();
+      // RESULTS phase should have an active timer for the 15s passive display
+      expect(roomState.timer).not.toBeNull();
+      expect(roomState.timerValue).toBe(PHASE_TIMERS[RoomStatus.RESULTS]);
     });
 
     it('should sync room state to database', async () => {
@@ -760,6 +761,39 @@ describe('GameEngine', () => {
       await engine.advancePhase(roomState.room.id);
 
       expect(mockPrisma.room.update).toHaveBeenCalled();
+    });
+
+    it('should skip concurrent advancePhase calls for the same room (race condition guard)', async () => {
+      const player = {
+        id: '',
+        name: 'Alice',
+        roomId: '',
+        isReady: false,
+        bankrupt: false,
+        socketId: 'socket-1',
+      };
+      const roomState = await engine.createRoom(player);
+
+      // Spy on internal methods to track calls
+      const syncRoomToDBSpy = vi.spyOn(engine as unknown as GameEngine, 'syncRoomToDB');
+      const broadcastRoomStateSpy = vi.spyOn(engine as unknown as GameEngine, 'broadcastRoomState');
+
+      // Fire two advancePhase calls concurrently
+      const [result1, result2] = await Promise.all([
+        engine.advancePhase(roomState.room.id),
+        engine.advancePhase(roomState.room.id),
+      ]);
+
+      // Both should resolve without error
+      expect(result1).toBeUndefined();
+      expect(result2).toBeUndefined();
+
+      // But internal operations should only execute once (second call skipped)
+      expect(syncRoomToDBSpy).toHaveBeenCalledTimes(1);
+      expect(broadcastRoomStateSpy).toHaveBeenCalledTimes(1);
+
+      // Room should be in the next phase (STRATEGY), not advanced twice
+      expect(roomState.room.status).toBe(RoomStatus.STRATEGY);
     });
   });
 

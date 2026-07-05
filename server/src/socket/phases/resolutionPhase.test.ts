@@ -23,7 +23,7 @@ const createMockPlayer = (
     bankrupt,
     socketId: `socket-${id}`,
     companyId: `company-${id}`,
-  }) as any;
+  } satisfies PrismaPlayer);
 
 const createMockCompany = (playerId: string, cash: number): PrismaCompany =>
   ({
@@ -31,28 +31,28 @@ const createMockCompany = (playerId: string, cash: number): PrismaCompany =>
     playerId,
     cash,
     createdAt: new Date(),
-  }) as any;
+  } satisfies PrismaCompany);
 
 const createMockPrisma = (
-  lawsuit: any,
+  lawsuit: Record<string, unknown>,
   plaintiff: PrismaPlayer,
   defendant: PrismaPlayer,
   plaintiffCompany: PrismaCompany,
   defendantCompany: PrismaCompany,
-) => {
-  const mockCompanyUpdate = vi.fn().mockImplementation(({ data }: any) => {
-    if (data.cash?.decrement) {
-      defendantCompany.cash -= data.cash.decrement;
-      plaintiffCompany.cash += data.cash.decrement;
+): PrismaClient => {
+  const mockCompanyUpdate = vi.fn().mockImplementation(({ data }: { data: Record<string, unknown> }) => {
+    if ((data.cash as Record<string, unknown>)?.decrement) {
+      defendantCompany.cash -= (data.cash as { decrement: number }).decrement;
+      plaintiffCompany.cash += (data.cash as { decrement: number }).decrement;
     }
-    if (data.cash?.increment) {
-      plaintiffCompany.cash += data.cash.increment;
+    if ((data.cash as Record<string, unknown>)?.increment) {
+      plaintiffCompany.cash += (data.cash as { increment: number }).increment;
     }
     return Promise.resolve({});
   });
 
   const mockCompany = {
-    findUnique: vi.fn().mockImplementation(({ where }: any) => {
+    findUnique: vi.fn().mockImplementation(({ where }: { where: { playerId: string } }) => {
       if (where.playerId === 'p1') return Promise.resolve(plaintiffCompany);
       if (where.playerId === 'p2') return Promise.resolve(defendantCompany);
       return Promise.resolve(null);
@@ -84,7 +84,7 @@ const createMockPrisma = (
       update: vi.fn().mockResolvedValue({}),
       updateMany: vi.fn().mockResolvedValue({ count: 0 }),
     },
-    $transaction: vi.fn().mockImplementation(async (fn: any) => {
+    $transaction: vi.fn().mockImplementation(async (fn: (tx: { lawsuit: { update: typeof mockLawsuitUpdate }, company: typeof mockCompany }) => Promise<unknown>) => {
       return fn({
         lawsuit: {
           update: mockLawsuitUpdate,
@@ -207,7 +207,7 @@ describe('resolutionPhase.respondToLawsuit', () => {
 
     await resolutionPhase.respondToLawsuit('p2', 'room-1', payload, mockIo, mockPrisma);
 
-    const calls = (mockPrisma.company.update as any).mock.calls;
+    const calls = (mockPrisma.company.update as ReturnType<typeof vi.fn>).mock.calls;
     expect(calls).toHaveLength(2);
     expect(calls[0][0]).toEqual(expect.objectContaining({
       where: { playerId: 'p2' },
@@ -220,16 +220,21 @@ describe('resolutionPhase.respondToLawsuit', () => {
   });
 
   it('should not change cash on LOST verdict', async () => {
+    // Mock Math.random to ensure deterministic LOST verdict
+    const randomStub = vi.spyOn(global, 'Math', 'random').mockReturnValue(0); // Both plaintiff and defendant get 0 random
+
     const payload: LawsuitRespondPayload = {
       lawsuitId: 'lawsuit-1',
-      defense: 'a'.repeat(1000),
+      defense: 'a'.repeat(5000), // Very strong defense to ensure LOST
     };
 
     await resolutionPhase.respondToLawsuit('p2', 'room-1', payload, mockIo, mockPrisma);
 
-    const companyUpdates = (mockPrisma.company.update as any).mock.calls;
+    randomStub.mockRestore();
+
+    const companyUpdates = (mockPrisma.company.update as ReturnType<typeof vi.fn>).mock.calls;
     const cashUpdates = companyUpdates.filter(
-      (call: any[]) => call[1]?.data?.cash?.decrement || call[1]?.data?.cash?.increment,
+      (call: [{ data?: { cash?: { decrement?: number; increment?: number } } }, ...unknown[]]) => call[0]?.data?.cash?.decrement || call[0]?.data?.cash?.increment,
     );
     expect(cashUpdates.length).toBe(0);
   });
@@ -301,7 +306,11 @@ describe('resolutionPhase.generateResolution', () => {
     };
     const payload = {} as LawsuitRespondPayload;
 
-    const result = resolutionPhase.generateResolution(lawsuit as any, Verdict.WON, payload);
+    const result = resolutionPhase.generateResolution(
+      lawsuit as unknown as Parameters<typeof resolutionPhase.generateResolution>[0],
+      Verdict.WON,
+      payload,
+    );
 
     expect(result).toContain('Court rules in favor of Alice');
     expect(result).toContain('$50000');
@@ -314,7 +323,11 @@ describe('resolutionPhase.generateResolution', () => {
     };
     const payload = {} as LawsuitRespondPayload;
 
-    const result = resolutionPhase.generateResolution(lawsuit as any, Verdict.LOST, payload);
+    const result = resolutionPhase.generateResolution(
+      lawsuit as unknown as Parameters<typeof resolutionPhase.generateResolution>[0],
+      Verdict.LOST,
+      payload,
+    );
 
     expect(result).toContain('Court dismisses the case');
     expect(result).toContain("Alice's lawsuit is denied");
@@ -327,7 +340,11 @@ describe('resolutionPhase.generateResolution', () => {
     };
     const payload = { settlementOffer: 25000 } as LawsuitRespondPayload;
 
-    const result = resolutionPhase.generateResolution(lawsuit as any, Verdict.SETTLED, payload);
+    const result = resolutionPhase.generateResolution(
+      lawsuit as unknown as Parameters<typeof resolutionPhase.generateResolution>[0],
+      Verdict.SETTLED,
+      payload,
+    );
 
     expect(result).toContain('settlement');
     expect(result).toContain('$25000');

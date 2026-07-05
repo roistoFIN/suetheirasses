@@ -4,7 +4,7 @@ import { ServerEvents, RoomStatus, type LawsuitFilePayload } from '@suetheirasse
 import type { Server } from 'socket.io';
 import type { PrismaClient, Player as PrismaPlayer, Company as PrismaCompany } from '@prisma/client';
 
-const createMockIo = () => ({
+const createMockIo = (): Server => ({
   to: vi.fn().mockReturnThis(),
   emit: vi.fn().mockReturnThis(),
 }) as unknown as Server;
@@ -25,7 +25,7 @@ const createMockPlayer = (
     socketId: `socket-${id}`,
     companyId: company?.id ?? null,
     company,
-  }) as any;
+  } satisfies PrismaPlayer & { company: PrismaCompany | null });
 
 const createMockCompany = (playerId: string, cash: number): PrismaCompany =>
   ({
@@ -33,32 +33,32 @@ const createMockCompany = (playerId: string, cash: number): PrismaCompany =>
     playerId,
     cash,
     createdAt: new Date(),
-  }) as any;
+  } satisfies PrismaCompany);
 
 const createMockPrisma = (
   players: (PrismaPlayer & { company: PrismaCompany | null })[],
-) => {
-  const mockCompanyUpdate = vi.fn().mockImplementation(({ data }: any) => {
+): PrismaClient => {
+  const mockCompanyUpdate = vi.fn().mockImplementation(({ data }: { data: Record<string, unknown> }) => {
     return Promise.resolve({});
   });
 
   const mockCompany = {
-    findUnique: vi.fn().mockImplementation(({ where }: any) => {
+    findUnique: vi.fn().mockImplementation(({ where }: { where: { playerId: string } }) => {
       const player = players.find((p) => p.id === where.playerId);
       return Promise.resolve(player?.company ?? null);
     }),
     update: mockCompanyUpdate,
   };
 
-  const mockLawsuitCreate = vi.fn().mockImplementation((data: any) => {
+  const mockLawsuitCreate = vi.fn().mockImplementation((data: Record<string, unknown>) => {
     return Promise.resolve({ ...data, id: 'lawsuit-1', resolved: false });
   });
 
   return {
     player: {
-      findFirst: vi.fn().mockImplementation(({ where }: any) => {
-        const player = players.find((p) => p.id === where.id);
-        if (player && where.roomId && player.roomId !== where.roomId) return Promise.resolve(null);
+      findFirst: vi.fn().mockImplementation(({ where }: { where: Record<string, unknown> }) => {
+        const player = players.find((p) => p.id === (where as { id: string }).id);
+        if (player && (where as { roomId: string }).roomId && player.roomId !== (where as { roomId: string }).roomId) return Promise.resolve(null);
         if (player) return Promise.resolve({ ...player, company: player.company });
         return Promise.resolve(null);
       }),
@@ -67,7 +67,7 @@ const createMockPrisma = (
     lawsuit: {
       create: mockLawsuitCreate,
     },
-    $transaction: vi.fn().mockImplementation(async (fn: any) => {
+    $transaction: vi.fn().mockImplementation(async (fn: (tx: { lawsuit: { create: typeof mockLawsuitCreate }, company: typeof mockCompany }) => Promise<unknown>) => {
       // Pass the SAME mock functions so assertions on top-level mocks work
       return fn({
         lawsuit: {
@@ -76,6 +76,9 @@ const createMockPrisma = (
         company: mockCompany,
       });
     }),
+    room: {
+      update: vi.fn().mockResolvedValue({}),
+    },
   } as unknown as PrismaClient;
 };
 

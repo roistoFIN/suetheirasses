@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { lawsuitService } from './lawsuitService';
 import { Verdict } from '@suetheirasses/shared';
-import type { PrismaClient, Company as PrismaCompany } from '@prisma/client';
+import type { Company as PrismaCompany, Lawsuit, Player as PrismaPlayer } from '@prisma/client';
 
 const createMockCompany = (playerId: string, cash: number): PrismaCompany =>
   ({
@@ -9,125 +9,125 @@ const createMockCompany = (playerId: string, cash: number): PrismaCompany =>
     playerId,
     cash,
     createdAt: new Date(),
-  }) as any;
+  } satisfies PrismaCompany);
 
-const createMockPrisma = (
-  plaintiffCompany: PrismaCompany | null,
-  defendantCompany: PrismaCompany | null,
-) => ({
-  company: {
-    findUnique: vi.fn().mockImplementation(({ where }: any) => {
-      if (where.playerId === 'plaintiff-1') return Promise.resolve(plaintiffCompany);
-      if (where.playerId === 'defendant-1') return Promise.resolve(defendantCompany);
-      return Promise.resolve(null);
-    }),
+const createMockPlayer = (
+  id: string,
+  cash: number,
+): PrismaPlayer & { company: PrismaCompany } =>
+  ({
+    id,
+    name: `Player ${id}`,
+    roomId: 'room-test',
+    isReady: true,
+    bankrupt: false,
+    socketId: `socket-${id}`,
+    companyId: `company-${id}`,
+    company: createMockCompany(id, cash),
+  } satisfies PrismaPlayer & { company: PrismaCompany });
+
+const createMockLawsuit = (
+  plaintiffId: string,
+  defendantId: string,
+  claimAmount: number,
+  options?: {
+    plaintiffCash?: number;
+    defendantCash?: number;
+    plaintiffCompany?: PrismaCompany;
+    defendantCompany?: PrismaCompany;
+    plaintiff?: Partial<PrismaPlayer> & { company?: PrismaCompany } | null;
+    defendant?: Partial<PrismaPlayer> & { company?: PrismaCompany } | null;
   },
-} as unknown as PrismaClient);
+): Lawsuit => {
+  const {
+    plaintiffCash = 50000,
+    defendantCash = 50000,
+    plaintiffCompany = options?.plaintiffCompany ?? createMockCompany(plaintiffId, plaintiffCash),
+    defendantCompany = options?.defendantCompany ?? createMockCompany(defendantId, defendantCash),
+    plaintiff = options?.plaintiff ?? { ...createMockPlayer(plaintiffId, plaintiffCash), company: plaintiffCompany },
+    defendant = options?.defendant ?? { ...createMockPlayer(defendantId, defendantCash), company: defendantCompany },
+  } = options ?? {};
+
+  return {
+    id: `lawsuit-${plaintiffId}-${defendantId}`,
+    plaintiffId,
+    defendantId,
+    claimAmount,
+    grounds: 'Some grounds',
+    resolved: false,
+    plaintiff: plaintiff as PrismaPlayer & { company: PrismaCompany },
+    defendant: defendant as PrismaPlayer & { company: PrismaCompany },
+  } satisfies Partial<Lawsuit> as Lawsuit;
+};
 
 describe('lawsuitService.calculateVerdict', () => {
-  let mockPrisma: PrismaClient;
-
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   describe('Defendant wins (Verdict.LOST)', () => {
     it('should return LOST when defendant has strong defense and small claim', async () => {
-      const lawsuit = {
-        id: 'lawsuit-1',
-        plaintiffId: 'plaintiff-1',
-        defendantId: 'defendant-1',
-        claimAmount: 1000,
-        grounds: 'Some grounds',
-        resolved: false,
-      } as any;
+      const lawsuit = createMockLawsuit('plaintiff-1', 'defendant-1', 1000, {
+        plaintiffCash: 50000,
+        defendantCash: 100000,
+      });
 
       const defense = 'a'.repeat(1000); // Strong defense
-      mockPrisma = createMockPrisma(
-        createMockCompany('plaintiff-1', 50000),
-        createMockCompany('defendant-1', 100000),
-      );
 
-      const result = await lawsuitService.calculateVerdict(lawsuit, defense, mockPrisma);
+      const result = await lawsuitService.calculateVerdict(lawsuit, defense);
 
       expect(result).toBe(Verdict.LOST);
     });
 
     it('should return LOST when defendant has large cash relative to claim', async () => {
-    const lawsuit = {
-      id: 'lawsuit-1',
-      plaintiffId: 'plaintiff-1',
-      defendantId: 'defendant-1',
-      claimAmount: 1000,
-      grounds: 'Some grounds',
-      resolved: false,
-    } as any;
+      const lawsuit = createMockLawsuit('plaintiff-1', 'defendant-1', 1000, {
+        plaintiffCash: 50000,
+        defendantCash: 1000000,
+      });
 
-    const defense = 'a'.repeat(1000); // Strong defense
-    mockPrisma = createMockPrisma(
-      createMockCompany('plaintiff-1', 50000),
-      createMockCompany('defendant-1', 1000000),
-    );
+      const defense = 'a'.repeat(1000); // Strong defense
 
-    // Run multiple times - with strong defense and large cash, should mostly be LOST
-    const results = await Promise.all(
-      Array(10).fill(null).map(() =>
-        lawsuitService.calculateVerdict(lawsuit, defense, mockPrisma),
-      ),
-    );
+      // Run multiple times - with strong defense and large cash, should mostly be LOST
+      const results = await Promise.all(
+        Array(10).fill(null).map(() =>
+          lawsuitService.calculateVerdict(lawsuit, defense),
+        ),
+      );
 
-    // At least some should be LOST due to strong defense and large cash
-    const lostCount = results.filter((r) => r === Verdict.LOST).length;
-    expect(lostCount).toBeGreaterThan(0);
-  });
+      // At least some should be LOST due to strong defense and large cash
+      const lostCount = results.filter((r) => r === Verdict.LOST).length;
+      expect(lostCount).toBeGreaterThan(0);
+    });
 
     it('should return LOST when both companies are missing', async () => {
-      const lawsuit = {
-        id: 'lawsuit-1',
-        plaintiffId: 'plaintiff-1',
-        defendantId: 'defendant-1',
-        claimAmount: 50000,
-        grounds: 'Some grounds',
-        resolved: false,
-      } as any;
+      const lawsuit = createMockLawsuit('plaintiff-1', 'defendant-1', 50000, {
+        plaintiff: null,
+        defendant: null,
+      });
 
-      mockPrisma = createMockPrisma(null, null);
-
-      const result = await lawsuitService.calculateVerdict(lawsuit, 'a'.repeat(500), mockPrisma);
+      const result = await lawsuitService.calculateVerdict(lawsuit, 'a'.repeat(500));
 
       expect(result).toBe(Verdict.LOST);
     });
 
     it('should return LOST when only plaintiff company is missing', async () => {
-      const lawsuit = {
-        id: 'lawsuit-1',
-        plaintiffId: 'plaintiff-1',
-        defendantId: 'defendant-1',
-        claimAmount: 50000,
-        grounds: 'Some grounds',
-        resolved: false,
-      } as any;
+      const lawsuit = createMockLawsuit('plaintiff-1', 'defendant-1', 50000, {
+        plaintiff: null,
+        defendantCompany: createMockCompany('defendant-1', 50000),
+      });
 
-      mockPrisma = createMockPrisma(null, createMockCompany('defendant-1', 50000));
-
-      const result = await lawsuitService.calculateVerdict(lawsuit, 'a'.repeat(500), mockPrisma);
+      const result = await lawsuitService.calculateVerdict(lawsuit, 'a'.repeat(500));
 
       expect(result).toBe(Verdict.LOST);
     });
 
     it('should return LOST when only defendant company is missing', async () => {
-      const lawsuit = {
-        id: 'lawsuit-1',
-        plaintiffId: 'plaintiff-1',
-        defendantId: 'defendant-1',
-        claimAmount: 50000,
-        grounds: 'Some grounds',
-        resolved: false,
-      } as any;
+      const lawsuit = createMockLawsuit('plaintiff-1', 'defendant-1', 50000, {
+        plaintiffCompany: createMockCompany('plaintiff-1', 50000),
+        defendant: null,
+      });
 
-      mockPrisma = createMockPrisma(createMockCompany('plaintiff-1', 50000), null);
-
-      const result = await lawsuitService.calculateVerdict(lawsuit, 'a'.repeat(500), mockPrisma);
+      const result = await lawsuitService.calculateVerdict(lawsuit, 'a'.repeat(500));
 
       expect(result).toBe(Verdict.LOST);
     });
@@ -135,18 +135,10 @@ describe('lawsuitService.calculateVerdict', () => {
 
   describe('Plaintiff wins (Verdict.WON)', () => {
     it('should return WON when claim is large relative to defendant cash and defense is weak', async () => {
-      const plaintiffCompany = createMockCompany('plaintiff-1', 50000);
-      const defendantCompany = createMockCompany('defendant-1', 1000);
-      const lawsuit = {
-        id: 'lawsuit-1',
-        plaintiffId: 'plaintiff-1',
-        defendantId: 'defendant-1',
-        claimAmount: 100000,
-        grounds: 'Some grounds',
-        resolved: false,
-        plaintiff: { company: plaintiffCompany },
-        defendant: { company: defendantCompany },
-      } as any;
+      const lawsuit = createMockLawsuit('plaintiff-1', 'defendant-1', 100000, {
+        plaintiffCash: 50000,
+        defendantCash: 1000,
+      });
 
       const defense = 'a'.repeat(50); // Very weak defense
 
@@ -156,18 +148,10 @@ describe('lawsuitService.calculateVerdict', () => {
     });
 
     it('should return WON with maximum claim ratio and moderate defense', async () => {
-      const plaintiffCompany = createMockCompany('plaintiff-1', 50000);
-      const defendantCompany = createMockCompany('defendant-1', 5000);
-      const lawsuit = {
-        id: 'lawsuit-1',
-        plaintiffId: 'plaintiff-1',
-        defendantId: 'defendant-1',
-        claimAmount: 500000,
-        grounds: 'Some grounds',
-        resolved: false,
-        plaintiff: { company: plaintiffCompany },
-        defendant: { company: defendantCompany },
-      } as any;
+      const lawsuit = createMockLawsuit('plaintiff-1', 'defendant-1', 500000, {
+        plaintiffCash: 50000,
+        defendantCash: 5000,
+      });
 
       const defense = 'a'.repeat(200); // Weak defense
 
@@ -179,18 +163,10 @@ describe('lawsuitService.calculateVerdict', () => {
 
   describe('Claim ratio effects', () => {
     it('should cap claim ratio at 2x defendant cash', async () => {
-      const plaintiffCompany = createMockCompany('plaintiff-1', 50000);
-      const defendantCompany = createMockCompany('defendant-1', 1000);
-      const lawsuit = {
-        id: 'lawsuit-1',
-        plaintiffId: 'plaintiff-1',
-        defendantId: 'defendant-1',
-        claimAmount: 1000000, // 1000x defendant cash, but capped at 2
-        grounds: 'Some grounds',
-        resolved: false,
-        plaintiff: { company: plaintiffCompany },
-        defendant: { company: defendantCompany },
-      } as any;
+      const lawsuit = createMockLawsuit('plaintiff-1', 'defendant-1', 1000000, {
+        plaintiffCash: 50000,
+        defendantCash: 1000,
+      });
 
       const defense = 'a'.repeat(100);
 
@@ -201,18 +177,10 @@ describe('lawsuitService.calculateVerdict', () => {
     });
 
     it('should handle zero defendant cash in ratio calculation', async () => {
-      const plaintiffCompany = createMockCompany('plaintiff-1', 50000);
-      const defendantCompany = createMockCompany('defendant-1', 0);
-      const lawsuit = {
-        id: 'lawsuit-1',
-        plaintiffId: 'plaintiff-1',
-        defendantId: 'defendant-1',
-        claimAmount: 50000,
-        grounds: 'Some grounds',
-        resolved: false,
-        plaintiff: { company: plaintiffCompany },
-        defendant: { company: defendantCompany },
-      } as any;
+      const lawsuit = createMockLawsuit('plaintiff-1', 'defendant-1', 50000, {
+        plaintiffCash: 50000,
+        defendantCash: 0,
+      });
 
       const defense = 'a'.repeat(100);
 
@@ -225,64 +193,30 @@ describe('lawsuitService.calculateVerdict', () => {
 
   describe('Defense strength effects', () => {
     it('should increase defendant score with longer defense', async () => {
-      const lawsuit = {
-        id: 'lawsuit-1',
-        plaintiffId: 'plaintiff-1',
-        defendantId: 'defendant-1',
-        claimAmount: 50000,
-        grounds: 'Some grounds',
-        resolved: false,
-      } as any;
+      const lawsuit = createMockLawsuit('plaintiff-1', 'defendant-1', 50000);
 
       const strongDefense = 'a'.repeat(1000); // Maximum defense strength
-      mockPrisma = createMockPrisma(
-        createMockCompany('plaintiff-1', 50000),
-        createMockCompany('defendant-1', 50000),
-      );
 
-      const result = await lawsuitService.calculateVerdict(lawsuit, strongDefense, mockPrisma);
+      const result = await lawsuitService.calculateVerdict(lawsuit, strongDefense);
 
       // With max defense strength, defendant should have advantage
       expect([Verdict.WON, Verdict.LOST]).toContain(result);
     });
 
     it('should cap defense strength at 1.0', async () => {
-      const lawsuit = {
-        id: 'lawsuit-1',
-        plaintiffId: 'plaintiff-1',
-        defendantId: 'defendant-1',
-        claimAmount: 50000,
-        grounds: 'Some grounds',
-        resolved: false,
-      } as any;
+      const lawsuit = createMockLawsuit('plaintiff-1', 'defendant-1', 50000);
 
       const veryLongDefense = 'a'.repeat(5000); // Well above the 500 char cap
-      mockPrisma = createMockPrisma(
-        createMockCompany('plaintiff-1', 50000),
-        createMockCompany('defendant-1', 50000),
-      );
 
-      const result = await lawsuitService.calculateVerdict(lawsuit, veryLongDefense, mockPrisma);
+      const result = await lawsuitService.calculateVerdict(lawsuit, veryLongDefense);
 
       expect([Verdict.WON, Verdict.LOST]).toContain(result);
     });
 
     it('should handle empty defense string', async () => {
-      const lawsuit = {
-        id: 'lawsuit-1',
-        plaintiffId: 'plaintiff-1',
-        defendantId: 'defendant-1',
-        claimAmount: 50000,
-        grounds: 'Some grounds',
-        resolved: false,
-      } as any;
+      const lawsuit = createMockLawsuit('plaintiff-1', 'defendant-1', 50000);
 
-      mockPrisma = createMockPrisma(
-        createMockCompany('plaintiff-1', 50000),
-        createMockCompany('defendant-1', 50000),
-      );
-
-      const result = await lawsuitService.calculateVerdict(lawsuit, '', mockPrisma);
+      const result = await lawsuitService.calculateVerdict(lawsuit, '');
 
       expect([Verdict.WON, Verdict.LOST]).toContain(result);
     });
@@ -290,24 +224,13 @@ describe('lawsuitService.calculateVerdict', () => {
 
   describe('Random factor', () => {
     it('should produce different results across multiple calls with same inputs', async () => {
-      const lawsuit = {
-        id: 'lawsuit-1',
-        plaintiffId: 'plaintiff-1',
-        defendantId: 'defendant-1',
-        claimAmount: 50000,
-        grounds: 'Some grounds',
-        resolved: false,
-      } as any;
+      const lawsuit = createMockLawsuit('plaintiff-1', 'defendant-1', 50000);
 
       const defense = 'a'.repeat(500);
-      mockPrisma = createMockPrisma(
-        createMockCompany('plaintiff-1', 50000),
-        createMockCompany('defendant-1', 50000),
-      );
 
       const results = await Promise.all(
         Array(10).fill(null).map(() =>
-          lawsuitService.calculateVerdict(lawsuit, defense, mockPrisma),
+          lawsuitService.calculateVerdict(lawsuit, defense),
         ),
       );
 
@@ -317,24 +240,13 @@ describe('lawsuitService.calculateVerdict', () => {
     });
 
     it('should keep random factor within bounds (-0.1 to 0.1)', async () => {
-      const lawsuit = {
-        id: 'lawsuit-1',
-        plaintiffId: 'plaintiff-1',
-        defendantId: 'defendant-1',
-        claimAmount: 50000,
-        grounds: 'Some grounds',
-        resolved: false,
-      } as any;
+      const lawsuit = createMockLawsuit('plaintiff-1', 'defendant-1', 50000);
 
       const defense = 'a'.repeat(500);
-      mockPrisma = createMockPrisma(
-        createMockCompany('plaintiff-1', 50000),
-        createMockCompany('defendant-1', 50000),
-      );
 
       // Run many times to ensure randomness stays bounded
       for (let i = 0; i < 50; i++) {
-        const result = await lawsuitService.calculateVerdict(lawsuit, defense, mockPrisma);
+        const result = await lawsuitService.calculateVerdict(lawsuit, defense);
         expect([Verdict.WON, Verdict.LOST]).toContain(result);
       }
     });
@@ -342,63 +254,29 @@ describe('lawsuitService.calculateVerdict', () => {
 
   describe('Edge cases', () => {
     it('should handle very small claim amount', async () => {
-      const lawsuit = {
-        id: 'lawsuit-1',
-        plaintiffId: 'plaintiff-1',
-        defendantId: 'defendant-1',
-        claimAmount: 1,
-        grounds: 'Some grounds',
-        resolved: false,
-      } as any;
+      const lawsuit = createMockLawsuit('plaintiff-1', 'defendant-1', 1);
 
       const defense = 'a'.repeat(100);
-      mockPrisma = createMockPrisma(
-        createMockCompany('plaintiff-1', 50000),
-        createMockCompany('defendant-1', 50000),
-      );
 
-      const result = await lawsuitService.calculateVerdict(lawsuit, defense, mockPrisma);
+      const result = await lawsuitService.calculateVerdict(lawsuit, defense);
 
       expect([Verdict.WON, Verdict.LOST]).toContain(result);
     });
 
     it('should handle equal cash companies with equal defense', async () => {
-      const lawsuit = {
-        id: 'lawsuit-1',
-        plaintiffId: 'plaintiff-1',
-        defendantId: 'defendant-1',
-        claimAmount: 50000,
-        grounds: 'Some grounds',
-        resolved: false,
-      } as any;
+      const lawsuit = createMockLawsuit('plaintiff-1', 'defendant-1', 50000);
 
       const defense = 'a'.repeat(500);
-      mockPrisma = createMockPrisma(
-        createMockCompany('plaintiff-1', 50000),
-        createMockCompany('defendant-1', 50000),
-      );
 
-      const result = await lawsuitService.calculateVerdict(lawsuit, defense, mockPrisma);
+      const result = await lawsuitService.calculateVerdict(lawsuit, defense);
 
       expect([Verdict.WON, Verdict.LOST]).toContain(result);
     });
 
     it('should return only Verdict enum values', async () => {
-      const lawsuit = {
-        id: 'lawsuit-1',
-        plaintiffId: 'plaintiff-1',
-        defendantId: 'defendant-1',
-        claimAmount: 50000,
-        grounds: 'Some grounds',
-        resolved: false,
-      } as any;
+      const lawsuit = createMockLawsuit('plaintiff-1', 'defendant-1', 50000);
 
-      mockPrisma = createMockPrisma(
-        createMockCompany('plaintiff-1', 50000),
-        createMockCompany('defendant-1', 50000),
-      );
-
-      const result = await lawsuitService.calculateVerdict(lawsuit, 'a'.repeat(500), mockPrisma);
+      const result = await lawsuitService.calculateVerdict(lawsuit, 'a'.repeat(500));
 
       expect(result).toBeOneOf([Verdict.WON, Verdict.LOST]);
     });
