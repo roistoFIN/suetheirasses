@@ -34,13 +34,28 @@ The game progresses through 5 phases in a continuous loop until only one player 
 
 | Phase | Name | Description | Timer |
 |-------|------|-------------|-------|
-| 1 | **Matchmaking** | Players join/create rooms, ready up | No timer |
+| 1 | **Matchmaking** | Players join/create rooms, ready up, or use Quick Play | No timer |
 | 2 | **Strategic Choices** | Players submit business decisions (invest, expand, layoff, etc.) | 120s |
 | 3 | **Results** | Server resolves outcomes, applies financial changes | 15s |
 | 4 | **Legal Suits** | Players file lawsuits against opponents | 90s |
 | 5 | **Resolution** | Defendants respond to lawsuits, verdicts are determined | 90s |
 
 After Phase 5, bankrupt players (cash ≤ $0 or debt > $10,000) are eliminated. If only one player remains, the game ends. Otherwise, the loop returns to Phase 2.
+
+### Quick Play Feature
+
+Players can join existing rooms without knowing the room ID through the Quick Play system:
+
+1. **Search**: Player clicks "Search for Available Room" → sends `room:list` event
+2. **Room Discovery**: Server merges in-memory active rooms with database rooms for consistency
+3. **Auto-Join**: Server finds the room with the fewest players (< 4) and joins the player
+4. **Fallback**: If no rooms available, a new room is created automatically
+5. **Live Updates**: Other players receive `room:playerJoined` events when someone joins
+
+The room list is dynamically updated via the `rooms:list` server event, showing:
+- Room ID (truncated)
+- Current player count (e.g., 2/4)
+- Room status and phase round
 
 ---
 
@@ -85,6 +100,8 @@ After Phase 5, bankrupt players (cash ≤ $0 or debt > $10,000) are eliminated. 
 2. **Phase-Based State Machine**: Each game phase is an isolated handler, making the system testable and extensible.
 3. **Action Logging**: Every action is persisted, enabling replay, debugging, and dispute resolution.
 4. **Optimistic UI**: Clients show immediate feedback; the server reconciles authoritative state.
+5. **Room Garbage Collection**: Empty rooms are automatically cleaned up from both in-memory state and the database to prevent ghost rooms from appearing in Quick Play queries.
+6. **Dual-Source Room Consistency**: Room listings merge in-memory active rooms with database records to ensure accuracy across server restarts and Quick Play scenarios.
 
 ---
 
@@ -252,7 +269,7 @@ suetheirasses/
 model Room {
   id                String       @id @default(cuid())
   status            RoomStatus   @default(WAITING)
-  maxPlayers        Int          @default(6)
+  maxPlayers        Int          @default(4)
   currentPhaseRound Int          @default(1)
   createdAt         DateTime     @default(now())
   players           Player[]
@@ -329,8 +346,8 @@ model Lawsuit {
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `room:join` | `{ playerName, roomName? }` | Join or create a room |
-| `room:ready` | — | Toggle ready state |
+| `room:join` | `{ playerName, roomName?, searchForRoom? }` | Join a specific room, create one, or search for an available room |
+| `room:list` | — | Request list of available rooms |
 | `strategy:submit` | `{ actions: GameAction[] }` | Submit strategic choices |
 | `lawsuit:file` | `{ defendantId, claimAmount, grounds }` | File a lawsuit |
 | `lawsuit:respond` | `{ lawsuitId, defense, settlementOffer? }` | Respond to a lawsuit |
@@ -340,7 +357,9 @@ model Lawsuit {
 | Event | Payload | Description |
 |-------|---------|-------------|
 | `room:joined` | `{ room, player, companies }` | Successfully joined a room |
+| `room:playerJoined` | `{ playerId, playerName, isReady, roomId }` | New player joined the room |
 | `room:playerReady` | `{ playerId, isReady }` | Player toggled ready |
+| `rooms:list` | `{ rooms: RoomInfo[] }` | List of available rooms (Quick Play) |
 | `phase:changed` | `{ phase, round, timeLimit }` | Game advanced to new phase |
 | `timer:update` | `{ timeLeft }` | Countdown tick |
 | `results:reveal` | `{ outcomes }` | Phase 3 outcomes |
@@ -349,6 +368,63 @@ model Lawsuit {
 | `player:bankrupt` | `{ playerId, playerName }` | Player eliminated |
 | `game:over` | `{ winner, standings }` | Game ended |
 | `error` | `{ code, message }` | Error occurred |
+
+### API Type Definitions
+
+```typescript
+export interface RoomInfo {
+  id: string;
+  status: RoomStatus;
+  maxPlayers: number;
+  currentPhaseRound: number;
+  playerCount: number;
+}
+
+export interface RoomsListedResponse {
+  rooms: RoomInfo[];
+}
+
+export interface RoomJoinPayload {
+  playerName: string;
+  roomName?: string;
+  searchForRoom?: boolean;
+}
+```
+
+### Zustand State Stores
+
+The client uses Zustand for lightweight, TypeScript-safe state management:
+
+#### `gameStore.ts`
+
+Manages all game-related state including room state, player data, phase tracking, and timer.
+
+| Method | Description |
+|--------|-------------|
+| `updatePlayer(player)` | Replace the current player object with updated DB-generated ID |
+| `updatePlayerReady(data)` | Update a player's ready state from server event |
+| `addPlayer(player)` | Add a new player to the room when they join dynamically |
+| `markPlayerBankrupt(playerId)` | Mark a player as bankrupt and remove them from active play |
+| `updatePhase(data)` | Update the current game phase, round, and timer |
+| `updateBoard(data)` | Apply full board state update from server |
+| `submitStrategy(actions)` | Store submitted strategy actions locally |
+| `clearGame()` | Reset all game state (used on disconnect/reconnect) |
+
+#### `socketStore.ts`
+
+Manages the Socket.IO connection and event routing:
+
+| Method | Description |
+|--------|-------------|
+| `send(event, payload)` | Emit a socket event to the server |
+| `on(event, handler)` | Subscribe to a server event, returns unsubscribe function |
+| `disconnect()` | Close the socket connection |
+
+**Key event handlers:**
+- `room:playerJoined` → Calls `gameStore.addPlayer()` with deduplication guard
+- `room:playerReady` → Calls `gameStore.updatePlayerReady()`
+- `phase:changed` → Calls `gameStore.updatePhase()`
+- `board:update` → Calls `gameStore.updateBoard()`
 
 ---
 
@@ -513,6 +589,50 @@ A player is declared bankrupt when:
 - Debt exceeds $10,000
 
 Bankrupt players are eliminated immediately. The game continues until only one player remains.
+
+---
+
+## 🔍 Validation & Game Engine
+
+### Input Validation (Zod Schemas)
+
+All client inputs are validated server-side using Zod schemas before processing:
+
+| Schema | Field | Constraints |
+|--------|-------|-------------|
+| `roomJoinSchema` | `playerName` | Required, 1-30 characters |
+| | `roomName` | Optional, max 30 characters |
+| | `searchForRoom` | Optional boolean — triggers Quick Play search |
+| `strategySubmitSchema` | `actions` | Array of 1-5 `GameAction` objects |
+| `gameActionSchema` | `type` | Must be a valid `StrategyActionType` enum |
+| | `amount` | Optional, must be ≥ 0 |
+| `lawsuitFileSchema` | `defendantId` | Required, non-empty string |
+| | `claimAmount` | $1,000 - $1,000,000 |
+| | `grounds` | 10-500 characters |
+| `lawsuitRespondSchema` | `lawsuitId` | Required, non-empty string |
+
+### Game Engine Architecture
+
+The `GameEngine` class (`server/src/socket/gameEngine.ts`) manages all room and phase logic:
+
+| Method | Description |
+|--------|-------------|
+| `createRoom(player)` | Creates a new room with the player as founder (max 4 players) |
+| `joinRoom(roomId, player)` | Joins an existing room; throws if full |
+| `leaveRoom(socketId)` | Removes player from room; cleans up DB if room becomes empty |
+| `advancePhase(roomId)` | Advances to next phase with race condition guard |
+| `broadcastRoomState(roomId, event, data)` | Broadcasts state to all players in a room |
+
+**Room Lifecycle:**
+1. Room created in database with `WAITING` status
+2. Players join via socket; room loaded into in-memory `Map`
+3. When all players ready, phase advances to `STRATEGY`
+4. After Phase 5, bankruptcy check runs; eliminated players removed
+5. If room empties, both in-memory state and database record are cleaned up
+
+**Concurrency Safety:**
+- Phase advancement uses a `Set<string>` lock (`advancingRooms`) to prevent race conditions
+- Room joins handle the "TOCTOU" (time-of-check-time-of-use) gap by catching `Room is full` errors and falling back to room creation
 
 ---
 

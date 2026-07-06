@@ -24,7 +24,7 @@ enum Verdict {
 model Room {
   id                String       @id @default(cuid())
   status            RoomStatus   @default(WAITING)
-  maxPlayers        Int          @default(6)
+  maxPlayers        Int          @default(4) // See shared/src/index.ts MAX_PLAYERS
   currentPhaseRound Int          @default(1)
   createdAt         DateTime     @default(now())
 
@@ -32,6 +32,7 @@ model Room {
 
   @@index([status])
   @@index([createdAt])
+  @@index([id, currentPhaseRound])
 }
 
 model Player {
@@ -50,6 +51,7 @@ model Player {
 
   @@index([roomId])
   @@index([roomId, bankrupt])
+  @@index([socketId])
 }
 
 model Company {

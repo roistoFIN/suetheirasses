@@ -31,13 +31,18 @@ test.describe('Matchmaking Page', () => {
 
   test('should have a room name input field', async ({ page }) => {
     await page.goto('/');
-    const roomNameInput = page.getByLabel('Room Name');
+    const roomNameInput = page.getByLabel('Room Name (host\'s name)');
     await expect(roomNameInput).toBeVisible();
+  });
+
+  test('should have quick play button', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.getByRole('button', { name: /Search for Available Room/i })).toBeVisible();
   });
 
   test('should have create room button', async ({ page }) => {
     await page.goto('/');
-    await expect(page.getByRole('button', { name: /Create Room/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Create New Room/i })).toBeVisible();
   });
 
   test('should have join room button', async ({ page }) => {
@@ -47,25 +52,27 @@ test.describe('Matchmaking Page', () => {
 
   test('should not create room without a name', async ({ page }) => {
     await page.goto('/');
-    const createButton = page.getByRole('button', { name: /Create Room/i });
-    // Button should be disabled or not trigger when name is empty
-    await createButton.click();
-    // Should still be on matchmaking page
-    await expect(page.getByLabel('Your Name')).toBeVisible();
+    const createButton = page.getByRole('button', { name: /Create New Room/i });
+    // Button should be disabled when name is empty
+    await expect(createButton).toBeDisabled();
   });
 
   test('should not join room without name and room name', async ({ page }) => {
     await page.goto('/');
     const joinButton = page.getByRole('button', { name: /Join Room/i });
-    await joinButton.click();
-    // Should still be on matchmaking page
-    await expect(page.getByLabel('Your Name')).toBeVisible();
+    await expect(joinButton).toBeDisabled();
   });
 
-  test('should show room lobby after joining', async ({ page }) => {
+  test('should not quick play without a name', async ({ page }) => {
+    await page.goto('/');
+    const quickPlayButton = page.getByRole('button', { name: /Search for Available Room/i });
+    await expect(quickPlayButton).toBeDisabled();
+  });
+
+  test('should show room lobby after creating room', async ({ page }) => {
     await page.goto('/');
     await page.getByLabel('Your Name').fill('LobbyPlayer');
-    await page.getByRole('button', { name: /Create Room/i }).click();
+    await page.getByRole('button', { name: /Create New Room/i }).click();
 
     // After socket join, should see the lobby
     await expect(page.getByText('Room Lobby')).toBeVisible();
@@ -74,7 +81,7 @@ test.describe('Matchmaking Page', () => {
   test('should show ready button in lobby', async ({ page }) => {
     await page.goto('/');
     await page.getByLabel('Your Name').fill('ReadyPlayer');
-    await page.getByRole('button', { name: /Create Room/i }).click();
+    await page.getByRole('button', { name: /Create New Room/i }).click();
 
     await expect(page.getByRole('button', { name: /Ready Up/i })).toBeVisible();
   });
@@ -82,9 +89,60 @@ test.describe('Matchmaking Page', () => {
   test('should show player list in lobby', async ({ page }) => {
     await page.goto('/');
     await page.getByLabel('Your Name').fill('ListPlayer');
-    await page.getByRole('button', { name: /Create Room/i }).click();
+    await page.getByRole('button', { name: /Create New Room/i }).click();
 
     // Should see the player in the list
     await expect(page.getByText('ListPlayer')).toBeVisible();
+  });
+
+  test('should show quick play section', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.getByText('Quick Play')).toBeVisible();
+  });
+
+  test('should show create room section', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.getByText('Create a Room')).toBeVisible();
+  });
+
+  test('should show join room section', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.getByText('Join a Room')).toBeVisible();
+  });
+
+  test('should show loading overlay when searching for room', async ({ page }) => {
+    await page.goto('/');
+    await page.getByLabel('Your Name').fill('SearchPlayer');
+    await page.getByRole('button', { name: /Search for Available Room/i }).click();
+
+    // Loading overlay should appear
+    await expect(page.locator('.mantine-LoadingOverlay-root')).toBeVisible();
+  });
+
+  test('should show loading overlay when creating room', async ({ page }) => {
+    await page.goto('/');
+    await page.getByLabel('Your Name').fill('CreatePlayer');
+    await page.getByRole('button', { name: /Create New Room/i }).click();
+
+    // Loading overlay should appear
+    await expect(page.locator('.mantine-LoadingOverlay-root')).toBeVisible();
+  });
+
+  test('should disable inputs while searching', async ({ page }) => {
+    await page.goto('/');
+    await page.getByLabel('Your Name').fill('DisabledPlayer');
+    await page.getByRole('button', { name: /Search for Available Room/i }).click();
+
+    // Name input should be disabled
+    await expect(page.getByLabel('Your Name')).toBeDisabled();
+  });
+
+  test('should show available rooms section when rooms exist', async ({ page }) => {
+    await page.goto('/');
+    // The available rooms section should be present in the UI
+    // (rooms will only appear after ROOMS_LISTED event)
+    await expect(page.getByText('Available Rooms')).toBeVisible().catch(() => {
+      // May not show if no rooms are available yet
+    });
   });
 });

@@ -4,21 +4,23 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 # Install dependencies first for better caching
+# Copy root package.json and package-lock.json
 COPY package.json package-lock.json* ./
-COPY client/package.json client/
-COPY shared/package.json shared/
 
-RUN npm ci
-
-# Copy source code
+# Copy all workspace package.json files into their directories
+# (this includes client/package.json and shared/package.json)
 COPY client/ ./client/
 COPY shared/ ./shared/
+
+# Run npm ci to install all dependencies for all workspaces
+RUN npm ci
 
 # Build shared first, then client
 WORKDIR /app/shared
 RUN npm run build
 
 WORKDIR /app/client
+RUN npm run build
 RUN npm run build
 
 # Production stage - serve with nginx
@@ -57,5 +59,3 @@ RUN chmod +x /docker-entrypoint.sh
 EXPOSE 80
 
 CMD ["/docker-entrypoint.sh"]
-
-CMD ["nginx", "-g", "daemon off;"]

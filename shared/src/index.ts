@@ -113,6 +113,7 @@ export enum ClientEvents {
   ROOM_JOIN = 'room:join',
   ROOM_LEAVE = 'room:leave',
   ROOM_READY = 'room:ready',
+  ROOM_LIST = 'room:list',
   STRATEGY_SUBMIT = 'strategy:submit',
   LAWSUIT_FILE = 'lawsuit:file',
   LAWSUIT_RESPOND = 'lawsuit:respond',
@@ -125,7 +126,9 @@ export enum ServerEvents {
   ROOM_JOINED = 'room:joined',
   ROOM_LEFT = 'room:left',
   ROOM_PLAYER_READY = 'room:playerReady',
+  ROOM_PLAYER_JOINED = 'room:playerJoined',
   ROOM_PLAYER_LEFT = 'room:playerLeft',
+  ROOMS_LISTED = 'rooms:list',
   PHASE_CHANGED = 'phase:changed',
   TIMER_UPDATE = 'timer:update',
   BOARD_UPDATE = 'board:update',
@@ -198,6 +201,18 @@ export interface PhaseChangedResponse {
   timeLimit: number;
 }
 
+export interface RoomInfo {
+  id: string;
+  status: RoomStatus;
+  maxPlayers: number;
+  currentPhaseRound: number;
+  playerCount: number;
+}
+
+export interface RoomsListedResponse {
+  rooms: RoomInfo[];
+}
+
 export interface ResultsRevealResponse {
   outcomes: PhaseOutcome[];
 }
@@ -235,6 +250,13 @@ export interface ErrorResponse {
   message: string;
   details?: unknown;
 }
+
+// ============================================================
+// Constants
+// ============================================================
+
+/** Maximum number of players per room. This is the single source of truth — both the Prisma schema default and game engine logic reference this value. */
+export const MAX_PLAYERS = 4;
 
 // ============================================================
 // Utility Types

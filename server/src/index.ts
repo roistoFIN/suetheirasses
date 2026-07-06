@@ -65,11 +65,12 @@ app.get('/api/room/:roomId', async (req, res) => {
 });
 
 // Socket.IO setup
-setupSocketHandlers(io, prisma);
+const engine = setupSocketHandlers(io, prisma);
 
 // Graceful shutdown
 process.on('SIGINT', async () => {
   console.log('Shutting down...');
+  engine.stop();
   await prisma.$disconnect();
   httpServer.close(() => {
     console.log('Server closed');

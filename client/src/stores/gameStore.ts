@@ -19,6 +19,7 @@ interface GameState {
   player: Player | null;
   updatePlayer: (player: Player) => void;
   updatePlayerReady: (data: { playerId: string; isReady: boolean }) => void;
+  addPlayer: (player: Player) => void;
   markPlayerBankrupt: (playerId: string) => void;
 
   // Phase state
@@ -65,6 +66,15 @@ export const useGameStore = create<GameState>((set) => ({
             players: state.room.players.map((p) =>
               p.id === data.playerId ? { ...p, isReady: data.isReady } : p,
             ),
+          }
+        : null,
+    })),
+  addPlayer: (player) =>
+    set((state) => ({
+      room: state.room
+        ? {
+            ...state.room,
+            players: [...state.room.players, player],
           }
         : null,
     })),

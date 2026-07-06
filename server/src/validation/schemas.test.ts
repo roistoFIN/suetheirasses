@@ -63,6 +63,39 @@ describe('Validation Schemas', () => {
     it('should reject non-string playerName', () => {
       expect(() => validateRoomJoin({ playerName: 123 as any })).toThrow();
     });
+
+    it('should validate with searchForRoom set to true', () => {
+      const data = { playerName: 'TestPlayer', searchForRoom: true };
+      const result = validateRoomJoin(data);
+      expect(result.playerName).toBe('TestPlayer');
+      expect(result.searchForRoom).toBe(true);
+    });
+
+    it('should validate with searchForRoom set to false', () => {
+      const data = { playerName: 'TestPlayer', searchForRoom: false };
+      const result = validateRoomJoin(data);
+      expect(result.searchForRoom).toBe(false);
+    });
+
+    it('should accept searchForRoom with roomName (roomName takes precedence)', () => {
+      const data = { playerName: 'TestPlayer', roomName: 'room123', searchForRoom: true };
+      const result = validateRoomJoin(data);
+      expect(result.playerName).toBe('TestPlayer');
+      expect(result.roomName).toBe('room123');
+      expect(result.searchForRoom).toBe(true);
+    });
+
+    it('should accept searchForRoom with playerName only', () => {
+      const data = { playerName: 'TestPlayer', searchForRoom: true };
+      const result = validateRoomJoin(data);
+      expect(result.playerName).toBe('TestPlayer');
+      expect(result.roomName).toBeUndefined();
+      expect(result.searchForRoom).toBe(true);
+    });
+
+    it('should reject searchForRoom with non-boolean value', () => {
+      expect(() => validateRoomJoin({ playerName: 'TestPlayer', searchForRoom: 'true' as any })).toThrow();
+    });
   });
 
   describe('strategySubmitSchema', () => {

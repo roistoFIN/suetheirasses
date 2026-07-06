@@ -11,6 +11,7 @@ describe('Socket.IO Integration', () => {
   let httpServer: ReturnType<typeof createServer>;
   let port: number;
   let client: SocketClient;
+  let connectedSocket: any = null;
 
   beforeAll(async () => {
     const ctx = await setupTestDatabase();
@@ -24,9 +25,10 @@ describe('Socket.IO Integration', () => {
 
     // Mock socket handlers for testing
     io.on('connection', (socket) => {
+      connectedSocket = socket;
       socket.on(ClientEvents.ROOM_JOIN, (data: any) => {
         socket.emit(ServerEvents.ROOM_JOINED, {
-          room: { id: 'test-room', status: RoomStatus.WAITING, maxPlayers: 6, currentPhaseRound: 1, players: [] },
+          room: { id: 'test-room', status: RoomStatus.WAITING, maxPlayers: 4, currentPhaseRound: 1, players: [] },
           player: { id: socket.id, name: data.playerName, roomId: 'test-room', isReady: false, bankrupt: false },
           companies: [],
         });
@@ -34,6 +36,15 @@ describe('Socket.IO Integration', () => {
 
       socket.on(ClientEvents.ROOM_READY, () => {
         socket.emit(ServerEvents.ROOM_PLAYER_READY, { socketId: socket.id });
+      });
+
+      socket.on(ClientEvents.ROOM_LIST, () => {
+        socket.emit(ServerEvents.ROOMS_LISTED, {
+          rooms: [
+            { id: 'room-1', status: RoomStatus.WAITING, maxPlayers: 4, currentPhaseRound: 1, playerCount: 1 },
+            { id: 'room-2', status: RoomStatus.WAITING, maxPlayers: 4, currentPhaseRound: 2, playerCount: 2 },
+          ],
+        });
       });
 
       socket.on(ClientEvents.STRATEGY_SUBMIT, (data: any) => {
@@ -53,16 +64,19 @@ describe('Socket.IO Integration', () => {
       });
     });
 
-    // Connect client
-    client = ioClient(`http://localhost:${port}`, {
-      transports: ['websocket'],
+    // Connect client and wait for it to be ready
+    await new Promise<void>((resolve) => {
+      client = ioClient(`http://localhost:${port}`, {
+        transports: ['websocket'],
+      });
+      client.on('connect', resolve);
     });
   });
 
   afterAll(async () => {
-    client.disconnect();
-    io.close();
-    await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+    client?.disconnect();
+    io?.close();
+    await new Promise<void>((resolve) => httpServer?.close(() => resolve()));
     await teardownTestDatabase();
   });
 
@@ -143,5 +157,65 @@ describe('Socket.IO Integration', () => {
 
     c1.disconnect();
     c2.disconnect();
+  });
+
+  it('should receive rooms:list event when requesting room list', async () => {
+    const listed = new Promise<any>((resolve) => {
+      client.once(ServerEvents.ROOMS_LISTED, resolve);
+    });
+
+    client.emit(ClientEvents.ROOM_LIST);
+    const data = await listed;
+
+    expect(data.rooms).toBeDefined();
+    expect(data.rooms.length).toBe(2);
+    expect(data.rooms[0].id).toBe('room-1');
+    expect(data.rooms[0].maxPlayers).toBe(4);
+    expect(data.rooms[0].playerCount).toBe(1);
+  });
+
+  it('should receive room:playerJoined event when another player joins', async () => {
+    const joined = new Promise<any>((resolve) => {
+      client.once(ServerEvents.ROOM_PLAYER_JOINED, resolve);
+    });
+
+    // Simulate server broadcasting a player join to the client socket
+    // Use io.to() with the client's socket ID to send the event
+    io.to(client.id).emit(ServerEvents.ROOM_PLAYER_JOINED, {
+      playerId: 'player-2',
+      playerName: 'NewPlayer',
+      isReady: false,
+      roomId: 'test-room',
+    });
+
+    const data = await joined;
+
+    expect(data.playerId).toBe('player-2');
+    expect(data.playerName).toBe('NewPlayer');
+    expect(data.isReady).toBe(false);
+    expect(data.roomId).toBe('test-room');
+  });
+
+  it('should validate room:join with searchForRoom flag', async () => {
+    const joined = new Promise<any>((resolve) => {
+      client.once(ServerEvents.ROOM_JOINED, resolve);
+    });
+
+    client.emit(ClientEvents.ROOM_JOIN, { playerName: 'QuickPlay', searchForRoom: true });
+    const data = await joined;
+
+    expect(data.room.id).toBe('test-room');
+    expect(data.player.name).toBe('QuickPlay');
+  });
+
+  it('should have maxPlayers of 4 in room state', async () => {
+    const joined = new Promise<any>((resolve) => {
+      client.once(ServerEvents.ROOM_JOINED, resolve);
+    });
+
+    client.emit(ClientEvents.ROOM_JOIN, { playerName: 'MaxPlayersTest' });
+    const data = await joined;
+
+    expect(data.room.maxPlayers).toBe(4);
   });
 });

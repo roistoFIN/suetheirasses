@@ -15,6 +15,7 @@
     "build": "npm run build --workspaces --if-present",
     "build:client": "npm run build --workspace=client",
     "build:server": "npm run build --workspace=server",
+    "preview:client": "npm run preview --workspace=client",
     "lint": "npm run lint --workspaces --if-present",
     "type-check": "npm run type-check --workspaces --if-present",
     "db:generate": "npm run db:generate --workspace=server",

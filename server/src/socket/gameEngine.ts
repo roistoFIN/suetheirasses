@@ -6,10 +6,13 @@ import {
   ServerEvents,
   PHASE_TIMERS,
   PHASE_ORDER,
+  MAX_PLAYERS,
   type GameState,
   type Player,
   type Company,
+  type Room,
   type RoomState,
+  type RoomInfo,
 } from '@suetheirasses/shared';
 import { strategyPhase } from './phases/strategyPhase';
 import { lawsuitsPhase } from './phases/lawsuitsPhase';
@@ -31,10 +34,52 @@ export class GameEngine {
   private io: Server;
   // Lock to prevent concurrent phase advances (race condition guard)
   private advancingRooms: Set<string> = new Set();
+  // Heartbeat: track last activity per room to detect stale/disconnected rooms
+  private roomLastActivity: Map<string, number> = new Map();
+  private cleanupInterval: NodeJS.Timeout | null = null;
+  // How long (ms) before a room with no connected players is considered stale
+  private readonly STALE_ROOM_THRESHOLD = 60_000;
 
   constructor(io: Server, prisma: PrismaClient) {
     this.io = io;
     this.prisma = prisma;
+    this.startHeartbeatCleanup();
+  }
+
+  /** Periodically clean up rooms where all players have disconnected (crash recovery). */
+  private startHeartbeatCleanup(): void {
+    this.cleanupInterval = setInterval(() => {
+      const now = Date.now();
+      for (const [roomId, lastActivity] of this.roomLastActivity.entries()) {
+        if (now - lastActivity > this.STALE_ROOM_THRESHOLD) {
+          const roomState = this.rooms.get(roomId);
+          if (roomState && roomState.players.size === 0) {
+            console.log(`[Heartbeat] Cleaning up stale room ${roomId} (no players for ${this.STALE_ROOM_THRESHOLD}ms)`);
+            this.rooms.delete(roomId);
+            this.roomLastActivity.delete(roomId);
+            // Also clean up from DB to prevent ghost rooms
+            this.prisma.room.delete({ where: { id: roomId } }).catch((err) => {
+              if ((err as any).code !== 'P2025') {
+                console.error(`[Heartbeat] Failed to delete stale room ${roomId} from DB:`, err.message);
+              }
+            });
+          }
+        }
+      }
+    }, 10_000); // Check every 10 seconds
+  }
+
+  /** Update the last activity timestamp for a room. */
+  private touchRoomActivity(roomId: string): void {
+    this.roomLastActivity.set(roomId, Date.now());
+  }
+
+  /** Stop the heartbeat cleanup interval. */
+  stop(): void {
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
   }
 
   getRoom(roomId: string): RoomState | undefined {
@@ -54,7 +99,7 @@ export class GameEngine {
         data: {
           id: roomId,
           status: RoomStatus.WAITING,
-          maxPlayers: 6,
+          maxPlayers: MAX_PLAYERS,
           players: {
             create: {
               name: player.name,
@@ -95,6 +140,7 @@ export class GameEngine {
 
     this.rooms.set(room.id, roomState);
     this.playerToRoom.set(player.socketId!, room.id);
+    this.touchRoomActivity(room.id);
 
     return roomState;
   }
@@ -145,6 +191,7 @@ export class GameEngine {
 
     roomState.players.set(dbPlayer.id, syncedPlayer);
     this.playerToRoom.set(player.socketId!, roomId);
+    this.touchRoomActivity(roomId);
 
     return roomState;
   }
@@ -200,8 +247,20 @@ export class GameEngine {
 
     this.playerToRoom.delete(socketId);
 
+    // Update activity timestamp after player removal
+    this.touchRoomActivity(roomId);
+
     if (roomState.players.size === 0) {
       this.rooms.delete(roomId);
+      // Also clean up the room from the database to prevent ghost rooms
+      // from appearing in quick join queries
+      try {
+        await this.prisma.room.delete({
+          where: { id: roomId },
+        });
+      } catch (error) {
+        console.error(`Failed to clean up room ${roomId} from DB:`, error);
+      }
     }
   }
 
@@ -322,7 +381,7 @@ export class GameEngine {
   }
 }
 
-export function setupSocketHandlers(io: Server, prisma: PrismaClient): void {
+export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngine {
   const engine = new GameEngine(io, prisma);
 
   io.on('connection', (socket: Socket) => {
@@ -341,9 +400,45 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): void {
           socketId: socket.id,
         };
 
-        let roomState: RoomState;
+        let roomState: RoomState | undefined;
 
-        if (validated.roomName) {
+        if (validated.searchForRoom) {
+          // Search for an available room with less than MAX_PLAYERS
+          const availableRooms = await prisma.room.findMany({
+            where: {
+              status: RoomStatus.WAITING,
+            },
+            orderBy: {
+              players: { _count: 'asc' },
+            },
+            select: {
+              id: true,
+              _count: {
+                select: { players: true },
+              },
+            },
+          });
+
+          for (const room of availableRooms) {
+            if (room._count.players < MAX_PLAYERS && engine.rooms.has(room.id)) {
+              try {
+                roomState = await engine.joinRoom(room.id, player);
+                break;
+              } catch (joinError: any) {
+                // Room filled up between the DB query and joinRoom — fall through to create a new room
+                if (joinError.message === 'Room is full') {
+                  continue;
+                }
+                throw joinError;
+              }
+            }
+          }
+
+          if (!roomState) {
+            // No room found or all rooms filled up, create a new one
+            roomState = await engine.createRoom(player);
+          }
+        } else if (validated.roomName) {
           // Join existing room by ID
           const room = await prisma.room.findFirst({
             where: {
@@ -367,28 +462,67 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): void {
           roomState = await engine.createRoom(player);
         }
 
-        // Get the actual player from the room state (now has DB-generated ID)
-        const actualPlayer = Array.from(roomState.players.values())[0] as Player;
+        if (!roomState) {
+          socket.emit(ServerEvents.ERROR, {
+            code: 'JOIN_FAILED',
+            message: 'Failed to join or create a room',
+          });
+          return;
+        }
+
+        // Find the joining player by socketId (not just the first player in the map)
+        const joiningPlayer = Array.from(roomState.players.values()).find(
+          (p: Player) => p.socketId === socket.id,
+        ) as Player | undefined;
+
+        if (!joiningPlayer) {
+          socket.emit(ServerEvents.ERROR, {
+            code: 'JOIN_FAILED',
+            message: 'Failed to locate player in room state',
+          });
+          return;
+        }
+
+        // Build the full room state with all players from the in-memory map
+        const allPlayers: Player[] = Array.from(roomState.players.values()).map((p: Player) => ({
+          id: p.id,
+          name: p.name,
+          roomId: p.roomId,
+          isReady: p.isReady,
+          bankrupt: p.bankrupt,
+          companyId: p.companyId ?? undefined,
+          socketId: p.socketId ?? undefined,
+        }));
+
+        const fullRoom: Room = {
+          id: roomState.room.id,
+          status: roomState.room.status,
+          maxPlayers: roomState.room.maxPlayers,
+          currentPhaseRound: roomState.room.currentPhaseRound,
+          players: allPlayers,
+          createdAt: roomState.room.createdAt,
+        };
 
         // Send room state to the joining player
         socket.emit(ServerEvents.ROOM_JOINED, {
-          room: roomState.room,
+          room: fullRoom,
           player: {
-            id: actualPlayer.id,
-            name: actualPlayer.name,
-            isReady: actualPlayer.isReady,
-            bankrupt: actualPlayer.bankrupt,
-            roomId: roomState.room.id,
+            id: joiningPlayer.id,
+            name: joiningPlayer.name,
+            isReady: joiningPlayer.isReady,
+            bankrupt: joiningPlayer.bankrupt,
+            roomId: fullRoom.id,
           },
           companies: [],
         });
 
-        // Notify other players
-        engine.broadcastRoomState(
-          roomState.room.id,
-          ServerEvents.ROOM_PLAYER_READY,
-          { playerId: actualPlayer.id, playerName: actualPlayer.name, isReady: actualPlayer.isReady },
-        );
+        // Notify other players about the new player (exclude the joining player)
+        socket.broadcast.to(roomState.room.id).emit(ServerEvents.ROOM_PLAYER_JOINED, {
+          playerId: joiningPlayer.id,
+          playerName: joiningPlayer.name,
+          isReady: joiningPlayer.isReady,
+          roomId: fullRoom.id,
+        });
 
         // Join socket room
         socket.join(roomState.room.id);
@@ -399,6 +533,57 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): void {
           message: error.message || 'Failed to join room',
         });
       }
+    });
+
+    // List available rooms (merge in-memory active rooms with DB rooms for consistency)
+    socket.on(ClientEvents.ROOM_LIST, async () => {
+      const availableRooms: RoomInfo[] = [];
+
+      // Collect in-memory active rooms
+      for (const [roomId, roomState] of engine.rooms) {
+        if (roomState.room.status === RoomStatus.WAITING && roomState.players.size < roomState.room.maxPlayers) {
+          availableRooms.push({
+            id: roomState.room.id,
+            status: roomState.room.status,
+            maxPlayers: roomState.room.maxPlayers,
+            currentPhaseRound: roomState.room.currentPhaseRound,
+            playerCount: roomState.players.size,
+          });
+        }
+      }
+
+      // Also query DB to surface rooms that exist but haven't been loaded in-memory yet
+      // (e.g., after a server restart or if the room was created via quick-play)
+      const dbRooms = await prisma.room.findMany({
+        where: {
+          status: RoomStatus.WAITING,
+        },
+        include: {
+          _count: {
+            select: { players: true },
+          },
+        },
+      });
+
+      const inMemoryRoomIds = new Set(availableRooms.map((r) => r.id));
+
+      for (const dbRoom of dbRooms) {
+        // Skip rooms already in the in-memory list (they have accurate player counts)
+        if (inMemoryRoomIds.has(dbRoom.id)) continue;
+
+        // Only include rooms that are not full
+        if (dbRoom._count.players < dbRoom.maxPlayers) {
+          availableRooms.push({
+            id: dbRoom.id,
+            status: dbRoom.status as RoomStatus,
+            maxPlayers: dbRoom.maxPlayers,
+            currentPhaseRound: dbRoom.currentPhaseRound,
+            playerCount: dbRoom._count.players,
+          });
+        }
+      }
+
+      socket.emit(ServerEvents.ROOMS_LISTED, { rooms: availableRooms });
     });
 
     // Ready toggle
@@ -513,4 +698,6 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): void {
       await engine.removePlayer(socket.id);
     });
   });
+
+  return engine;
 }

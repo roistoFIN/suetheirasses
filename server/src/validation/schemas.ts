@@ -5,6 +5,7 @@ import { StrategyActionType } from '@suetheirasses/shared';
 export const roomJoinSchema = z.object({
   playerName: z.string().min(1).max(30),
   roomName: z.string().max(30).optional(),
+  searchForRoom: z.boolean().optional(),
 });
 
 export type RoomJoinPayload = z.infer<typeof roomJoinSchema>;

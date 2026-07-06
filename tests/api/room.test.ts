@@ -20,12 +20,14 @@ describe('Room REST API', () => {
       data: {
         id: roomId,
         status: RoomStatus.WAITING,
-        maxPlayers: 6,
+        maxPlayers: 4,
         players: {
           create: {
             id: playerId,
             name: 'TestPlayer',
             isReady: true,
+            companyId: `company-${playerId}`,
+            socketId: `socket-${playerId}`,
             company: {
               create: {
                 cash: 100000,
@@ -41,8 +43,11 @@ describe('Room REST API', () => {
 
     expect(room.id).toBe(roomId);
     expect(room.status).toBe(RoomStatus.WAITING);
+    expect(room.maxPlayers).toBe(4);
     expect(room.players.length).toBe(1);
     expect(room.players[0].name).toBe('TestPlayer');
+    expect(room.players[0].companyId).toBeDefined();
+    expect(room.players[0].socketId).toBeDefined();
     expect(Number(room.players[0].company?.cash)).toBe(100000);
 
     // Cleanup
@@ -59,12 +64,14 @@ describe('Room REST API', () => {
       data: {
         id: roomId,
         status: RoomStatus.WAITING,
-        maxPlayers: 6,
+        maxPlayers: 4,
         players: {
           create: {
             id: playerId,
             name: 'Finder',
             isReady: true,
+            companyId: `company-${playerId}`,
+            socketId: `socket-${playerId}`,
             company: { create: { cash: 100000 } },
           },
         },
@@ -105,12 +112,14 @@ describe('Room REST API', () => {
       data: {
         id: roomId,
         status: RoomStatus.WAITING,
-        maxPlayers: 6,
+        maxPlayers: 4,
         players: {
           create: {
             id: playerId,
             name: 'StatusTester',
             isReady: true,
+            companyId: `company-${playerId}`,
+            socketId: `socket-${playerId}`,
             company: { create: { cash: 100000 } },
           },
         },
@@ -141,13 +150,15 @@ describe('Room REST API', () => {
       data: {
         id: roomId,
         status: RoomStatus.WAITING,
-        maxPlayers: 6,
+        maxPlayers: 4,
         currentPhaseRound: 1,
         players: {
           create: {
             id: playerId,
             name: 'RoundTester',
             isReady: true,
+            companyId: `company-${playerId}`,
+            socketId: `socket-${playerId}`,
             company: { create: { cash: 100000 } },
           },
         },
@@ -178,7 +189,7 @@ describe('Room REST API', () => {
       data: {
         id: roomId,
         status: RoomStatus.WAITING,
-        maxPlayers: 6,
+        maxPlayers: 4,
       },
     });
 
@@ -187,6 +198,8 @@ describe('Room REST API', () => {
         id: playerId,
         name: 'PlayerTwo',
         roomId: roomId,
+        companyId: `company-${playerId}`,
+        socketId: `socket-${playerId}`,
         company: {
           create: {
             cash: 50000,
@@ -199,6 +212,7 @@ describe('Room REST API', () => {
     expect(player.id).toBe(playerId);
     expect(player.name).toBe('PlayerTwo');
     expect(player.companyId).toBeDefined();
+    expect(player.socketId).toBeDefined();
     expect(Number(player.company?.cash)).toBe(50000);
 
     await prisma.player.delete({ where: { id: playerId } });
@@ -214,7 +228,7 @@ describe('Room REST API', () => {
       data: {
         id: roomId,
         status: RoomStatus.WAITING,
-        maxPlayers: 6,
+        maxPlayers: 4,
       },
     });
 
@@ -223,6 +237,8 @@ describe('Room REST API', () => {
         id: playerId,
         name: 'CashPlayer',
         roomId: roomId,
+        companyId: `company-${playerId}`,
+        socketId: `socket-${playerId}`,
         company: { create: { cash: 50000 } },
       },
     });
@@ -253,7 +269,7 @@ describe('Room REST API', () => {
       data: {
         id: roomId,
         status: RoomStatus.WAITING,
-        maxPlayers: 6,
+        maxPlayers: 4,
       },
     });
 
@@ -262,6 +278,8 @@ describe('Room REST API', () => {
         id: playerId,
         name: 'CascadePlayer',
         roomId: roomId,
+        companyId: `company-${playerId}`,
+        socketId: `socket-${playerId}`,
         company: { create: { cash: 100000 } },
       },
     });
@@ -294,7 +312,7 @@ describe('Room REST API', () => {
       data: {
         id: roomId,
         status: RoomStatus.WAITING,
-        maxPlayers: 6,
+        maxPlayers: 4,
       },
     });
 
@@ -303,6 +321,8 @@ describe('Room REST API', () => {
         id: playerId,
         name: 'AssetPlayer',
         roomId: roomId,
+        companyId: `company-${playerId}`,
+        socketId: `socket-${playerId}`,
         company: { create: { cash: 100000 } },
       },
     });
@@ -344,7 +364,7 @@ describe('Room REST API', () => {
       data: {
         id: roomId,
         status: RoomStatus.WAITING,
-        maxPlayers: 6,
+        maxPlayers: 4,
       },
     });
 
@@ -353,6 +373,8 @@ describe('Room REST API', () => {
         id: playerId,
         name: 'AssetDeletePlayer',
         roomId: roomId,
+        companyId: `company-${playerId}`,
+        socketId: `socket-${playerId}`,
         company: { create: { cash: 100000 } },
       },
     });
@@ -399,7 +421,7 @@ describe('Room REST API', () => {
       data: {
         id: roomId,
         status: RoomStatus.WAITING,
-        maxPlayers: 6,
+        maxPlayers: 4,
       },
     });
 
@@ -408,6 +430,8 @@ describe('Room REST API', () => {
         id: plaintiffId,
         name: 'Plaintiff',
         roomId: roomId,
+        companyId: `company-${plaintiffId}`,
+        socketId: `socket-${plaintiffId}`,
         company: { create: { cash: 100000 } },
       },
     });
@@ -417,6 +441,8 @@ describe('Room REST API', () => {
         id: defendantId,
         name: 'Defendant',
         roomId: roomId,
+        companyId: `company-${defendantId}`,
+        socketId: `socket-${defendantId}`,
         company: { create: { cash: 100000 } },
       },
     });
@@ -463,7 +489,7 @@ describe('Room REST API', () => {
       data: {
         id: roomId,
         status: RoomStatus.WAITING,
-        maxPlayers: 6,
+        maxPlayers: 4,
       },
     });
 
@@ -472,6 +498,8 @@ describe('Room REST API', () => {
         id: plaintiffId,
         name: 'Plaintiff',
         roomId: roomId,
+        companyId: `company-${plaintiffId}`,
+        socketId: `socket-${plaintiffId}`,
         company: { create: { cash: 100000 } },
       },
     });
@@ -481,6 +509,8 @@ describe('Room REST API', () => {
         id: defendantId,
         name: 'Defendant',
         roomId: roomId,
+        companyId: `company-${defendantId}`,
+        socketId: `socket-${defendantId}`,
         company: { create: { cash: 100000 } },
       },
     });
@@ -529,7 +559,7 @@ describe('Room REST API', () => {
       data: {
         id: roomId,
         status: RoomStatus.WAITING,
-        maxPlayers: 6,
+        maxPlayers: 4,
       },
     });
 
@@ -538,6 +568,8 @@ describe('Room REST API', () => {
         id: plaintiffId,
         name: 'Plaintiff',
         roomId: roomId,
+        companyId: `company-${plaintiffId}`,
+        socketId: `socket-${plaintiffId}`,
         company: { create: { cash: 100000 } },
       },
     });
@@ -547,6 +579,8 @@ describe('Room REST API', () => {
         id: defendantId,
         name: 'Defendant',
         roomId: roomId,
+        companyId: `company-${defendantId}`,
+        socketId: `socket-${defendantId}`,
         company: { create: { cash: 100000 } },
       },
     });
@@ -592,7 +626,7 @@ describe('Room REST API', () => {
       data: {
         id: roomId,
         status: RoomStatus.WAITING,
-        maxPlayers: 6,
+        maxPlayers: 4,
       },
     });
 
@@ -601,6 +635,8 @@ describe('Room REST API', () => {
         id: playerId,
         name: 'BankruptPlayer',
         roomId: roomId,
+        companyId: `company-${playerId}`,
+        socketId: `socket-${playerId}`,
         company: { create: { cash: 100000 } },
       },
     });
@@ -628,7 +664,7 @@ describe('Room REST API', () => {
       data: {
         id: roomId,
         status: RoomStatus.WAITING,
-        maxPlayers: 6,
+        maxPlayers: 4,
       },
     });
 
@@ -637,6 +673,8 @@ describe('Room REST API', () => {
         id: `active-${roomId}`,
         name: 'ActivePlayer',
         roomId: roomId,
+        companyId: `company-active-${roomId}`,
+        socketId: `socket-active-${roomId}`,
         company: { create: { cash: 100000 } },
       },
     });
@@ -647,6 +685,8 @@ describe('Room REST API', () => {
         name: 'BankruptPlayer',
         roomId: roomId,
         bankrupt: true,
+        companyId: `company-bankrupt-${roomId}`,
+        socketId: `socket-bankrupt-${roomId}`,
         company: { create: { cash: 0 } },
       },
     });
@@ -677,7 +717,7 @@ describe('Room REST API', () => {
       data: {
         id: roomId,
         status: RoomStatus.WAITING,
-        maxPlayers: 6,
+        maxPlayers: 4,
       },
     });
 
@@ -686,6 +726,8 @@ describe('Room REST API', () => {
         id: plaintiffId,
         name: 'Plaintiff',
         roomId: roomId,
+        companyId: `company-${plaintiffId}`,
+        socketId: `socket-${plaintiffId}`,
         company: { create: { cash: 100000 } },
       },
     });
@@ -695,6 +737,8 @@ describe('Room REST API', () => {
         id: defendantId,
         name: 'Defendant',
         roomId: roomId,
+        companyId: `company-${defendantId}`,
+        socketId: `socket-${defendantId}`,
         company: { create: { cash: 100000 } },
       },
     });
@@ -734,7 +778,7 @@ describe('Room REST API', () => {
       data: {
         id: roomId,
         status: RoomStatus.WAITING,
-        maxPlayers: 6,
+        maxPlayers: 4,
       },
     });
 
@@ -743,6 +787,8 @@ describe('Room REST API', () => {
         id: plaintiffId,
         name: 'Plaintiff',
         roomId: roomId,
+        companyId: `company-${plaintiffId}`,
+        socketId: `socket-${plaintiffId}`,
         company: { create: { cash: 100000 } },
       },
     });
@@ -752,6 +798,8 @@ describe('Room REST API', () => {
         id: defendantId,
         name: 'Defendant',
         roomId: roomId,
+        companyId: `company-${defendantId}`,
+        socketId: `socket-${defendantId}`,
         company: { create: { cash: 100000 } },
       },
     });

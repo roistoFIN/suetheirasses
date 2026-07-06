@@ -3,13 +3,17 @@ node_modules/
 */node_modules/
 
 # Build outputs
-*/dist/
-*/build/
+**/dist/
+**/build/
+**/*.tsbuildinfo
 
 # Environment files
 .env
 .env.local
 .env.*.local
+.env.development
+.env.test
+.env.production
 
 # IDE
 .vscode/
@@ -21,6 +25,8 @@ node_modules/
 # OS
 .DS_Store
 Thumbs.db
+ehthumbs.db
+Desktop.ini
 
 # Logs
 *.log
@@ -33,8 +39,28 @@ server/prisma/migrations/
 
 # Coverage
 coverage/
+.nyc_output/
 *.lcov
+
+# Test results
+test-results/
+playwright-report/
+browser-storage/
 
 # Temporary files
 *.tmp
 *.temp
+tmp/
+temp/
+*.bak
+*.orig
+
+# Core dumps
+*.core
+dump.rdb
+
+# NPM
+*.tgz
+
+# Cache
+.cache/

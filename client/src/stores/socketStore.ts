@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { io, Socket } from 'socket.io-client';
 import { ServerEvents, type RoomJoinedResponse, type PhaseChangedResponse, type ResultsRevealResponse, type GameOverResponse, type ErrorResponse } from '@suetheirasses/shared';
+import { useGameStore } from './gameStore';
 
 interface SocketState {
   socket: Socket | null;
@@ -49,6 +50,23 @@ export const useSocketStore = create<SocketState>((set, get) => ({
       console.log('Player ready:', data);
       const { updatePlayerReady } = useGameStore.getState();
       updatePlayerReady(data as { playerId: string; isReady: boolean });
+    });
+
+    socket.on(ServerEvents.ROOM_PLAYER_JOINED, (data: { playerId: string; playerName: string; isReady: boolean; roomId: string }) => {
+      console.log('Player joined:', data);
+      const { addPlayer, room } = useGameStore.getState();
+      // Guard against duplicate players (e.g., from reconnection or stale events)
+      if (room && room.players.some((p) => p.id === data.playerId)) {
+        console.warn(`Player ${data.playerId} already in room, skipping duplicate add`);
+        return;
+      }
+      addPlayer({
+        id: data.playerId,
+        name: data.playerName,
+        roomId: data.roomId,
+        isReady: data.isReady,
+        bankrupt: false,
+      });
     });
 
     socket.on(ServerEvents.PHASE_CHANGED, (data: PhaseChangedResponse) => {

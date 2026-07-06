@@ -23,7 +23,9 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'npm run dev:client',
+    command: process.env.CI
+      ? 'npm run preview:client'
+      : 'npm run dev:client',
     url: 'http://localhost:5173',
     reuseExistingServer: !process.env.CI,
     stdout: 'pipe',

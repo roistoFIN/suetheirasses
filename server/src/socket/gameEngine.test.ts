@@ -10,23 +10,27 @@ const createMockIo = () => ({
   emit: vi.fn().mockReturnThis(),
 }) as unknown as Server;
 
+let playerCounter = 0;
+
 const createMockPrisma = () => {
   const createdPlayers: Record<string, unknown>[] = [];
   const createdCompanies: PrismaCompany[] = [];
 
   const mockRoom = {
     create: vi.fn().mockImplementation(({ data }: { data: Record<string, unknown> }) => {
+      const playerId = `db-player-${++playerCounter}`;
+      const companyId = `company-${playerId}`;
       const dbPlayer = {
-        id: `db-player-${Date.now()}`,
+        id: playerId,
         name: (data.players.create as Record<string, unknown>).name as string,
         roomId: data.id as string,
         isReady: (data.players.create as Record<string, unknown>).isReady as boolean,
         bankrupt: false,
         socketId: (data.players.create as Record<string, unknown>).socketId as string,
-        companyId: `company-${Date.now()}`,
+        companyId,
         company: {
-          id: `company-${Date.now()}`,
-          playerId: `db-player-${Date.now()}`,
+          id: companyId,
+          playerId,
           cash: 100000,
           createdAt: new Date(),
         },
@@ -36,8 +40,8 @@ const createMockPrisma = () => {
       const room: PrismaRoom = {
         id: data.id as string,
         status: data.status as RoomStatus,
-        maxPlayers: data.maxPlayers as number,
-        currentPhaseRound: data.currentPhaseRound as number,
+        maxPlayers: (data.maxPlayers as number) ?? 4,
+        currentPhaseRound: (data.currentPhaseRound as number) ?? 1,
         createdAt: (data.createdAt as Date) || new Date(),
       };
 
@@ -57,7 +61,7 @@ const createMockPrisma = () => {
 
   const mockPlayer = {
     create: vi.fn().mockImplementation(({ data }: { data: Record<string, unknown> }) => {
-      const playerId = `db-player-${Date.now()}`;
+      const playerId = `db-player-${++playerCounter}`;
       const companyId = `company-${playerId}`;
       const player: PrismaPlayer & { company: PrismaCompany } = {
         id: playerId,
@@ -142,7 +146,7 @@ describe('GameEngine', () => {
 
       expect(roomState).toBeDefined();
       expect(roomState.room.status).toBe(RoomStatus.WAITING);
-      expect(roomState.room.maxPlayers).toBe(6);
+      expect(roomState.room.maxPlayers).toBe(4);
       expect(roomState.players.size).toBe(1);
       expect(mockPrisma.room.create).toHaveBeenCalled();
     });
@@ -865,6 +869,204 @@ describe('GameEngine', () => {
 
       expect(mockIo.to).toHaveBeenCalledWith(roomState.room.id);
       expect(mockIo.emit).toHaveBeenCalledWith('custom:event', { data: 'test' });
+    });
+  });
+
+  describe('ROOM_PLAYER_JOINED - Multi-player room state', () => {
+    it('should have all players in roomState.players after multiple joins', async () => {
+      const creator = {
+        id: '',
+        name: 'Alice',
+        roomId: '',
+        isReady: false,
+        bankrupt: false,
+        socketId: 'socket-1',
+      };
+      const roomState = await engine.createRoom(creator);
+
+      const joiner1 = {
+        id: '',
+        name: 'Bob',
+        roomId: '',
+        isReady: false,
+        bankrupt: false,
+        socketId: 'socket-2',
+      };
+      await engine.joinRoom(roomState.room.id, joiner1);
+
+      const joiner2 = {
+        id: '',
+        name: 'Charlie',
+        roomId: '',
+        isReady: false,
+        bankrupt: false,
+        socketId: 'socket-3',
+      };
+      await engine.joinRoom(roomState.room.id, joiner2);
+
+      expect(roomState.players.size).toBe(3);
+      expect(Array.from(roomState.players.values()).map((p) => p.name)).toEqual(
+        expect.arrayContaining(['Alice', 'Bob', 'Charlie']),
+      );
+    });
+
+    it('should store each player with their correct socketId', async () => {
+      const creator = {
+        id: '',
+        name: 'Alice',
+        roomId: '',
+        isReady: false,
+        bankrupt: false,
+        socketId: 'socket-1',
+      };
+      const roomState = await engine.createRoom(creator);
+
+      const joiner = {
+        id: '',
+        name: 'Bob',
+        roomId: '',
+        isReady: false,
+        bankrupt: false,
+        socketId: 'socket-2',
+      };
+      await engine.joinRoom(roomState.room.id, joiner);
+
+      const players = Array.from(roomState.players.values());
+      const alice = players.find((p) => p.socketId === 'socket-1');
+      const bob = players.find((p) => p.socketId === 'socket-2');
+
+      expect(alice).toBeDefined();
+      expect(alice?.name).toBe('Alice');
+      expect(bob).toBeDefined();
+      expect(bob?.name).toBe('Bob');
+    });
+
+    it('should allow finding a player by socketId after join', async () => {
+      const creator = {
+        id: '',
+        name: 'Alice',
+        roomId: '',
+        isReady: false,
+        bankrupt: false,
+        socketId: 'socket-1',
+      };
+      const roomState = await engine.createRoom(creator);
+
+      const joiner = {
+        id: '',
+        name: 'Bob',
+        roomId: '',
+        isReady: false,
+        bankrupt: false,
+        socketId: 'socket-2',
+      };
+      await engine.joinRoom(roomState.room.id, joiner);
+
+      // This is the pattern used in the ROOM_JOIN handler to find the joining player
+      const joiningPlayer = Array.from(roomState.players.values()).find(
+        (p) => p.socketId === 'socket-2',
+      );
+
+      expect(joiningPlayer).toBeDefined();
+      expect(joiningPlayer?.name).toBe('Bob');
+      expect(joiningPlayer?.id).not.toBe(creator.id); // DB-generated ID
+    });
+
+    it('should maintain player order independence - finding by socketId works regardless of map position', async () => {
+      const creator = {
+        id: '',
+        name: 'Alice',
+        roomId: '',
+        isReady: false,
+        bankrupt: false,
+        socketId: 'socket-1',
+      };
+      const roomState = await engine.createRoom(creator);
+
+      // Add 3 more players
+      for (let i = 2; i <= 4; i++) {
+        const joiner = {
+          id: '',
+          name: `Player${i}`,
+          roomId: '',
+          isReady: false,
+          bankrupt: false,
+          socketId: `socket-${i}`,
+        };
+        await engine.joinRoom(roomState.room.id, joiner);
+      }
+
+      // Verify we can find each player by their socketId
+      for (let i = 1; i <= 4; i++) {
+        const player = Array.from(roomState.players.values()).find(
+          (p) => p.socketId === `socket-${i}`,
+        );
+        expect(player).toBeDefined();
+        expect(player?.name).toBe(i === 1 ? 'Alice' : `Player${i}`);
+      }
+    });
+
+    it('should have unique player IDs for each player in the room', async () => {
+      const creator = {
+        id: '',
+        name: 'Alice',
+        roomId: '',
+        isReady: false,
+        bankrupt: false,
+        socketId: 'socket-1',
+      };
+      const roomState = await engine.createRoom(creator);
+
+      const joiner1 = {
+        id: '',
+        name: 'Bob',
+        roomId: '',
+        isReady: false,
+        bankrupt: false,
+        socketId: 'socket-2',
+      };
+      await engine.joinRoom(roomState.room.id, joiner1);
+
+      const joiner2 = {
+        id: '',
+        name: 'Charlie',
+        roomId: '',
+        isReady: false,
+        bankrupt: false,
+        socketId: 'socket-3',
+      };
+      await engine.joinRoom(roomState.room.id, joiner2);
+
+      const playerIds = Array.from(roomState.players.values()).map((p) => p.id);
+      const uniqueIds = new Set(playerIds);
+      expect(uniqueIds.size).toBe(3);
+      expect(playerIds.length).toBe(3);
+    });
+
+    it('should preserve player isReady state after join', async () => {
+      const creator = {
+        id: '',
+        name: 'Alice',
+        roomId: '',
+        isReady: false,
+        bankrupt: false,
+        socketId: 'socket-1',
+      };
+      const roomState = await engine.createRoom(creator);
+
+      const joiner = {
+        id: '',
+        name: 'Bob',
+        roomId: '',
+        isReady: false,
+        bankrupt: false,
+        socketId: 'socket-2',
+      };
+      await engine.joinRoom(roomState.room.id, joiner);
+
+      const players = Array.from(roomState.players.values());
+      expect(players[0].isReady).toBe(true); // Creator is ready
+      expect(players[1].isReady).toBe(false); // Joiner is not ready
     });
   });
 });
