@@ -13,9 +13,15 @@ const prisma = new PrismaClient({
   log: process.env.NODE_ENV === 'development' ? ['query', 'warn', 'error'] : ['error'],
 });
 
+// Allowed origins: Vite dev (:5173), Docker client (:80), and any custom origins from CLIENT_URL
+const DEFAULT_ORIGINS = ['http://localhost:5173', 'http://localhost:80', 'http://localhost'];
+const allowedOrigins = process.env.CLIENT_URL
+  ? [...new Set([...process.env.CLIENT_URL.split(',').map((url) => url.trim()), ...DEFAULT_ORIGINS])]
+  : DEFAULT_ORIGINS;
+
 const io = new Server(httpServer, {
   cors: {
-    origin: process.env.CLIENT_URL || 'http://localhost:5173',
+    origin: allowedOrigins,
     credentials: true,
   },
   pingTimeout: 60000,
@@ -24,7 +30,7 @@ const io = new Server(httpServer, {
 
 // Middleware
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:5173',
+  origin: allowedOrigins,
   credentials: true,
 }));
 app.use(express.json());

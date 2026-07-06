@@ -77,12 +77,6 @@ After Phase 5, bankrupt players (cash ≤ $0 or debt > $10,000) are eliminated. 
               │  • Action Log       │     │    Lawsuits)      │
               └──────────┬──────────┘     └──────────────────┘
                          │
-              ┌──────────▼──────────┐
-              │       REDIS         │
-              │  • Matchmaking Q    │
-              │  • Room Cache       │
-              │  • Pub/Sub          │
-              └─────────────────────┘
 ```
 
 ### Design Principles
@@ -113,7 +107,7 @@ After Phase 5, bankrupt players (cash ≤ $0 or debt > $10,000) are eliminated. 
 
 | Technology | Version | Purpose |
 |-----------|---------|---------|
-| **Node.js** | 18+ | Runtime environment |
+| **Node.js** | 20+ | Runtime environment |
 | **TypeScript** | 5.3+ | Type-safe server code |
 | **Express** | 4.18+ | HTTP server for REST endpoints |
 | **Socket.IO** | 4.7+ | Real-time bidirectional communication |
@@ -125,7 +119,6 @@ After Phase 5, bankrupt players (cash ≤ $0 or debt > $10,000) are eliminated. 
 | Technology | Version | Purpose |
 |-----------|---------|---------|
 | **PostgreSQL** | 16+ | Primary database (ACID compliance) |
-| **Redis** | 7+ | Caching, matchmaking, pub/sub |
 | **Docker** | Latest | Container orchestration |
 
 ---
@@ -154,13 +147,16 @@ suetheirasses/
 │   ├── index.html
 │   ├── vite.config.ts
 │   ├── tsconfig.json
+│   ├── tsconfig.node.json
+│   ├── Dockerfile
+│   ├── nginx-entrypoint.sh
+│   ├── .env.example
 │   └── package.json
 │
 ├── server/                          # Node.js backend application
 │   ├── src/
 │   │   ├── socket/                  # Socket.IO handlers
 │   │   │   ├── gameEngine.ts        # Main game engine + event routing
-│   │   │   ├── matchmaking.ts       # Room creation/joining
 │   │   │   └── phases/              # Phase-specific handlers
 │   │   │       ├── strategyPhase.ts # Phase 2 resolution
 │   │   │       ├── resultsPhase.ts  # Phase 3 display
@@ -174,25 +170,43 @@ suetheirasses/
 │   │   │   └── schemas.ts           # All input validation
 │   │   └── index.ts                 # Server entry point
 │   ├── prisma/
-│   │   └── schema.prisma            # Database schema
-│   ├── .env.example
+│   │   ├── schema.prisma            # Database schema
+│   │   └── migrations/              # Database migrations
+│   ├── .env.example                 # Environment variables template
+│   ├── .env                         # Environment variables (gitignored)
+│   ├── Dockerfile
 │   ├── tsconfig.json
 │   └── package.json
 │
 ├── shared/                          # Shared types between client/server
 │   ├── src/
-│   │   └── types.ts                 # All game types, enums, payloads
+│   │   └── index.ts                 # All game types, enums, payloads
 │   ├── tsconfig.json
 │   └── package.json
 │
-├── tests/                           # Dedicated Integration/E2E Root
-│   ├── integration/
-│   │   ├── api/                     # Supertest API Test (Devs/QA)
-│   │   └── db/                      # Prisma + Testcontainers Test
-│   └── e2e/                         # Playwright E2E Test (QA/SDETs)
+├── tests/                           # Integration & E2E Tests
+│   ├── api/                         # Supertest API tests
+│   │   ├── health.test.ts
+│   │   ├── room.test.ts
+│   │   ├── socket.test.ts
+│   │   └── validation.test.ts
+│   ├── e2e/                         # Playwright E2E tests
+│   │   ├── matchmaking.spec.ts
+│   │   ├── strategyPhase.spec.ts
+│   │   ├── resultsPhase.spec.ts
+│   │   ├── lawsuitsPhase.spec.ts
+│   │   ├── resolutionPhase.spec.ts
+│   │   ├── gameOver.spec.ts
+│   │   └── navigation.spec.ts
+│   ├── playwright.config.ts
+│   ├── vitest.config.ts
+│   └── test-setup.ts
 │
-├── docker-compose.yml               # PostgreSQL + Redis services
-├── package.json                     # Monorepo root
+├── .github/                         # GitHub Actions CI/CD
+├── .dockerignore
+├── Dockerfile                       # Full-stack multi-stage build
+├── docker-compose.yml               # Docker orchestration (PostgreSQL, server, client)
+├── package.json                     # Monorepo root (workspaces)
 ├── .gitignore
 └── README.md                        # This file
 ```
@@ -210,28 +224,26 @@ suetheirasses/
 │ id       │──────▶│ id       │──────▶│ id       │
 │ status   │       │ name     │       │ playerId │
 │ maxPlayers│      │ roomId   │       │ cash     │
-│ round    │       │ isReady  │       └────┬─────┘
-│ createdAt│       │ bankrupt │            │
-└──────────┘       └──────────┘            │
-                 1    *  ┌──────────┐      │
-                 │       │  Asset   │◀─────┘
-                 │       ├──────────┤
-                 │       │ id       │
-                 │       │ companyId│
-                 │       │ type     │
-                 │       │ value    │
-                 │       └──────────┘
-                 │
-                 │ 1    *  ┌──────────┐ 1  *
-                 └────────▶│  Lawsuit │◀──────┘
-                             ├──────────┤
-                             │ id       │
-                             │ plaintiff│
-                             │ defendant│
-                             │ claim    │
-                             │ grounds  │
-                             │ resolved │
-                             │ verdict  │
+│ round    │       │ isReady  │       │ debt     │
+│ createdAt│       │ socketId │       └────┬─────┘
+└──────────┘       │ bankrupt │            │
+                   │ createdAt│            │
+                   │          │            │
+                   │          │ 1    *  ┌──▼────┐
+                   │          │       │  │ Asset │
+                   │          │       │  └───────┘
+                   │          │
+                   │ 1    *  ┌──────────┐ 1  *
+                   └────────▶│  Lawsuit │◀──────┘
+                               ├──────────┤
+                               │ id       │
+                               │ plaintiff│
+                               │ defendant│
+                               │ claim    │
+                               │ grounds  │
+                               │ resolved │
+                               │ verdict  │
+                               │ createdAt│
 ```
 
 ### Database Schema (Prisma)
@@ -244,48 +256,66 @@ model Room {
   currentPhaseRound Int          @default(1)
   createdAt         DateTime     @default(now())
   players           Player[]
+
+  @@index([status])
+  @@index([createdAt])
 }
 
 model Player {
-  id          String     @id @default(cuid())
-  name        String
-  roomId      String
-  room        Room       @relation(fields: [roomId], references: [id])
-  isReady     Boolean    @default(false)
-  bankrupt    Boolean    @default(false)
-  companyId   String?    @unique
-  company     Company?
+  id           String     @id @default(cuid())
+  name         String
+  roomId       String
+  room         Room       @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  isReady      Boolean    @default(false)
+  bankrupt     Boolean    @default(false)
+  socketId     String?
+  createdAt    DateTime   @default(now())
+  companyId    String?    @unique
+  company      Company?
+  lawsuitsFiled    Lawsuit[] @relation("FiledLawsuit")
+  lawsuitsReceived Lawsuit[] @relation("ReceivedLawsuit")
+
+  @@index([roomId])
+  @@index([roomId, bankrupt])
 }
 
 model Company {
-  id             String    @id @default(cuid())
-  playerId       String    @unique
-  player         Player    @relation(fields: [playerId], references: [id])
-  cash           Float     @default(100000)
-  assets         Asset[]
-  lawsuitsFiled  Lawsuit[] @relation("FiledLawsuit")
-  lawsuitsReceived Lawsuit[] @relation("ReceivedLawsuit")
+  id       String  @id @default(cuid())
+  playerId String  @unique
+  player   Player  @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  cash     Decimal @default(100000) @db.Decimal(15, 2)
+  debt     Decimal @default(0)      @db.Decimal(15, 2)
+  assets   Asset[]
+
+  @@index([playerId])
 }
 
 model Asset {
   id        String  @id @default(cuid())
   companyId String
-  company   Company @relation(fields: [companyId], references: [id])
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   type      String
-  value     Float
+  value     Decimal  @db.Decimal(15, 2)
+
+  @@index([companyId])
 }
 
 model Lawsuit {
   id          String   @id @default(cuid())
   plaintiffId String
-  plaintiff   Player   @relation("FiledLawsuit")
+  plaintiff   Player   @relation("FiledLawsuit", fields: [plaintiffId], references: [id], onDelete: Cascade)
   defendantId String
-  defendant   Player   @relation("ReceivedLawsuit")
-  claimAmount Float
+  defendant   Player   @relation("ReceivedLawsuit", fields: [defendantId], references: [id], onDelete: Cascade)
+  claimAmount Decimal  @db.Decimal(15, 2)
   grounds     String
   resolved    Boolean  @default(false)
   verdict     Verdict?
-  resolution  String?
+  resolution  String?  @default("")
+  createdAt   DateTime @default(now())
+
+  @@index([plaintiffId, resolved])
+  @@index([defendantId, resolved])
+  @@index([resolved])
 }
 ```
 
@@ -326,19 +356,19 @@ model Lawsuit {
 
 ### Prerequisites
 
-- **Node.js** 18+ and npm 9+
-- **Docker** and **Docker Compose** (for database services)
+- **Node.js** 20+ and npm 9+
+- **Docker** and **Docker Compose** (for containerized deployment)
 
-### Quick Start
+### Option 1: Local Development (Recommended for Development)
 
 ```bash
 # 1. Clone and enter the project
 cd suetheirasses
 
-# 2. Start PostgreSQL and Redis
-docker-compose up -d
+# 2. Start PostgreSQL via Docker
+docker-compose up -d postgres
 
-# 3. Install all dependencies
+# 3. Install all dependencies (monorepo workspaces)
 npm install
 
 # 4. Set up the database
@@ -346,13 +376,66 @@ cp server/.env.example server/.env
 npm run db:generate
 npm run db:migrate
 
-# 5. Start development servers (client + server)
+# 5. Start development servers (client + server with hot reload)
 npm run dev
 ```
 
 The application will be available at:
 - **Frontend**: http://localhost:5173
 - **Backend API**: http://localhost:3001
+
+### Option 2: Full Docker Deployment
+
+```bash
+# 1. Clone and enter the project
+cd suetheirasses
+
+# 2. Build and start all services (PostgreSQL, server, client)
+docker-compose up -d --build
+
+# The application will be available at:
+# - Frontend: http://localhost:80
+# - Backend API: http://localhost:3001
+```
+
+### Rebuilding and Restarting
+
+```bash
+# Rebuild Docker containers (after code changes)
+docker-compose up -d --build
+
+# Rebuild only a specific service
+docker-compose up -d --build server
+docker-compose up -d --build client
+
+# Restart all services (without rebuilding)
+docker-compose restart
+
+# Stop all Docker services
+docker-compose down
+
+# Stop and remove volumes (wipes database!)
+docker-compose down -v
+```
+
+### Database Management
+
+```bash
+# Generate Prisma client (after schema changes)
+npm run db:generate
+
+# Run pending migrations
+npm run db:migrate
+
+# Reset database (drops and recreates all tables)
+npx prisma migrate reset
+
+# Open Prisma Studio (database GUI)
+npm run db:studio
+
+# Seed the database with test data
+npm run db:seed
+```
 
 ### Individual Service Commands
 
@@ -363,39 +446,32 @@ npm run dev:server
 # Start only the frontend client
 npm run dev:client
 
-# Open Prisma Studio (database GUI)
-npm run db:studio
-
-# Run database migrations
-npm run db:migrate
-
-# Seed the database with test data
-npm run db:seed
-
 # Build for production
 npm run build
 
-# Stop Docker services
-npm run docker:down
+# Build only client or server
+npm run build:client
+npm run build:server
 ```
 
 ### Environment Variables
 
-**Server** (`server/.env`):
+**Server** (`server/.env` — copy from `server/.env.example`):
 
 ```env
 DATABASE_URL="postgresql://stita:stita_password@localhost:5432/stita_db"
 PORT=3001
 NODE_ENV=development
 CLIENT_URL=http://localhost:5173
-REDIS_URL="redis://localhost:6379"
 ```
 
-**Client** (`client/.env`):
+**Client** (`client/.env` — copy from `client/.env.example`):
 
 ```env
 VITE_SERVER_URL=http://localhost:3001
 ```
+
+> **Note**: When running via Docker Compose, environment variables are injected automatically. The client uses `http://server:3001` internally, and the server uses the PostgreSQL service name `postgres`.
 
 ---
 
@@ -449,18 +525,33 @@ npm run type-check
 # Lint all packages
 npm run lint
 
-# Run backend tests (when implemented)
+# Run backend unit tests (Vitest)
 npm test --workspace=server
 
-# Run frontend tests (when implemented)
-npm test --workspace=client
+# Run API integration tests (Supertest + Vitest)
+npm run test:api
+
+# Run API tests in watch mode
+npm run test:api:watch
+
+# Run Playwright E2E tests
+npm run test:e2e
+
+# Run Playwright E2E tests in UI mode
+npm run test:e2e:ui
+
+# Run Playwright E2E tests headed (visible browser)
+npm run test:e2e:headed
+
+# Run all tests (API + E2E)
+npm run test:all
 ```
 
 ---
 
 ## 📦 Deployment
 
-### Production Build
+### Production Build (Local)
 
 ```bash
 # Build both packages
@@ -472,21 +563,18 @@ npm run build
 
 ### Docker Deployment
 
-```dockerfile
-# Multi-stage build example for the server
-FROM node:18-alpine AS builder
-WORKDIR /app
-COPY package*.json ./
-COPY shared ./shared
-COPY server ./server
-RUN npm install && npm run build --workspace=shared --workspace=server
+The project includes a multi-stage Docker build (`Dockerfile`) that builds the entire stack in one image:
 
-FROM node:18-alpine
-WORKDIR /app
-COPY --from=builder /app/shared ./shared
-COPY --from=builder /app/server ./server
-RUN npm install --production --workspace=server
-CMD ["node", "server/dist/index.js"]
+```dockerfile
+# Build and run with the full-stack image
+docker build -t suetheirasses:latest .
+docker run -p 80:80 -p 3001:3001 suetheirasses:latest
+```
+
+Or use the provided `docker-compose.yml` for orchestrated deployment with PostgreSQL:
+
+```bash
+docker-compose up -d --build
 ```
 
 ### Recommended Hosting
@@ -525,17 +613,6 @@ All real-time communication uses Socket.IO events (see [Real-Time Communication]
 
 ---
 
-## 🧭 Development Roadmap
-
-| Phase | Duration | Deliverables |
-|-------|----------|--------------|
-| **Foundation** | Week 1-2 | Monorepo, DB, Socket.IO, rooms |
-| **Core Gameplay** | Week 3-4 | All 5 phases, strategy engine |
-| **Polish** | Week 5 | Animations, timers, bankruptcy |
-| **Hardening** | Week 6 | Validation, reconnection, deploy |
-
----
-
 ## 🤝 Contributing
 
 1. Fork the repository
@@ -556,5 +633,5 @@ This project is licensed under the MIT License.
 
 - Built with [Socket.IO](https://socket.io/) for real-time communication
 - Database powered by [PostgreSQL](https://www.postgresql.org/)
-- ORM by [Prisma](https://www.prisma.io/)
+- ORM by [Prisma](https://prisma.io/)
 - UI components from [Mantine](https://mantine.dev/)

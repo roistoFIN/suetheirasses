@@ -30,7 +30,7 @@ When running in `--clean` or `--repair` mode:
 # Execution Directives
 1. **Unit Tests:** Are handled by coder. Do not create new unit tests. Only repair or prune existing ones.
 1. **API Integration Tests:** Write test cases for Express endpoints using **Vitest + Supertest**.
-2. **DB Integration Tests:** Write test cases for Prisma code using **Testcontainers** (spinning up PostgreSQL & Redis in Docker).
+2. **DB Integration Tests:** Write test cases for Prisma code using **Testcontainers** (spinning up PostgreSQL in Docker).
 3. **End-to-End Tests:** Write test cases for full application flows using **Playwright**.
 4. **Integration Test Strategy:** Test:
    - 1. Data Persistence (The Database Layer via Prisma)
