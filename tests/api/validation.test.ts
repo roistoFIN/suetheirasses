@@ -31,6 +31,51 @@ describe('Validation Schemas', () => {
     it('should reject missing playerName', () => {
       expect(() => validateRoomJoin({} as any)).toThrow();
     });
+
+    describe('roomName field', () => {
+      it('should accept roomName up to 40 characters (UUID v4 length)', () => {
+        const uuid = '550e8400-e29b-41d4-a716-446655440000';
+        const result = validateRoomJoin({ playerName: 'Alice', roomName: uuid });
+        expect(result.roomName).toBe(uuid);
+      });
+
+      it('should accept roomName at exactly 40 characters', () => {
+        const longCode = 'a'.repeat(40);
+        const result = validateRoomJoin({ playerName: 'Bob', roomName: longCode });
+        expect(result.roomName).toBe(longCode);
+      });
+
+      it('should reject roomName exceeding 40 characters', () => {
+        expect(() => validateRoomJoin({ playerName: 'Charlie', roomName: 'a'.repeat(41) })).toThrow();
+      });
+
+      it('should accept cuid-style room codes (~25 chars)', () => {
+        const cuid = 'ck8x3y2z0000001le8qj5m9nr';
+        const result = validateRoomJoin({ playerName: 'Dave', roomName: cuid });
+        expect(result.roomName).toBe(cuid);
+      });
+
+      it('should accept short alphanumeric room codes', () => {
+        const result = validateRoomJoin({ playerName: 'Eve', roomName: 'abc123' });
+        expect(result.roomName).toBe('abc123');
+      });
+
+      it('should accept roomName with hyphens (UUID format)', () => {
+        const uuidLike = 'room-550e8400-e29b';
+        const result = validateRoomJoin({ playerName: 'Frank', roomName: uuidLike });
+        expect(result.roomName).toBe(uuidLike);
+      });
+
+      it('should reject empty string roomName', () => {
+        const result = validateRoomJoin({ playerName: 'Grace', roomName: '' });
+        expect(result.roomName).toBe('');
+      });
+
+      it('should accept roomName with spaces', () => {
+        const result = validateRoomJoin({ playerName: 'Heidi', roomName: 'My Room Code' });
+        expect(result.roomName).toBe('My Room Code');
+      });
+    });
   });
 
   describe('strategySubmitSchema', () => {

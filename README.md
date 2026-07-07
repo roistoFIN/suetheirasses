@@ -42,6 +42,15 @@ The game progresses through 5 phases in a continuous loop until only one player 
 
 After Phase 5, bankrupt players (cash ≤ $0 or debt > $10,000) are eliminated. If only one player remains, the game ends. Otherwise, the loop returns to Phase 2.
 
+### Invite Link Feature
+
+Hosts can share direct web links to invite other players to their room:
+
+1. **Copy Link**: Host clicks the copy icon next to "Room Invite Link" in the lobby → copies URL like `http://localhost:5173/?room=<roomId>` to clipboard
+2. **Invite Flow**: When a player opens an invite link, the matchmaking page shows only the "Join a Room" section with the room code pre-filled — "Create a Room" and "Quick Play" are hidden
+3. **Normal Flow**: Players who navigate directly to `/matchmaking` see all options (Quick Play, Create Room, Join Room, Available Rooms)
+4. **Server Validation**: The room code from the URL is passed as `roomName` in the `room:join` payload; UUID v4 codes (36 chars) and CUID-style IDs (~25 chars) are both supported
+
 ### Quick Play Feature
 
 Players can join existing rooms without knowing the room ID through the Quick Play system:
@@ -107,36 +116,7 @@ The room list is dynamically updated via the `rooms:list` server event, showing:
 
 ## 🛠️ Tech Stack
 
-### Frontend
-
-| Technology | Version | Purpose |
-|-----------|---------|---------|
-| **React 18** | 18.2+ | UI component library |
-| **TypeScript** | 5.3+ | Type safety across the stack |
-| **Vite** | 5.0+ | Build tool with HMR |
-| **Zustand** | 4.4+ | Lightweight state management |
-| **Socket.IO Client** | 4.7+ | Real-time WebSocket communication |
-| **Mantine** | 7.3+ | UI component library with theming |
-| **Framer Motion** | 10.16+ | Animations and transitions |
-| **React Router** | 6.21+ | Client-side routing |
-
-### Backend
-
-| Technology | Version | Purpose |
-|-----------|---------|---------|
-| **Node.js** | 20+ | Runtime environment |
-| **TypeScript** | 5.3+ | Type-safe server code |
-| **Express** | 4.18+ | HTTP server for REST endpoints |
-| **Socket.IO** | 4.7+ | Real-time bidirectional communication |
-| **Prisma** | 5.7+ | Type-safe ORM for PostgreSQL |
-| **Zod** | 3.22+ | Runtime schema validation |
-
-### Infrastructure
-
-| Technology | Version | Purpose |
-|-----------|---------|---------|
-| **PostgreSQL** | 16+ | Primary database (ACID compliance) |
-| **Docker** | Latest | Container orchestration |
+Tech stack is defined in tech-stack.md 
 
 ---
 
@@ -346,7 +326,7 @@ model Lawsuit {
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `room:join` | `{ playerName, roomName?, searchForRoom? }` | Join a specific room, create one, or search for an available room |
+| `room:join` | `{ playerName, roomName?, searchForRoom? }` | Join a specific room by ID (`roomName`), create one (no params), or search for an available room (`searchForRoom: true`). When joining via invite link, `roomName` contains the UUID v4 room code from the URL query param. |
 | `room:list` | — | Request list of available rooms |
 | `strategy:submit` | `{ actions: GameAction[] }` | Submit strategic choices |
 | `lawsuit:file` | `{ defendantId, claimAmount, grounds }` | File a lawsuit |
