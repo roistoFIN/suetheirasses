@@ -2,7 +2,7 @@
 
 # Lobby
 - [ ] Chat functionality
-- [ ] Invite only -function
+- [ ] Invite only -option to lock room
 - [ ] Message, when player is kicked out
 - [ ] Message, when trying to use reserved name
 - [ ] "You are the host" not needed in game room

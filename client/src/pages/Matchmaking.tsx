@@ -1,3 +1,27 @@
+import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import {
+  Container,
+  Paper,
+  Title,
+  Text,
+  TextInput,
+  Button,
+  Stack,
+  Divider,
+  Flex,
+  Alert,
+  Badge,
+  Group,
+  CopyButton,
+  ActionIcon,
+  LoadingOverlay,
+} from '@mantine/core';
+import { IconCheck, IconCopy } from '@tabler/icons-react';
+import { useSocketStore } from '../stores/socketStore';
+import { useGameStore } from '../stores/gameStore';
+import { ClientEvents, ServerEvents, type RoomInfo } from '@suetheirasses/shared';
+
 /**
  * Matchmaking page — Phase 1 of the game flow.
  *
