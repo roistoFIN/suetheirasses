@@ -46,7 +46,7 @@ export interface Player {
   id: string;
   name: string;
   roomId: string;
-  isReady: boolean;
+  isHost: boolean;
   bankrupt: boolean;
   companyId?: string | null;
   socketId?: string | null;
@@ -112,7 +112,8 @@ export interface GameState {
 export enum ClientEvents {
   ROOM_JOIN = 'room:join',
   ROOM_LEAVE = 'room:leave',
-  ROOM_READY = 'room:ready',
+  ROOM_KICK = 'room:kick',
+  ROOM_START_GAME = 'room:startGame',
   ROOM_LIST = 'room:list',
   STRATEGY_SUBMIT = 'strategy:submit',
   LAWSUIT_FILE = 'lawsuit:file',
@@ -125,7 +126,7 @@ export enum ClientEvents {
 export enum ServerEvents {
   ROOM_JOINED = 'room:joined',
   ROOM_LEFT = 'room:left',
-  ROOM_PLAYER_READY = 'room:playerReady',
+  ROOM_PLAYER_KICKED = 'room:playerKicked',
   ROOM_PLAYER_JOINED = 'room:playerJoined',
   ROOM_PLAYER_LEFT = 'room:playerLeft',
   ROOMS_LISTED = 'rooms:list',

@@ -18,7 +18,7 @@ interface GameState {
   // Player state
   player: Player | null;
   updatePlayer: (player: Player) => void;
-  updatePlayerReady: (data: { playerId: string; isReady: boolean }) => void;
+  kickPlayer: (playerId: string) => void;
   addPlayer: (player: Player) => void;
   markPlayerBankrupt: (playerId: string) => void;
 
@@ -58,14 +58,12 @@ export const useGameStore = create<GameState>((set) => ({
 
   updateRoom: (room) => set({ room, currentPhase: room.status }),
   updatePlayer: (player) => set({ player }),
-  updatePlayerReady: (data) =>
+  kickPlayer: (playerId) =>
     set((state) => ({
       room: state.room
         ? {
             ...state.room,
-            players: state.room.players.map((p) =>
-              p.id === data.playerId ? { ...p, isReady: data.isReady } : p,
-            ),
+            players: state.room.players.filter((p) => p.id !== playerId),
           }
         : null,
     })),

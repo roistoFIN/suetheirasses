@@ -64,39 +64,63 @@ const Matchmaking: React.FC = () => {
   };
 
   if (room && player) {
+    const isHost = player.isHost;
+    const otherPlayers = room.players.filter((p) => p.id !== player.id);
+
     return (
       <Container size="sm" py="xl">
         <Paper withBorder p="xl" shadow="lg">
           <Title order={2} mb="md">
             🏢 Room Lobby
           </Title>
-          <Badge size="lg" color="blue">
-            Round {room.currentPhaseRound}
-          </Badge>
+          {isHost && (
+            <Badge size="lg" color="orange" mb="md">
+              🎮 You are the Host
+            </Badge>
+          )}
           <Divider my="md" />
           <Stack>
-            <Text fw={500}>Players:</Text>
+            <Text fw={500}>Players ({room.players.length}/{room.maxPlayers}):</Text>
             {room.players.map((p) => (
               <Flex key={p.id} justify="space-between" align="center">
                 <Text>
-                  {p.name} {p.id === player.id && '(You)'}
+                  {p.name} {p.id === player.id && '(You)'} {p.isHost && '👑'}
                 </Text>
-                <Badge color={p.isReady ? 'green' : 'yellow'}>
-                  {p.isReady ? 'Ready' : 'Not Ready'}
-                </Badge>
+                {isHost && p.id !== player.id ? (
+                  <Button
+                    size="xs"
+                    color="red"
+                    variant="outline"
+                    onClick={() => send(ClientEvents.ROOM_KICK, { playerId: p.id })}
+                  >
+                    Kick
+                  </Button>
+                ) : (
+                  <Badge color={isHost ? 'orange' : 'gray'} size="sm">
+                    {isHost ? 'Host' : 'Player'}
+                  </Badge>
+                )}
               </Flex>
             ))}
           </Stack>
           <Divider my="md" />
-          <Group justify="center">
-            <Button
-              size="lg"
-              color={player.isReady ? 'red' : 'green'}
-              onClick={() => send(ClientEvents.ROOM_READY, null)}
-            >
-              {player.isReady ? 'Cancel Ready' : 'Ready Up!'}
-            </Button>
-          </Group>
+          {isHost && (
+            <Group justify="center">
+              <Button
+                size="lg"
+                color="green"
+                onClick={() => send(ClientEvents.ROOM_START_GAME, null)}
+                disabled={room.players.length < 1}
+              >
+                🚀 Start Game
+              </Button>
+            </Group>
+          )}
+          {!isHost && (
+            <Alert variant="filled" color="blue">
+              Waiting for the host to start the game...
+            </Alert>
+          )}
         </Paper>
       </Container>
     );

@@ -103,7 +103,7 @@ export class GameEngine {
           players: {
             create: {
               name: player.name,
-              isReady: true,
+              isHost: true,
               socketId: player.socketId,
               company: {
                 create: {
@@ -124,7 +124,7 @@ export class GameEngine {
       id: dbPlayer.id,
       name: dbPlayer.name,
       roomId: room.id,
-      isReady: dbPlayer.isReady,
+      isHost: dbPlayer.isHost,
       bankrupt: dbPlayer.bankrupt,
       companyId: dbPlayer.companyId ?? undefined,
       socketId: dbPlayer.socketId ?? player.socketId,
@@ -167,7 +167,7 @@ export class GameEngine {
         data: {
           name: player.name,
           roomId,
-          isReady: false,
+          isHost: false,
           socketId: player.socketId,
           company: {
             create: {
@@ -183,7 +183,7 @@ export class GameEngine {
       id: dbPlayer.id,
       name: dbPlayer.name,
       roomId,
-      isReady: dbPlayer.isReady,
+      isHost: dbPlayer.isHost,
       bankrupt: dbPlayer.bankrupt,
       companyId: dbPlayer.companyId ?? undefined,
       socketId: dbPlayer.socketId ?? player.socketId,
@@ -355,7 +355,7 @@ export class GameEngine {
     });
   }
 
-  async syncPlayerToDB(playerId: string, data: { isReady?: boolean; bankrupt?: boolean }): Promise<void> {
+  async syncPlayerToDB(playerId: string, data: { isHost?: boolean; bankrupt?: boolean }): Promise<void> {
     await this.prisma.player.update({
       where: { id: playerId },
       data,
@@ -395,7 +395,7 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
           id: '', // Will be set by DB
           name: validated.playerName,
           roomId: '',
-          isReady: false,
+          isHost: false,
           bankrupt: false,
           socketId: socket.id,
         };
@@ -488,7 +488,7 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
           id: p.id,
           name: p.name,
           roomId: p.roomId,
-          isReady: p.isReady,
+          isHost: p.isHost,
           bankrupt: p.bankrupt,
           companyId: p.companyId ?? undefined,
           socketId: p.socketId ?? undefined,
@@ -509,7 +509,7 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
           player: {
             id: joiningPlayer.id,
             name: joiningPlayer.name,
-            isReady: joiningPlayer.isReady,
+            isHost: joiningPlayer.isHost,
             bankrupt: joiningPlayer.bankrupt,
             roomId: fullRoom.id,
           },
@@ -520,7 +520,7 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
         socket.broadcast.to(roomState.room.id).emit(ServerEvents.ROOM_PLAYER_JOINED, {
           playerId: joiningPlayer.id,
           playerName: joiningPlayer.name,
-          isReady: joiningPlayer.isReady,
+          isHost: joiningPlayer.isHost,
           roomId: fullRoom.id,
         });
 
@@ -586,45 +586,135 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
       socket.emit(ServerEvents.ROOMS_LISTED, { rooms: availableRooms });
     });
 
-    // Ready toggle
-    socket.on(ClientEvents.ROOM_READY, async () => {
+    // Kick player (host only)
+    socket.on(ClientEvents.ROOM_KICK, async (payload: { playerId: string }) => {
       const roomId = engine.getPlayerRoom(socket.id);
       if (!roomId) return;
 
       const roomState = engine.rooms.get(roomId);
       if (!roomState) return;
 
-      // Find player by socketId since players are now stored by DB ID
-      const player = Array.from(roomState.players.values()).find(
+      // Find the host by socketId
+      const host = Array.from(roomState.players.values()).find(
         (p: Player) => p.socketId === socket.id
       );
-      if (!player) return;
+      if (!host || !host.isHost) {
+        socket.emit(ServerEvents.ERROR, {
+          code: 'NOT_HOST',
+          message: 'Only the host can kick players',
+        });
+        return;
+      }
 
-      player.isReady = !player.isReady;
+      // Host cannot kick themselves
+      if (payload.playerId === host.id) {
+        socket.emit(ServerEvents.ERROR, {
+          code: 'INVALID_KICK',
+          message: 'Host cannot kick themselves',
+        });
+        return;
+      }
 
-      // Sync to database
-      await engine.syncPlayerToDB(player.id, { isReady: player.isReady });
+      // Find the player to kick
+      const playerToKick = roomState.players.get(payload.playerId);
+      if (!playerToKick) return;
 
-      engine.broadcastRoomState(roomId, ServerEvents.ROOM_PLAYER_READY, {
-        playerId: player.id,
-        playerName: player.name,
-        isReady: player.isReady,
+      const kickedSocketId = playerToKick.socketId;
+
+      // FIX: Perform DB cleanup FIRST to ensure atomicity
+      // If this fails, we keep the player in memory to prevent state corruption
+      try {
+        await prisma.$transaction(async (tx) => {
+          const company = await tx.company.findUnique({
+            where: { playerId: playerToKick.id },
+          });
+          if (company) {
+            await tx.asset.deleteMany({
+              where: { companyId: company.id },
+            });
+            await tx.company.delete({
+              where: { id: company.id },
+            });
+          }
+
+          await tx.lawsuit.deleteMany({
+            where: {
+              OR: [
+                { plaintiffId: playerToKick.id },
+                { defendantId: playerToKick.id },
+              ],
+            },
+          });
+
+          await tx.player.delete({
+            where: { id: playerToKick.id },
+          });
+        });
+      } catch (error) {
+        console.error(`Failed to clean up kicked player ${playerToKick.id} from DB:`, error);
+        // Stop execution if DB cleanup fails to avoid inconsistent state
+        return;
+      }
+
+      // Remove player from in-memory state ONLY after successful DB cleanup
+      roomState.players.delete(playerToKick.id);
+
+      // Notify all remaining players about the kick
+      engine.broadcastRoomState(roomId, ServerEvents.ROOM_PLAYER_KICKED, {
+        kickedPlayerId: playerToKick.id,
+        kickedPlayerName: playerToKick.name,
       });
 
-      // Check if all players are ready
-      const allReady = Array.from(roomState.players.values()).every((p) => p.isReady);
-      if (allReady && roomState.room.status === RoomStatus.WAITING) {
-        roomState.room.status = RoomStatus.STRATEGY;
-        roomState.room.currentPhaseRound = 1;
-        await engine.syncRoomToDB(roomId);
-        engine.startTimer(roomId, PHASE_TIMERS[RoomStatus.STRATEGY]);
-
-        socket.to(roomId).emit(ServerEvents.PHASE_CHANGED, {
-          phase: RoomStatus.STRATEGY,
-          round: 1,
-          timeLimit: PHASE_TIMERS[RoomStatus.STRATEGY],
-        });
+      // Disconnect the kicked player's socket if connected
+      if (kickedSocketId) {
+        const kickedSocket = io.sockets.sockets.get(kickedSocketId);
+        if (kickedSocket) {
+          kickedSocket.disconnect();
+        }
       }
+
+      // Update room state for remaining players
+      engine.broadcastRoomState(roomId, ServerEvents.ROOM_JOINED, {
+        room: roomState.room,
+        player: host,
+        companies: [],
+      });
+    });
+
+    // Start game (host only)
+    socket.on(ClientEvents.ROOM_START_GAME, async () => {
+      const roomId = engine.getPlayerRoom(socket.id);
+      if (!roomId) return;
+
+      const roomState = engine.rooms.get(roomId);
+      if (!roomState) return;
+
+      // Find the host by socketId
+      const host = Array.from(roomState.players.values()).find(
+        (p: Player) => p.socketId === socket.id
+      );
+      if (!host || !host.isHost) {
+        socket.emit(ServerEvents.ERROR, {
+          code: 'NOT_HOST',
+          message: 'Only the host can start the game',
+        });
+        return;
+      }
+
+      // Only start from WAITING phase
+      if (roomState.room.status !== RoomStatus.WAITING) return;
+
+      // Start the game
+      roomState.room.status = RoomStatus.STRATEGY;
+      roomState.room.currentPhaseRound = 1;
+      await engine.syncRoomToDB(roomId);
+      engine.startTimer(roomId, PHASE_TIMERS[RoomStatus.STRATEGY]);
+
+      engine.broadcastRoomState(roomId, ServerEvents.PHASE_CHANGED, {
+        phase: RoomStatus.STRATEGY,
+        round: 1,
+        timeLimit: PHASE_TIMERS[RoomStatus.STRATEGY],
+      });
     });
 
     // Strategy submission

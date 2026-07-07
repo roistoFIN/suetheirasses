@@ -241,7 +241,7 @@ suetheirasses/
 │ id       │──────▶│ id       │──────▶│ id       │
 │ status   │       │ name     │       │ playerId │
 │ maxPlayers│      │ roomId   │       │ cash     │
-│ round    │       │ isReady  │       │ debt     │
+│ round    │       │ isHost   │       │ debt     │
 │ createdAt│       │ socketId │       └────┬─────┘
 └──────────┘       │ bankrupt │            │
                    │ createdAt│            │
@@ -283,7 +283,7 @@ model Player {
   name         String
   roomId       String
   room         Room       @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  isReady      Boolean    @default(false)
+  isHost       Boolean    @default(false)
   bankrupt     Boolean    @default(false)
   socketId     String?
   createdAt    DateTime   @default(now())
@@ -357,8 +357,8 @@ model Lawsuit {
 | Event | Payload | Description |
 |-------|---------|-------------|
 | `room:joined` | `{ room, player, companies }` | Successfully joined a room |
-| `room:playerJoined` | `{ playerId, playerName, isReady, roomId }` | New player joined the room |
-| `room:playerReady` | `{ playerId, isReady }` | Player toggled ready |
+| `room:playerJoined` | `{ playerId, playerName, isHost, roomId }` | New player joined the room |
+| `room:playerKicked` | `{ kickedPlayerId, kickedPlayerName }` | Player was kicked from room |
 | `rooms:list` | `{ rooms: RoomInfo[] }` | List of available rooms (Quick Play) |
 | `phase:changed` | `{ phase, round, timeLimit }` | Game advanced to new phase |
 | `timer:update` | `{ timeLeft }` | Countdown tick |

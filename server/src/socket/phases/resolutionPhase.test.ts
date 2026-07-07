@@ -19,7 +19,7 @@ const createMockPlayer = (
     id,
     name,
     roomId,
-    isReady: true,
+    isHost: true,
     bankrupt,
     socketId: `socket-${id}`,
     companyId: `company-${id}`,

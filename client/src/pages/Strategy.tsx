@@ -54,9 +54,6 @@ const Strategy: React.FC = () => {
 
   if (!room || !player) return null;
 
-  const isPlayerReady = room.players.find((p) => p.id === player.id)?.isReady;
-  const allReady = room.players.every((p) => p.isReady);
-
   return (
     <Container size="lg" py="xl">
       <Paper withBorder p="xl" shadow="lg">
@@ -67,60 +64,54 @@ const Strategy: React.FC = () => {
           </Badge>
         </Flex>
 
-        {!allReady ? (
-          <Alert variant="filled" color="yellow">
-            Waiting for all players to be ready...
-          </Alert>
-        ) : (
+        <Stack>
+          <Text c="dimmed">
+            Choose up to 5 strategic actions for your company. Each action affects your cash flow.
+          </Text>
+
           <Stack>
-            <Text c="dimmed">
-              Choose up to 5 strategic actions for your company. Each action affects your cash flow.
-            </Text>
-
-            <Stack>
-              {actions.map((action, index) => (
-                <Paper key={index} withBorder p="md">
-                  <Flex gap="md" align="end" wrap="wrap">
-                    <Select
-                      label="Action"
-                      value={action.type}
-                      onChange={(value) => updateAction(index, 'type', value)}
-                      options={ACTION_OPTIONS}
-                      style={{ flex: 2, minWidth: 200 }}
-                    />
-                    <NumberInput
-                      label="Amount ($)"
-                      value={action.amount}
-                      onChange={(value) => updateAction(index, 'amount', Number(value))}
-                      min={0}
-                      step={1000}
-                      style={{ flex: 1, minWidth: 150 }}
-                    />
-                    <TextInput
-                      label="Details"
-                      value={action.details || ''}
-                      onChange={(e) => updateAction(index, 'details', e.target.value)}
-                      placeholder="Optional notes"
-                      style={{ flex: 1, minWidth: 150 }}
-                    />
-                  </Flex>
-                </Paper>
-              ))}
-            </Stack>
-
-            {actions.length < 5 && (
-              <Button variant="outline" onClick={addAction}>
-                + Add Action
-              </Button>
-            )}
-
-            <Group justify="right" mt="lg">
-              <Button size="lg" onClick={handleSubmit} disabled={timer <= 0}>
-                Submit Strategies
-              </Button>
-            </Group>
+            {actions.map((action, index) => (
+              <Paper key={index} withBorder p="md">
+                <Flex gap="md" align="end" wrap="wrap">
+                  <Select
+                    label="Action"
+                    value={action.type}
+                    onChange={(value) => updateAction(index, 'type', value)}
+                    options={ACTION_OPTIONS}
+                    style={{ flex: 2, minWidth: 200 }}
+                  />
+                  <NumberInput
+                    label="Amount ($)"
+                    value={action.amount}
+                    onChange={(value) => updateAction(index, 'amount', Number(value))}
+                    min={0}
+                    step={1000}
+                    style={{ flex: 1, minWidth: 150 }}
+                  />
+                  <TextInput
+                    label="Details"
+                    value={action.details || ''}
+                    onChange={(e) => updateAction(index, 'details', e.target.value)}
+                    placeholder="Optional notes"
+                    style={{ flex: 1, minWidth: 150 }}
+                  />
+                </Flex>
+              </Paper>
+            ))}
           </Stack>
-        )}
+
+          {actions.length < 5 && (
+            <Button variant="outline" onClick={addAction}>
+              + Add Action
+            </Button>
+          )}
+
+          <Group justify="right" mt="lg">
+            <Button size="lg" onClick={handleSubmit} disabled={timer <= 0}>
+              Submit Strategies
+            </Button>
+          </Group>
+        </Stack>
       </Paper>
     </Container>
   );

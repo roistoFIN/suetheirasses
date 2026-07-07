@@ -40,7 +40,7 @@ model Player {
   name         String
   roomId       String
   room         Room       @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  isReady      Boolean    @default(false)
+  isHost       Boolean    @default(false)
   bankrupt     Boolean    @default(false)
   socketId     String?
   createdAt    DateTime   @default(now())

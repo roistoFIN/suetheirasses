@@ -11,7 +11,7 @@ const createMockIo = () => ({
 
 const createMockPrisma = () => ({
   company: {
-    findUnique: vi.fn(),
+    findUnique: vi.fn().mockResolvedValue({ cash: 100000 }),
     update: vi.fn(),
   },
   player: {
@@ -35,7 +35,7 @@ const createMockRoomState = (
   players: new Map(
     Array.from(playerNames.entries()).map(([id, name]) => [
       id,
-      { id, name, roomId: 'room-1', isReady: true, bankrupt: false },
+      { id, name, roomId: 'room-1', isHost: true, bankrupt: false },
     ]),
   ),
   submissions,

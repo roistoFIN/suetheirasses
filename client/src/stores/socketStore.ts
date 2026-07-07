@@ -46,13 +46,13 @@ export const useSocketStore = create<SocketState>((set, get) => ({
       updatePlayer(data.player);
     });
 
-    socket.on(ServerEvents.ROOM_PLAYER_READY, (data: unknown) => {
-      console.log('Player ready:', data);
-      const { updatePlayerReady } = useGameStore.getState();
-      updatePlayerReady(data as { playerId: string; isReady: boolean });
+    socket.on(ServerEvents.ROOM_PLAYER_KICKED, (data: { kickedPlayerId: string; kickedPlayerName: string }) => {
+      console.log('Player kicked:', data);
+      const { kickPlayer } = useGameStore.getState();
+      kickPlayer(data.kickedPlayerId);
     });
 
-    socket.on(ServerEvents.ROOM_PLAYER_JOINED, (data: { playerId: string; playerName: string; isReady: boolean; roomId: string }) => {
+    socket.on(ServerEvents.ROOM_PLAYER_JOINED, (data: { playerId: string; playerName: string; isHost: boolean; roomId: string }) => {
       console.log('Player joined:', data);
       const { addPlayer, room } = useGameStore.getState();
       // Guard against duplicate players (e.g., from reconnection or stale events)
@@ -64,7 +64,7 @@ export const useSocketStore = create<SocketState>((set, get) => ({
         id: data.playerId,
         name: data.playerName,
         roomId: data.roomId,
-        isReady: data.isReady,
+        isHost: data.isHost,
         bankrupt: false,
       });
     });

@@ -25,7 +25,7 @@ describe('Room REST API', () => {
           create: {
             id: playerId,
             name: 'TestPlayer',
-            isReady: true,
+            isHost: true,
             companyId: `company-${playerId}`,
             socketId: `socket-${playerId}`,
             company: {
@@ -69,7 +69,7 @@ describe('Room REST API', () => {
           create: {
             id: playerId,
             name: 'Finder',
-            isReady: true,
+            isHost: true,
             companyId: `company-${playerId}`,
             socketId: `socket-${playerId}`,
             company: { create: { cash: 100000 } },
@@ -117,7 +117,7 @@ describe('Room REST API', () => {
           create: {
             id: playerId,
             name: 'StatusTester',
-            isReady: true,
+            isHost: true,
             companyId: `company-${playerId}`,
             socketId: `socket-${playerId}`,
             company: { create: { cash: 100000 } },
@@ -156,7 +156,7 @@ describe('Room REST API', () => {
           create: {
             id: playerId,
             name: 'RoundTester',
-            isReady: true,
+            isHost: true,
             companyId: `company-${playerId}`,
             socketId: `socket-${playerId}`,
             company: { create: { cash: 100000 } },

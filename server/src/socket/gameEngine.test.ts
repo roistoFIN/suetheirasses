@@ -24,7 +24,7 @@ const createMockPrisma = () => {
         id: playerId,
         name: (data.players.create as Record<string, unknown>).name as string,
         roomId: data.id as string,
-        isReady: (data.players.create as Record<string, unknown>).isReady as boolean,
+        isHost: (data.players.create as Record<string, unknown>).isHost as boolean,
         bankrupt: false,
         socketId: (data.players.create as Record<string, unknown>).socketId as string,
         companyId,
@@ -57,6 +57,7 @@ const createMockPrisma = () => {
       return Promise.resolve(null);
     }),
     update: vi.fn().mockResolvedValue({}),
+    delete: vi.fn().mockResolvedValue({}),
   };
 
   const mockPlayer = {
@@ -67,7 +68,7 @@ const createMockPrisma = () => {
         id: playerId,
         name: data.name as string,
         roomId: data.roomId as string,
-        isReady: data.isReady as boolean,
+        isHost: data.isHost as boolean,
         bankrupt: (data.bankrupt as boolean) || false,
         socketId: data.socketId as string,
         companyId,
@@ -137,7 +138,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -156,7 +157,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -172,7 +173,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -188,7 +189,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -196,7 +197,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Bob',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-2',
       };
@@ -212,7 +213,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -229,7 +230,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -240,12 +241,12 @@ describe('GameEngine', () => {
       expect(playerRoom).toBe(roomState.room.id);
     });
 
-    it('should set player isReady to true when creating room', async () => {
+    it('should set player isHost to true when creating room', async () => {
       const player = {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -253,7 +254,7 @@ describe('GameEngine', () => {
       const roomState = await engine.createRoom(player);
       const roomPlayer = Array.from(roomState.players.values())[0];
 
-      expect(roomPlayer.isReady).toBe(true);
+      expect(roomPlayer.isHost).toBe(true);
     });
   });
 
@@ -263,7 +264,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -274,7 +275,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Bob',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-2',
       };
@@ -292,7 +293,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -303,7 +304,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Bob',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-2',
       };
@@ -319,7 +320,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Bob',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-2',
       };
@@ -332,7 +333,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -345,7 +346,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Bob',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-2',
       };
@@ -358,7 +359,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -368,7 +369,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-2',
       };
@@ -376,12 +377,12 @@ describe('GameEngine', () => {
       await expect(engine.joinRoom(roomState.room.id, duplicate)).rejects.toThrow('Player name already taken');
     });
 
-    it('should set joining player isReady to false', async () => {
+    it('should set joining player isHost to false', async () => {
       const creator = {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -391,7 +392,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Bob',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-2',
       };
@@ -399,7 +400,7 @@ describe('GameEngine', () => {
       const joinedRoom = await engine.joinRoom(roomState.room.id, joiner);
       const joinerPlayer = Array.from(joinedRoom.players.values()).find((p) => p.socketId === 'socket-2');
 
-      expect(joinerPlayer?.isReady).toBe(false);
+      expect(joinerPlayer?.isHost).toBe(false);
     });
 
     it('should create a company for the joining player', async () => {
@@ -407,7 +408,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -417,7 +418,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Bob',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-2',
       };
@@ -442,7 +443,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -463,7 +464,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -479,7 +480,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -502,7 +503,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -525,7 +526,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -542,7 +543,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -559,7 +560,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -578,7 +579,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -597,7 +598,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -619,7 +620,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -643,7 +644,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -659,7 +660,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -680,7 +681,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -697,7 +698,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -714,7 +715,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -734,7 +735,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -756,7 +757,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -772,7 +773,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -807,7 +808,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -833,20 +834,20 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
       const roomState = await engine.createRoom(player);
       const dbPlayer = Array.from(roomState.players.values())[0];
 
-      await engine.syncPlayerToDB(dbPlayer.id, { isReady: true });
+      await engine.syncPlayerToDB(dbPlayer.id, { isHost: true });
 
       expect(mockPrisma.player.update).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { id: dbPlayer.id },
           data: expect.objectContaining({
-            isReady: true,
+            isHost: true,
           }),
         }),
       );
@@ -859,7 +860,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -878,7 +879,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -888,7 +889,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Bob',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-2',
       };
@@ -898,7 +899,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Charlie',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-3',
       };
@@ -915,7 +916,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -925,7 +926,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Bob',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-2',
       };
@@ -946,7 +947,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -956,7 +957,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Bob',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-2',
       };
@@ -977,7 +978,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -989,7 +990,7 @@ describe('GameEngine', () => {
           id: '',
           name: `Player${i}`,
           roomId: '',
-          isReady: false,
+          isHost: false,
           bankrupt: false,
           socketId: `socket-${i}`,
         };
@@ -1011,7 +1012,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -1021,7 +1022,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Bob',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-2',
       };
@@ -1031,7 +1032,7 @@ describe('GameEngine', () => {
         id: '',
         name: 'Charlie',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-3',
       };
@@ -1043,12 +1044,12 @@ describe('GameEngine', () => {
       expect(playerIds.length).toBe(3);
     });
 
-    it('should preserve player isReady state after join', async () => {
+    it('should preserve player isHost state after join', async () => {
       const creator = {
         id: '',
         name: 'Alice',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-1',
       };
@@ -1058,15 +1059,15 @@ describe('GameEngine', () => {
         id: '',
         name: 'Bob',
         roomId: '',
-        isReady: false,
+        isHost: false,
         bankrupt: false,
         socketId: 'socket-2',
       };
       await engine.joinRoom(roomState.room.id, joiner);
 
       const players = Array.from(roomState.players.values());
-      expect(players[0].isReady).toBe(true); // Creator is ready
-      expect(players[1].isReady).toBe(false); // Joiner is not ready
+      expect(players[0].isHost).toBe(true); // Creator is host
+      expect(players[1].isHost).toBe(false); // Joiner is not host
     });
   });
 });
