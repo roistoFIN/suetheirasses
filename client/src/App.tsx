@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { useSocketStore } from './stores/socketStore';
 import { useGameStore } from './stores/gameStore';
 import Matchmaking from './pages/Matchmaking';
@@ -12,11 +12,41 @@ import GameOver from './pages/GameOver';
 const App: React.FC = () => {
   const { socket, connect, disconnect } = useSocketStore();
   const { room } = useGameStore();
+  const navigate = useNavigate();
 
   useEffect(() => {
     connect();
     return () => disconnect();
   }, [connect, disconnect]);
+
+  useEffect(() => {
+    if (!room) return;
+
+    let target: string;
+    switch (room.status) {
+      case 'WAITING':
+        target = '/';
+        break;
+      case 'STRATEGY':
+        target = '/strategy';
+        break;
+      case 'RESULTS':
+        target = '/results';
+        break;
+      case 'LAWSUITS':
+        target = '/lawsuits';
+        break;
+      case 'RESOLVING':
+        target = '/resolution';
+        break;
+      default:
+        target = '/';
+    }
+
+    if (window.location.pathname !== target) {
+      navigate(target, { replace: true });
+    }
+  }, [room?.status, navigate]);
 
   const getPhaseRoute = () => {
     if (!room) return '/';

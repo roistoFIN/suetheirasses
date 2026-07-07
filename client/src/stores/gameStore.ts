@@ -88,7 +88,13 @@ export const useGameStore = create<GameState>((set) => ({
         : null,
       notification: `Player has gone bankrupt!`,
     })),
-  updatePhase: (data) => set({ currentPhase: data.phase, round: data.round, timer: data.timeLimit }),
+  updatePhase: (data) =>
+    set((state) => ({
+      currentPhase: data.phase,
+      round: data.round,
+      timer: data.timeLimit,
+      room: state.room ? { ...state.room, status: data.phase } : null,
+    })),
   updateTimer: (timeLeft) => set({ timer: timeLeft }),
   updateResults: (data) => set({ results: data, notification: 'Phase results revealed!' }),
   setGameOver: (data) => set({ gameOver: data, notification: `Game Over! ${data.winner?.name || 'Unknown'} wins!` }),
