@@ -1,6 +1,6 @@
 import { Server } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
-import { ServerEvents, LawsuitFilePayload, RoomStatus, PHASE_TIMERS, PHASE_ORDER } from '@suetheirasses/shared';
+import { ServerEvents, type LawsuitFilePayload } from '@suetheirasses/shared';
 
 export const lawsuitsPhase = {
   async fileLawsuit(

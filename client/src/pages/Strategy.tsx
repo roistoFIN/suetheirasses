@@ -12,7 +12,6 @@ import {
   TextInput,
   Badge,
   Flex,
-  Alert,
 } from '@mantine/core';
 import { useSocketStore } from '../stores/socketStore';
 import { useGameStore } from '../stores/gameStore';
@@ -77,7 +76,7 @@ const Strategy: React.FC = () => {
                     label="Action"
                     value={action.type}
                     onChange={(value) => updateAction(index, 'type', value)}
-                    options={ACTION_OPTIONS}
+                    data={ACTION_OPTIONS}
                     style={{ flex: 2, minWidth: 200 }}
                   />
                   <NumberInput

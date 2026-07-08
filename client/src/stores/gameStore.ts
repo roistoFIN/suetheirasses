@@ -22,6 +22,10 @@ interface GameState {
   addPlayer: (player: Player) => void;
   markPlayerBankrupt: (playerId: string) => void;
 
+  // Company state
+  companies: Map<string, Company>;
+  setCompanies: (companies: Company[]) => void;
+
   // Phase state
   currentPhase: RoomStatus | null;
   round: number;
@@ -48,6 +52,7 @@ export const useGameStore = create<GameState>((set) => ({
   // Initial state
   room: null,
   player: null,
+  companies: new Map(),
   currentPhase: null,
   round: 1,
   timer: 0,
@@ -100,4 +105,11 @@ export const useGameStore = create<GameState>((set) => ({
   setGameOver: (data) => set({ gameOver: data, notification: `Game Over! ${data.winner?.name || 'Unknown'} wins!` }),
   setError: (error) => set({ error }),
   setNotification: (notification) => set({ notification }),
+  setCompanies: (companies) => {
+    const companyMap = new Map<string, Company>();
+    for (const c of companies) {
+      companyMap.set(c.id, c);
+    }
+    return set({ companies: companyMap });
+  },
 }));

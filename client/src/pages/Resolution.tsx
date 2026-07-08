@@ -12,7 +12,6 @@ import {
   Badge,
   Flex,
   Alert,
-  Table,
   Modal,
 } from '@mantine/core';
 import { useSocketStore } from '../stores/socketStore';
@@ -25,17 +24,18 @@ const Resolution: React.FC = () => {
   const [settlementModal, setSettlementModal] = useState<string | null>(null);
   const [settlementAmount, setSettlementAmount] = useState<number>(0);
   const { send } = useSocketStore();
-  const { room, player } = useGameStore();
+  const { room, player, companies } = useGameStore();
 
   // Get lawsuits where the current player is the defendant and not yet resolved
   useEffect(() => {
-    if (room?.lawsuits && player) {
-      const received = room.lawsuits.filter(
-        (l: Lawsuit) => l.defendantId === player.id && !l.resolved
-      );
-      setPendingLawsuits(received);
-    }
-  }, [room, player]);
+    if (!player || !player.companyId) return;
+    const plaintiffCompany = companies.get(player.companyId);
+    if (!plaintiffCompany) return;
+    const received = plaintiffCompany.lawsuitsReceived?.filter(
+      (l: Lawsuit) => l.defendantId === player.id && !l.resolved,
+    ) ?? [];
+    setPendingLawsuits(received);
+  }, [room, player, companies]);
 
   const handleDefenseChange = (lawsuitId: string, defense: string) => {
     setResponses((prev) => ({
@@ -44,12 +44,7 @@ const Resolution: React.FC = () => {
     }));
   };
 
-  const handleSettlementChange = (lawsuitId: string, settlement: number) => {
-    setResponses((prev) => ({
-      ...prev,
-      [lawsuitId]: { ...prev[lawsuitId], settlement },
-    }));
-  };
+
 
   const handleRespond = (lawsuitId: string) => {
     const response = responses[lawsuitId];
@@ -102,7 +97,10 @@ const Resolution: React.FC = () => {
             pendingLawsuits.map((lawsuit: Lawsuit) => (
               <Paper key={lawsuit.id} withBorder p="md">
                 <Title order={4} mb="md">
-                  {lawsuit.plaintiff?.name || 'Unknown'} vs. You
+                  {(() => {
+                    const plaintiff = room?.players.find(p => p.id === lawsuit.plaintiffId);
+                    return plaintiff?.name || 'Unknown';
+                  })()} vs. You
                 </Title>
                 <Stack gap="md">
                   <Flex justify="space-between">
@@ -120,7 +118,6 @@ const Resolution: React.FC = () => {
                     placeholder="Describe your defense (min 10 characters)..."
                     value={responses[lawsuit.id]?.defense || ''}
                     onChange={(e) => handleDefenseChange(lawsuit.id, e.target.value)}
-                    minRows={3}
                   />
 
                   <Group justify="space-between">

@@ -41,9 +41,12 @@ export const useSocketStore = create<SocketState>((set, get) => ({
 
     socket.on(ServerEvents.ROOM_JOINED, (data: RoomJoinedResponse) => {
       console.log('Room joined:', data);
-      const { updateRoom, updatePlayer } = useGameStore.getState();
+      const { updateRoom, updatePlayer, setCompanies } = useGameStore.getState();
       updateRoom(data.room);
       updatePlayer(data.player);
+      if (data.companies && data.companies.length > 0) {
+        setCompanies(data.companies);
+      }
     });
 
     socket.on(ServerEvents.ROOM_PLAYER_KICKED, (data: { kickedPlayerId: string; kickedPlayerName: string }) => {

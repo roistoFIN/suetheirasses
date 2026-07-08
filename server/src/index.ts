@@ -3,7 +3,7 @@ import cors from 'cors';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
-import { setupSocketHandlers } from './socket/gameEngine';
+import { setupSocketHandlers } from './socket/gameEngine.js';
 
 const app = express();
 const httpServer = createServer(app);

@@ -1,7 +1,7 @@
 import { Server } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
-import { RoomStatus, ServerEvents, type RoomState, type StrategySubmitPayload, type PhaseOutcome } from '@suetheirasses/shared';
-import { companyService } from '../../services/companyService';
+import { ServerEvents, type RoomState, type PhaseOutcome } from '@suetheirasses/shared';
+import { companyService } from '../../services/companyService.js';
 
 export const strategyPhase = {
   async resolve(

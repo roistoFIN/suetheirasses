@@ -3,7 +3,6 @@ import {
   Container,
   Paper,
   Title,
-  Text,
   Button,
   Stack,
   Flex,

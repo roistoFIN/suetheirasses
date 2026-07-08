@@ -1,5 +1,5 @@
 import React from 'react';
-import { Container, Paper, Title, Text, Stack, Flex, Badge, Progress } from '@mantine/core';
+import { Container, Paper, Title, Text, Stack, Flex, Badge } from '@mantine/core';
 import { useGameStore } from '../stores/gameStore';
 import { motion } from 'framer-motion';
 

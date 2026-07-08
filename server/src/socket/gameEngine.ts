@@ -7,25 +7,21 @@ import {
   PHASE_TIMERS,
   PHASE_ORDER,
   MAX_PLAYERS,
-  type GameState,
   type Player,
-  type Company,
   type Room,
   type RoomState,
   type RoomInfo,
 } from '@suetheirasses/shared';
-import { strategyPhase } from './phases/strategyPhase';
-import { lawsuitsPhase } from './phases/lawsuitsPhase';
-import { resolutionPhase } from './phases/resolutionPhase';
+import { strategyPhase } from './phases/strategyPhase.js';
+import { lawsuitsPhase } from './phases/lawsuitsPhase.js';
+import { resolutionPhase } from './phases/resolutionPhase.js';
 import {
   validateRoomJoin,
   validateStrategySubmit,
   validateLawsuitFile,
   validateLawsuitRespond,
-} from '../validation/schemas';
-import { companyService } from '../services/companyService';
-import { lawsuitService } from '../services/lawsuitService';
-import { bankruptcyService } from '../services/bankruptcyService';
+} from '../validation/schemas.js';
+
 
 export class GameEngine {
   public rooms: Map<string, RoomState> = new Map();
@@ -124,7 +120,7 @@ export class GameEngine {
       id: dbPlayer.id,
       name: dbPlayer.name,
       roomId: room.id,
-      isHost: dbPlayer.isHost,
+      isHost: (dbPlayer as any).isHost ?? false,
       bankrupt: dbPlayer.bankrupt,
       companyId: dbPlayer.companyId ?? undefined,
       socketId: dbPlayer.socketId ?? player.socketId,
@@ -183,7 +179,7 @@ export class GameEngine {
       id: dbPlayer.id,
       name: dbPlayer.name,
       roomId,
-      isHost: dbPlayer.isHost,
+      isHost: (dbPlayer as any).isHost ?? false,
       bankrupt: dbPlayer.bankrupt,
       companyId: dbPlayer.companyId ?? undefined,
       socketId: dbPlayer.socketId ?? player.socketId,
@@ -198,6 +194,7 @@ export class GameEngine {
 
   async removePlayer(socketId: string): Promise<void> {
     const roomId = this.playerToRoom.get(socketId);
+    if (!roomId) return;
     if (!roomId) return;
 
     const roomState = this.rooms.get(roomId);
@@ -369,16 +366,6 @@ export class GameEngine {
   public broadcastRoomState(roomId: string, event: string, data: unknown): void {
     this.io.to(roomId).emit(event, data);
   }
-
-  private getGameState(roomId: string): GameState | null {
-    const roomState = this.rooms.get(roomId);
-    if (!roomState) return null;
-
-    return {
-      room: roomState.room,
-      companies: [],
-    };
-  }
 }
 
 export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngine {
@@ -540,7 +527,7 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
       const availableRooms: RoomInfo[] = [];
 
       // Collect in-memory active rooms
-      for (const [roomId, roomState] of engine.rooms) {
+      for (const [_roomId, roomState] of engine.rooms) {
         if (roomState.room.status === RoomStatus.WAITING && roomState.players.size < roomState.room.maxPlayers) {
           availableRooms.push({
             id: roomState.room.id,

@@ -3,9 +3,7 @@ import {
   Container,
   Paper,
   Title,
-  Text,
   Button,
-  Group,
   Stack,
   TextInput,
   NumberInput,
@@ -66,8 +64,8 @@ const Lawsuits: React.FC = () => {
                 label="Defendant"
                 placeholder="Select a player"
                 value={selectedDefendant}
-                onChange={setSelectedDefendant}
-                options={activePlayers.map((p) => ({
+                onChange={(value) => setSelectedDefendant(value ?? '')}
+                data={activePlayers.map((p) => ({
                   value: p.id,
                   label: p.name,
                 }))}
@@ -85,7 +83,6 @@ const Lawsuits: React.FC = () => {
                 placeholder="Describe the legal grounds..."
                 value={grounds}
                 onChange={(e) => setGrounds(e.target.value)}
-                minRows={3}
               />
               <Button onClick={handleSubmit} disabled={!selectedDefendant || grounds.length < 10}>
                 File Lawsuit ($1,000 fee)

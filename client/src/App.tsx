@@ -10,7 +10,7 @@ import Resolution from './pages/Resolution';
 import GameOver from './pages/GameOver';
 
 const App: React.FC = () => {
-  const { socket, connect, disconnect } = useSocketStore();
+  const { connect, disconnect } = useSocketStore();
   const { room } = useGameStore();
   const navigate = useNavigate();
 

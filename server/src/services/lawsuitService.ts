@@ -1,4 +1,3 @@
-import { PrismaClient } from '@prisma/client';
 import { Verdict } from '@suetheirasses/shared';
 
 export const lawsuitService = {

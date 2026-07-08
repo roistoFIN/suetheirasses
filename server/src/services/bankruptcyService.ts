@@ -1,6 +1,6 @@
 import { Server } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
-import { ServerEvents, RoomStatus, PHASE_TIMERS, PHASE_ORDER, type PlayerStanding } from '@suetheirasses/shared';
+import { ServerEvents, type PlayerStanding } from '@suetheirasses/shared';
 
 export interface BankruptcyResult {
   bankruptPlayers: string[];
@@ -62,8 +62,17 @@ export const bankruptcyService = {
         return bCash - aCash;
       })
       .map((p, index) => ({
-        player: p as any,
-        company: p.company as any,
+        player: {
+          id: p.id,
+          name: p.name,
+          roomId: p.roomId,
+          isHost: false,
+          bankrupt: p.bankrupt,
+          companyId: p.companyId ?? undefined,
+          socketId: p.socketId ?? null,
+          createdAt: p.createdAt,
+        } as unknown as PlayerStanding['player'],
+        company: p.company as PlayerStanding['company'],
         rank: index + 1,
       }));
 

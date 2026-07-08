@@ -1,8 +1,8 @@
 import { Server } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
-import { ServerEvents, LawsuitRespondPayload, RoomStatus, PHASE_TIMERS, PHASE_ORDER, Verdict } from '@suetheirasses/shared';
-import { bankruptcyService, type BankruptcyResult } from '../../services/bankruptcyService';
-import { lawsuitService } from '../../services/lawsuitService';
+import { ServerEvents, type LawsuitRespondPayload, RoomStatus, PHASE_TIMERS, Verdict } from '@suetheirasses/shared';
+import { bankruptcyService } from '../../services/bankruptcyService.js';
+import { lawsuitService } from '../../services/lawsuitService.js';
 
 export const resolutionPhase = {
   async respondToLawsuit(

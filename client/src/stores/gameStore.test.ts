@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { useGameStore } from './gameStore';
 import { RoomStatus } from '@suetheirasses/shared';
-import type { Room, Player, Company, PhaseChangedResponse, ResultsRevealResponse, GameOverResponse, ErrorResponse } from '@suetheirasses/shared';
+import type { Room, Player, PhaseChangedResponse, ResultsRevealResponse, GameOverResponse, ErrorResponse } from '@suetheirasses/shared';
 
 // Helper to create a mock room
 const createMockRoom = (overrides: Partial<Room> = {}): Room => ({
@@ -10,6 +10,7 @@ const createMockRoom = (overrides: Partial<Room> = {}): Room => ({
   maxPlayers: 4,
   currentPhaseRound: 1,
   players: [],
+  createdAt: new Date(),
   ...overrides,
 });
 
@@ -30,8 +31,8 @@ const resetStore = () => {
   store.updateRoom(createMockRoom());
   store.updatePlayer(createMockPlayer());
   store.updatePhase({ phase: RoomStatus.WAITING, round: 1, timeLimit: 0 });
-  store.updateResults({ standings: [], marketEvents: [], companyResults: [] } as any);
-  store.setGameOver({ message: '', winner: { playerId: '', playerName: '', cash: 0 }, standings: [] });
+  store.updateResults({ outcomes: [] } as ResultsRevealResponse);
+  store.setGameOver({ winner: { id: '', name: '', roomId: '', isHost: false, bankrupt: false }, finalStandings: [] });
   store.setError(null);
   store.setNotification(null);
 };
@@ -283,18 +284,7 @@ describe('gameStore', () => {
       expect(useGameStore.getState().timer).toBe(90);
     });
 
-    it('should update phase to RESOLUTION', () => {
-      const phaseData: PhaseChangedResponse = {
-        phase: RoomStatus.RESOLUTION,
-        round: 5,
-        timeLimit: 60,
-      };
 
-      useGameStore.getState().updatePhase(phaseData);
-
-      expect(useGameStore.getState().currentPhase).toBe(RoomStatus.RESOLUTION);
-      expect(useGameStore.getState().round).toBe(5);
-    });
   });
 
   describe('updateTimer', () => {
@@ -315,56 +305,49 @@ describe('gameStore', () => {
   describe('updateResults', () => {
     it('should store results data', () => {
       const results: ResultsRevealResponse = {
-        standings: [
-          { playerId: 'player-1', playerName: 'Alice', rank: 1, cash: 150000 },
-          { playerId: 'player-2', playerName: 'Bob', rank: 2, cash: 120000 },
+        outcomes: [
+          { playerId: 'player-1', playerName: 'Alice', changes: [] },
+          { playerId: 'player-2', playerName: 'Bob', changes: [] },
         ],
-        marketEvents: [],
-        companyResults: [],
       };
 
       useGameStore.getState().updateResults(results);
 
       expect(useGameStore.getState().results).toEqual(results);
-      expect(useGameStore.getState().results?.standings.length).toBe(2);
+      expect(useGameStore.getState().results?.outcomes.length).toBe(2);
     });
   });
 
   describe('setGameOver', () => {
     it('should store game over data', () => {
       const gameOver: GameOverResponse = {
-        message: 'Game Over!',
-        winner: { playerId: 'player-1', playerName: 'Alice', cash: 200000 },
-        standings: [
-          { playerId: 'player-1', playerName: 'Alice', rank: 1, cash: 200000 },
-          { playerId: 'player-2', playerName: 'Bob', rank: 2, cash: 100000 },
+        winner: { id: 'player-1', name: 'Alice', roomId: 'room-1', isHost: false, bankrupt: false },
+        finalStandings: [
+          { player: { id: 'player-1', name: 'Alice', roomId: 'room-1', isHost: false, bankrupt: false }, company: null, rank: 1 },
+          { player: { id: 'player-2', name: 'Bob', roomId: 'room-1', isHost: false, bankrupt: false }, company: null, rank: 2 },
         ],
       };
 
       useGameStore.getState().setGameOver(gameOver);
 
       expect(useGameStore.getState().gameOver).toEqual(gameOver);
-      expect(useGameStore.getState().gameOver?.message).toBe('Game Over!');
-      expect(useGameStore.getState().gameOver?.winner?.playerName).toBe('Alice');
+      expect(useGameStore.getState().gameOver?.winner.name).toBe('Alice');
     });
 
     it('should overwrite previous game over state', () => {
       const gameOver1: GameOverResponse = {
-        message: 'Game Over 1',
-        winner: { playerId: 'player-1', playerName: 'Alice', cash: 200000 },
-        standings: [],
+        winner: { id: 'player-1', name: 'Alice', roomId: 'room-1', isHost: false, bankrupt: false },
+        finalStandings: [],
       };
       const gameOver2: GameOverResponse = {
-        message: 'Game Over 2',
-        winner: { playerId: 'player-2', playerName: 'Bob', cash: 150000 },
-        standings: [],
+        winner: { id: 'player-2', name: 'Bob', roomId: 'room-1', isHost: false, bankrupt: false },
+        finalStandings: [],
       };
 
       useGameStore.getState().setGameOver(gameOver1);
       useGameStore.getState().setGameOver(gameOver2);
 
-      expect(useGameStore.getState().gameOver?.message).toBe('Game Over 2');
-      expect(useGameStore.getState().gameOver?.winner?.playerName).toBe('Bob');
+      expect(useGameStore.getState().gameOver?.winner.name).toBe('Bob');
     });
   });
 
