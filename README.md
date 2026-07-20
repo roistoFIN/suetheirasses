@@ -273,7 +273,7 @@ model Company {
   variables         Json    @default("{}")
   // Snapshot of last turn's computed results, for UI display/history
   lastTurnSnapshot  Json?   @default("{}")
-  // activeDecisions, depreciationLedger, legalCases (GameLoop's CompanyEngineState)
+  // activeDecisions, depreciationLedger, legalCases, investigations (GameLoop's CompanyEngineState)
   engineState       Json    @default("{}")
   assets            Asset[]
 
@@ -302,27 +302,31 @@ model Asset {
 | Event | Payload | Description |
 |-------|---------|-------------|
 | `room:join` | `{ playerName, roomName?, searchForRoom? }` | Join a specific room by ID (`roomName`), create one (no params), or search for an available room (`searchForRoom: true`). When joining via invite link, `roomName` contains the UUID v4 room code from the URL query param. |
+| `room:rejoin` | `{ roomId, playerId }` | Resume an existing session on a new socket — after a page refresh, an accidental back button, or a brief network drop — as long as it's within the server's reconnect grace period. See *Reconnection & Session Resume* below. |
 | `room:list` | — | Request list of available rooms |
 | `room:kick` | `{ playerId }` | Host removes a player from the room |
 | `room:startGame` | — | Host starts the game (WAITING → GAME_PHASE, round 1) |
 | `game:submitDecisions` | `{ strategic: DecisionEntry[], operational: DecisionEntry[], lawsuits: LawsuitEntry[] }` | Full replacement of this turn's pending decisions (`{ name, targetId? }` each) *and* deliberate lawsuit filings (`{ targetId, decisionName, groundName }` each — see *Lawsuits* below). Structural validation only — per-turn limits (max 1 strategic / 2 operational / 3 lawsuits) come from `game_config.json` and are enforced by `DecisionEngine.canDeploy` / `GameLoop`'s lawsuit-filing step. |
+| `game:digDeeper` | `{ attackId }` | Pay `gameSettings.digDeeperCost` ($10,000 by default) to reveal the next tier of intel on one incoming attack — instant, outside the turn-resolution cycle. See *Attack Awareness & Dig Deeper* below. |
 | `chat:message` | `{ message }` | Send a chat message to the room |
 
 #### Server → Client
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `room:joined` | `{ room, player, companies }` | Successfully joined a room |
+| `room:joined` | `{ room, player, companies }` | Successfully joined a room — also the response to a successful `room:rejoin` |
 | `room:playerJoined` | `{ playerId, playerName, isHost, roomId }` | New player joined the room |
 | `room:playerKicked` | `{ kickedPlayerId, kickedPlayerName }` | Player was kicked from room |
+| `room:playerLeft` | `{ playerId, playerName, roomId }` | A disconnected player's reconnect grace period expired without them coming back — they're now actually removed. Never fires for a disconnect that reconnects in time; the rest of the room isn't told about those at all. |
 | `rooms:list` | `{ rooms: RoomInfo[] }` | List of available rooms (Quick Play) |
 | `phase:changed` | `{ phase, round, timeLimit }` | Room advanced phase, or looped into another GAME_PHASE round |
 | `timer:update` | `{ timeLeft }` | Countdown tick |
-| `game:deck` | `{ decisions: DecisionDefinition[], gameSettings: GameSettings }` | Sent once, right when GAME_PHASE starts — the full 45-decision library and per-turn limits, static for the whole game |
-| `turn:resolved` | `TurnResolutionResult` (`{ round, players: PlayerTurnResult[], gameOver, winnerId? }`) | Sent twice per round-1: once immediately when the game starts (starting-position preview, `GameLoop.getInitialSnapshot`), and again whenever a GAME_PHASE turn actually finishes resolving (`GameLoop.resolveTurn`) — full per-player state either way |
+| `game:deck` | `{ decisions: DecisionDefinition[], gameSettings: GameSettings }` | Sent once, right when GAME_PHASE starts — the full 45-decision library and per-turn limits, static for the whole game. Also re-sent on a successful `room:rejoin` during GAME_PHASE. |
+| `turn:resolved` | `TurnResolutionResult` (`{ round, players: PlayerTurnResult[], gameOver, winnerId? }`) | Sent twice per round-1: once immediately when the game starts (starting-position preview, `GameLoop.getInitialSnapshot`), and again whenever a GAME_PHASE turn actually finishes resolving (`GameLoop.resolveTurn`) — full per-player state either way. `GameEngine` caches the most recent one per room and re-sends it on a successful `room:rejoin` during GAME_PHASE, so a reconnecting player doesn't wait for the next turn to see where things stand. |
 | `player:bankrupt` | `{ playerId, playerName }` | Player's cash went below $0 this turn — eliminated immediately (FORMULAS §12) |
-| `game:over` | `{ winner, finalStandings }` | Only one player remains; room moved to AFTERMATH |
-| `error` | `{ code, message }` | Error occurred (e.g. `NOT_HOST`, `INVALID_DECISIONS`) |
+| `game:over` | `{ winner, finalStandings }` | Only one player remains; room moved to AFTERMATH. Also re-sent on a successful `room:rejoin` during AFTERMATH. |
+| `game:digDeeperResult` | `{ attackId, cost, newCash, attack: IncomingAttackInfo }` | Sent only to the requesting socket, never broadcast — the newly-unlocked intel tier for one attack |
+| `error` | `{ code, message }` | Error occurred (e.g. `NOT_HOST`, `INVALID_DECISIONS`, `REJOIN_FAILED`) |
 
 ### API Type Definitions
 
@@ -344,6 +348,11 @@ export interface RoomJoinPayload {
   roomName?: string;
   searchForRoom?: boolean;
 }
+
+export interface RoomRejoinPayload {
+  roomId: string;
+  playerId: string;
+}
 ```
 
 ### Zustand State Stores
@@ -358,19 +367,26 @@ Manages all game-related state including room state, player data, phase tracking
 |--------|-------------|
 | `updateRoom(room)` | Replace the current room state |
 | `updatePlayer(player)` | Replace the current player object with updated DB-generated ID |
-| `kickPlayer(playerId)` | Remove a player from the room |
+| `kickPlayer(playerId)` | Remove a player from the room — despite the name, just "remove from roster"; also reused for the `room:playerLeft` (grace-period-expired) case |
 | `addPlayer(player)` | Add a new player to the room when they join dynamically |
 | `markPlayerBankrupt(playerId)` | Mark a player as bankrupt and remove them from active play |
 | `updatePhase(data)` | Update the current game phase, round, and timer |
 | `updateTimer(timeLeft)` | Update the countdown timer value |
+| `handleTurnResolved(data)` | Replace `turnResults` with the latest `turn:resolved` payload |
+| `clearTurnResults()` | Clear `turnResults` |
+| `applyDigDeeperResult(playerId, data)` | Immutably patches just the requesting player's cash + the matching `incomingAttacks` entry inside `turnResults` — the instant, out-of-band response to `game:digDeeper`, applied without waiting for the next turn |
+| `setGameDeck(data)` | Store the decision library + per-turn limits |
 | `setGameOver(data)` | Set game over state with winner and standings |
+| `clearGameOver()` | Clear game over state |
 | `setError(error)` | Set error state |
 | `setNotification(message)` | Set UI notification message |
 | `setCompanies(companies)` | Update company data for all players |
+| `setIsRejoining(isRejoining)` | Toggle the "attempting to resume a saved session" flag — gates `App.tsx`'s first paint so Matchmaking doesn't flash before a `room:rejoin` attempt resolves |
 
 #### `socketStore.ts`
 
-Manages the Socket.IO connection and event routing:
+Manages the Socket.IO connection and event routing, plus session persistence for
+reconnection (see *Reconnection & Session Resume* below):
 
 | Method | Description |
 |--------|-------------|
@@ -379,11 +395,26 @@ Manages the Socket.IO connection and event routing:
 | `disconnect()` | Close the socket connection |
 
 **Key event handlers:**
+- `connect` → If a session (`{ roomId, playerId }`) is saved in `localStorage`, sets
+  `isRejoining` and emits `room:rejoin`. Fires on the first connect *and* on every
+  Socket.IO-driven auto-reconnect after a transient drop — so a brief network blip with
+  the tab still open self-heals here too, not just a full page reload.
+- `room:joined` → Calls `gameStore.updateRoom()`/`updatePlayer()`, and saves the session
+  to `localStorage` — covers both a fresh join and a successful rejoin, since the server
+  reuses this same event for both
 - `room:playerJoined` → Calls `gameStore.addPlayer()` with deduplication guard
+- `room:playerKicked` → Calls `gameStore.kickPlayer()`; clears the saved session if *I'm*
+  the one who got kicked
+- `room:playerLeft` → Calls `gameStore.kickPlayer()` (same roster-removal logic) plus a
+  distinguishing notification ("…connection timed out")
 - `phase:changed` → Calls `gameStore.updatePhase()`
 - `timer:update` → Calls `gameStore.updateTimer()`
-- `game:over` → Calls `gameStore.setGameOver()`
-- `error` → Calls `gameStore.setError()`
+- `game:over` → Calls `gameStore.setGameOver()`; clears the saved session (nothing left
+  to reconnect to)
+- `game:digDeeperResult` → Calls `gameStore.applyDigDeeperResult()`
+- `error` → Calls `gameStore.setError()`; a `REJOIN_FAILED` code additionally clears the
+  saved session and `isRejoining`, so a stale/expired session self-heals into the normal
+  landing page
 
 ---
 
@@ -579,14 +610,68 @@ re-validates that the target still has that decision active, then prices the cas
 decision's `elapsedYears` — the longer a risky decision has been live, the higher the
 probability tier, exactly like a normal impact schedule (FORMULAS §6, §9).
 
-> **Known gap:** `target.*` impact fields (FORMULAS §0 — the 9 fields like `target.cash`,
-> `target.outrage` that route a decision's effect to the chosen target rather than the
-> decision-maker, used by Buy Shares/Sell Shares and the offensive-sabotage decisions)
-> are extracted and stored (`calcEngine.extractTargetImpacts`/`applyTargetImpacts`,
-> `DecisionEngine.getTargetImpacts`) but never actually applied to the target player in
-> `GameLoop.resolveTurn` — deploying a targeted decision currently only applies its
-> self-effects. The Decision Deck UI lets players pick a target and submits `targetId`
-> correctly; the server-side application is the missing piece.
+`target.*` impact fields (FORMULAS §0 — the 9 fields like `target.cash`, `target.outrage`
+that route a decision's effect to the chosen target rather than the decision-maker, used
+by Buy Shares/Sell Shares and the offensive-sabotage decisions) route to the chosen
+opponent every turn the decision stays active, applied in `resolveTurn`'s Step 2 right
+alongside the decision's own self-effects (`calcEngine.extractTargetImpacts`/
+`applyTargetImpacts`, `DecisionEngine.getTargetImpacts`, `GameLoop.buildIncomingAttacks`)
+— see *Attack Awareness & Dig Deeper* below for how a targeted player finds out.
+
+### Attack Awareness & Dig Deeper
+
+Offensive decisions (Bot Attack, Social Astroturf, and the rest of the `target.*`-bearing
+library) used to land invisibly — the target's stats moved with no signal pointing at the
+cause. Every player who currently has an active `target.*` decision aimed at them gets an
+`incomingAttacks` entry on their own `PlayerTurnResult`, computed fresh by
+`GameLoop.buildIncomingAttacks` each turn — this is server-gated, not just UI-hidden: the
+attacker's identity is never sent to the client below whatever tier that player has
+personally unlocked, so there's nothing to read via devtools before paying for it.
+
+The client shows a hint next to the SUE THEIR ASSES button — *"Somebody did something to
+you"* — with a **🔍 Dig Deeper** button. Each click emits `game:digDeeper` and costs
+`gameSettings.digDeeperCost` ($10,000 by default), deducted **instantly** via
+`GameEngine.digDeeper`/`GameLoop.digDeeper` — a genuinely out-of-band mutation, not routed
+through the normal turn-resolution cycle (see CLAUDE.md's *"Two exceptions to
+'everything happens in resolveTurn'"*). Investigation unlocks progressively, tracked per
+attack instance in `Company.engineState.investigations`:
+
+1. **Who** — the attacker's id and name
+2. **What** — the decision name, description, and a human-readable effect summary (e.g.
+   *"-20% Capacity Utilization"*), via `decisionEngine.summarizeTargetImpacts`
+3. **Suggested lawsuit + estimated odds** — the strongest `legalRisks` ground against that
+   decision, picked by `decisionEngine.pickBestGround` using the *same* adjusted-probability
+   formula as real trial resolution (FORMULAS §6) evaluated against the attacker's current
+   scrutiny/legal exposure — an estimate; the real probability is still recomputed fresh at
+   trial time. A **SUE NOW** button at this tier pre-fills `SueModal` with the right target
+   and ground (still requires the player's own QUEUE LAWSUIT confirmation).
+
+Once fully investigated (tier 3), the button disables — no further charge. The button is
+also disabled client-side whenever cash is below `digDeeperCost`; the server enforces the
+same rule independently, so it's never possible to Dig Deeper into bankruptcy.
+
+### Reconnection & Session Resume
+
+A raw socket disconnect — a network hiccup, an accidental browser back button, a page
+refresh — never deletes a player anymore. `GameEngine.markPlayerDisconnected` clears their
+live socket association but leaves them in the room; their still-open decisions/lawsuits
+keep resolving normally on schedule, exactly like an AFK player who simply didn't submit
+that turn. They have `RECONNECT_GRACE_PERIOD_MS` (60s by default) to reconnect before the
+same heartbeat interval that sweeps stale empty rooms (`STALE_ROOM_THRESHOLD`) also calls
+`finalizePlayerRemoval` — the original immediate-delete behavior, just deferred. Because
+the player is never removed from the room during the grace window, **the rest of the room
+is never told they left** — no broadcast fires unless the grace period actually expires
+(at which point `room:playerLeft` fires, distinct from a real kick).
+
+On the client, `socketStore.ts` persists `{ roomId, playerId }` to `localStorage` on every
+successful join, and attempts `room:rejoin` on every socket `connect` event — which fires
+on first load *and* on every Socket.IO-driven auto-reconnect, so a brief network blip with
+the tab still open self-heals without a page reload too. `App.tsx` shows a "Reconnecting…"
+state while that attempt is in flight, and `GamePhase.tsx` redirects to matchmaking if it
+ever lands with a genuinely empty store and no rejoin attempt underway (closing off what
+was previously an infinite "Waiting for game data…" spinner on a raw refresh with no saved
+session). A failed rejoin (`REJOIN_FAILED` — expired grace period, ended game, bogus
+session) self-heals into the normal matchmaking flow by clearing the stale saved session.
 
 ### Bankruptcy & Game Over (Aftermath)
 
@@ -613,6 +698,8 @@ All client inputs are validated server-side using Zod schemas before processing:
 | `chatMessageSchema` | `message` | Required, 1-500 characters |
 | `submitDecisionsSchema` | `strategic`, `operational` | Arrays of `{ name, targetId? }`, max 20 entries each — structural sanity only; the real per-turn limits come from `game_config.json` via `DecisionEngine.canDeploy` |
 | | `lawsuits` | Array of `{ targetId, decisionName, groundName }`, max 10 entries — structural cap only; the real limit (`maxLawsuitsPerPlayerPerTurn`, 3) and the "target actually deployed this" check happen in `LegalEngine.fileLawsuit` |
+| `digDeeperSchema` | `attackId` | Required, 1-100 characters |
+| `roomRejoinSchema` | `roomId`, `playerId` | Both required, 1-50 characters — no separate auth token; the id pair itself is the bearer credential, same trust model as every other player id already used throughout the app (no passwords anywhere) |
 
 ### Game Engine Architecture
 
@@ -624,14 +711,19 @@ only place that touches Prisma or Socket.IO for turn resolution:
 | Method | Description |
 |--------|-------------|
 | `createRoom(player)` | Creates a new room with the player as founder (max 4 players) |
-| `joinRoom(roomId, player)` | Joins an existing room; throws if full |
-| `removePlayer(socketId)` | Removes player from room; cleans up DB if room becomes empty |
+| `joinRoom(roomId, player)` | Joins an existing room; throws if full or the name is already taken |
+| `markPlayerDisconnected(socketId)` | A socket disconnected — clears the player's live socket association but keeps them in the room and makes no DB write, starting their reconnect grace-period clock |
+| `finalizePlayerRemoval(roomId, playerId)` *(private)* | Actually removes a player whose grace period expired without a `room:rejoin` — the DB cleanup `markPlayerDisconnected`'s predecessor (`removePlayer`) used to do immediately; broadcasts `room:playerLeft`; cleans up the room too if it's now empty |
+| `rejoinRoom(roomId, playerId, socketId)` | Re-associates an existing (still-within-grace-period) player with a new socket; returns data for the caller to emit (`room:joined` always, plus `game:deck`/cached `turn:resolved` or `game:over` depending on room phase) rather than doing the emitting itself, mirroring `digDeeper`'s pattern |
+| `buildRoomJoinedPayload(roomState, player)` | Builds the `room:joined` payload shape — shared by the fresh-join and rejoin paths |
+| `digDeeper(roomId, playerId, attackId)` | "Dig Deeper" — pay to reveal the next tier of intel on one incoming attack, instantly, outside the turn-resolution cycle. Loads active players, calls `GameLoop.digDeeper` (pure), and on success does the one Prisma write (`cash` *and* `variables`, since `GameLoop` reads cash from the `variables` JSONB, not the column) |
 | `advancePhase(roomId)` | Linear phase advance (WAITING → GAME_PHASE); race-condition guarded |
-| `resolveGameTurn(roomId)` | Loads active players from the DB, calls `GameLoop.resolveTurn` (pure), then persists the returned `companyUpdates`/`bankruptedPlayers` and broadcasts `player:bankrupt`/`turn:resolved` — then either loops into another GAME_PHASE round or, once one player remains, transitions to AFTERMATH and emits `game:over` |
+| `resolveGameTurn(roomId)` | Loads active players from the DB, calls `GameLoop.resolveTurn` (pure), then persists the returned `companyUpdates`/`bankruptedPlayers` and broadcasts `player:bankrupt`/`turn:resolved` — then either loops into another GAME_PHASE round or, once one player remains, transitions to AFTERMATH and emits `game:over`. Also caches the broadcast result (`lastTurnResults`) for `rejoinRoom` to re-send. |
 | `submitDecisions(roomId, playerId, decisions)` | Forwards a validated `game:submitDecisions` payload to `GameLoop` |
-| `broadcastInitialSnapshot(roomId, round)` | Called once, right when `room:startGame` fires — loads active players, calls `GameLoop.getInitialSnapshot` (pure), and broadcasts the result immediately so the game room renders without delay |
+| `broadcastInitialSnapshot(roomId, round)` | Called once, right when `room:startGame` fires — loads active players, calls `GameLoop.getInitialSnapshot` (pure), and broadcasts the result immediately so the game room renders without delay. Also caches it for `rejoinRoom`. |
 | `broadcastRoomState(roomId, event, data)` | Broadcasts state to all players in a room |
-| `loadActiveCompanyPlayers(roomId)` *(private)* | Shared DB fetch (`player.findMany` with `company` included, `bankrupt: false`) feeding both `resolveGameTurn` and `broadcastInitialSnapshot` |
+| `loadActiveCompanyPlayers(roomId)` *(private)* | Shared DB fetch (`player.findMany` with `company` included, `bankrupt: false`) feeding `resolveGameTurn`, `broadcastInitialSnapshot`, and `digDeeper` |
+| `startHeartbeatCleanup()` *(private)* | One 10s `setInterval` sweeping two things: rooms empty for over `STALE_ROOM_THRESHOLD` (60s), and disconnected players past `RECONNECT_GRACE_PERIOD_MS` (60s) → `finalizePlayerRemoval`. Extend this interval for new periodic sweeps rather than adding a second one. |
 
 **`GameLoop`** (`server/src/engine/gameLoop.ts`) — the authoritative turn-resolution
 engine, loaded with `game_engine.json`/`game_config.json` at startup. It is a **pure
@@ -645,6 +737,7 @@ without mocking a database or a socket server:
 | `submitDecisions(roomId, playerId, decisions)` | Buffers one player's choices for the in-flight turn |
 | `resolveTurn(roomId, round, players: EngineDataInput[])` | Runs the full per-turn calculation (see *Business Decisions* above) and returns a `TurnResolutionOutcome`: the `turn:resolved` broadcast payload (`result`), the `Company` rows still-active players need persisted (`companyUpdates`), and the players eliminated this turn (`bankruptedPlayers`) — it does not write to the DB or emit anything itself |
 | `getInitialSnapshot(roomId, round, players: EngineDataInput[])` | Same formula pipeline as `resolveTurn`, but with zero decisions and nothing persisted — returns the `TurnResolutionResult` preview directly; the caller broadcasts it |
+| `digDeeper(playerId, attackId, players: EngineDataInput[])` | A lighter-weight sibling to `resolveTurn` — no market/P&L pipeline, just cash + engine state. Validates funds and investigation level, bumps the target attack's tier, and returns a `DigDeeperOutcome` (new cash, the revealed `IncomingAttackInfo`, and the engine state to persist) for the caller to write and emit; never runs on the turn timer |
 
 `GameEngine` owns the full read → compute → persist → broadcast cycle: it loads each
 active player's `Company.variables`/`engineState` from the DB into `EngineDataInput[]`,
@@ -662,7 +755,10 @@ and broadcast internally, just performed by the caller instead.
    game room with a real, deployable Decision Deck, not a blank loading screen
 4. Every time the GAME_PHASE timer expires, `resolveGameTurn` resolves the round and
    either loops (`currentPhaseRound` + 1, new 120s timer) or ends the game (`AFTERMATH`)
-5. If room empties, both in-memory state and database record are cleaned up
+5. A socket disconnecting doesn't remove its player — see *Reconnection & Session Resume*
+   above — so "room empties" now means every player's reconnect grace period has expired,
+   not just every socket being momentarily gone; once that's true, both in-memory state
+   and the database record are cleaned up
 
 **Concurrency Safety:**
 - Phase advancement and turn resolution share a `Set<string>` lock (`advancingRooms`) to

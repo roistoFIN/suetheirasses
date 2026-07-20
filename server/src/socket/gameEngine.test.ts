@@ -447,8 +447,8 @@ describe('GameEngine', () => {
     });
   });
 
-  describe('removePlayer', () => {
-    it('should remove a player from the room', async () => {
+  describe('markPlayerDisconnected', () => {
+    it('keeps the player in the room and clears their socketId — no DB delete', async () => {
       const creator = {
         id: '',
         name: 'Alice',
@@ -458,18 +458,37 @@ describe('GameEngine', () => {
         socketId: 'socket-1',
       };
       const roomState = await engine.createRoom(creator);
+      const playerId = Array.from(roomState.players.keys())[0];
 
-      await engine.removePlayer('socket-1');
+      await engine.markPlayerDisconnected('socket-1');
 
+      // The old socketId->room mapping is gone (it's dead)...
       expect(engine.getPlayerRoom('socket-1')).toBeUndefined();
-      expect(engine.getRoom(roomState.room.id)).toBeUndefined();
+      // ...but the room and player are both still there, untouched in the DB.
+      const room = engine.getRoom(roomState.room.id);
+      expect(room).toBeDefined();
+      expect(room!.players.has(playerId)).toBe(true);
+      expect(room!.players.get(playerId)!.socketId).toBeNull();
+      expect(mockPrisma.player.delete).not.toHaveBeenCalled();
+      expect(mockPrisma.company.delete).not.toHaveBeenCalled();
     });
 
     it('should do nothing for unknown socket', async () => {
-      await expect(engine.removePlayer('unknown-socket')).resolves.toBeUndefined();
+      await expect(engine.markPlayerDisconnected('unknown-socket')).resolves.toBeUndefined();
+    });
+  });
+
+  describe('reconnect grace period (finalizePlayerRemoval via heartbeat sweep)', () => {
+    afterEach(() => {
+      vi.useRealTimers();
     });
 
-    it('should delete player company on removal', async () => {
+    it('finalizes removal — DB delete, room cleanup, ROOM_PLAYER_LEFT broadcast — once the grace period elapses without a rejoin', async () => {
+      vi.useFakeTimers();
+      const localIo = createMockIo();
+      const localPrisma = createMockPrisma();
+      const localEngine = new GameEngine(localIo, localPrisma);
+
       const creator = {
         id: '',
         name: 'Alice',
@@ -478,14 +497,65 @@ describe('GameEngine', () => {
         bankrupt: false,
         socketId: 'socket-1',
       };
-      await engine.createRoom(creator);
+      const roomState = await localEngine.createRoom(creator);
+      const playerId = Array.from(roomState.players.keys())[0];
 
-      await engine.removePlayer('socket-1');
+      await localEngine.markPlayerDisconnected('socket-1');
+      expect(localPrisma.player.delete).not.toHaveBeenCalled();
 
-      expect(mockPrisma.player.delete).toHaveBeenCalled();
+      // Past both the 10s heartbeat tick and the 60s grace period.
+      await vi.advanceTimersByTimeAsync(70_000);
+
+      expect(localPrisma.player.delete).toHaveBeenCalled();
+      expect(localEngine.getRoom(roomState.room.id)).toBeUndefined();
+      expect(localIo.emit).toHaveBeenCalledWith(
+        ServerEvents.ROOM_PLAYER_LEFT,
+        expect.objectContaining({ playerId, playerName: 'Alice' }),
+      );
+
+      localEngine.stop();
     });
 
-    it('should clear player from room state', async () => {
+    it('reconnecting via rejoinRoom within the grace period cancels the pending removal', async () => {
+      vi.useFakeTimers();
+      const localIo = createMockIo();
+      const localPrisma = createMockPrisma();
+      const localEngine = new GameEngine(localIo, localPrisma);
+
+      const creator = {
+        id: '',
+        name: 'Alice',
+        roomId: '',
+        isHost: false,
+        bankrupt: false,
+        socketId: 'socket-1',
+      };
+      const roomState = await localEngine.createRoom(creator);
+      const playerId = Array.from(roomState.players.keys())[0];
+
+      await localEngine.markPlayerDisconnected('socket-1');
+      await vi.advanceTimersByTimeAsync(5_000); // well within the grace period
+
+      const result = await localEngine.rejoinRoom(roomState.room.id, playerId, 'socket-2');
+      expect(result.success).toBe(true);
+
+      // Advance well past what would have been the original 60s deadline.
+      await vi.advanceTimersByTimeAsync(70_000);
+
+      expect(localPrisma.player.delete).not.toHaveBeenCalled();
+      expect(localEngine.getRoom(roomState.room.id)).toBeDefined();
+
+      localEngine.stop();
+    });
+  });
+
+  describe('rejoinRoom', () => {
+    it('returns failure when the room no longer exists', async () => {
+      const result = await engine.rejoinRoom('nonexistent-room', 'some-player', 'socket-2');
+      expect(result.success).toBe(false);
+    });
+
+    it('returns failure when the player no longer exists in the room', async () => {
       const creator = {
         id: '',
         name: 'Alice',
@@ -496,9 +566,83 @@ describe('GameEngine', () => {
       };
       const roomState = await engine.createRoom(creator);
 
-      await engine.removePlayer('socket-1');
+      const result = await engine.rejoinRoom(roomState.room.id, 'bogus-player-id', 'socket-2');
+      expect(result.success).toBe(false);
+    });
 
-      expect(engine.getRoom(roomState.room.id)).toBeUndefined();
+    it('re-associates the player with the new socket and returns a ROOM_JOINED payload', async () => {
+      const creator = {
+        id: '',
+        name: 'Alice',
+        roomId: '',
+        isHost: false,
+        bankrupt: false,
+        socketId: 'socket-1',
+      };
+      const roomState = await engine.createRoom(creator);
+      const playerId = Array.from(roomState.players.keys())[0];
+      await engine.markPlayerDisconnected('socket-1');
+
+      const result = await engine.rejoinRoom(roomState.room.id, playerId, 'socket-2');
+
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+      expect(result.roomJoined.player.id).toBe(playerId);
+      expect(engine.getPlayerRoom('socket-2')).toBe(roomState.room.id);
+      expect(engine.getRoom(roomState.room.id)!.players.get(playerId)!.socketId).toBe('socket-2');
+      // WAITING phase — no game deck or turn snapshot to resend yet.
+      expect(result.gameDeck).toBeUndefined();
+      expect(result.turnResolved).toBeUndefined();
+      expect(result.gameOver).toBeUndefined();
+    });
+
+    it('resends the game deck + cached last-turn snapshot when rejoining mid-GAME_PHASE', async () => {
+      const creator = {
+        id: '',
+        name: 'Alice',
+        roomId: '',
+        isHost: false,
+        bankrupt: false,
+        socketId: 'socket-1',
+      };
+      const roomState = await engine.createRoom(creator);
+      const playerId = Array.from(roomState.players.keys())[0];
+      roomState.room.status = RoomStatus.GAME_PHASE;
+      await engine.broadcastInitialSnapshot(roomState.room.id, 1); // populates the lastTurnResults cache
+      await engine.markPlayerDisconnected('socket-1');
+
+      const result = await engine.rejoinRoom(roomState.room.id, playerId, 'socket-2');
+
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+      expect(result.gameDeck).toBeDefined();
+      expect(result.turnResolved).toBeDefined();
+      expect(result.turnResolved!.round).toBe(1);
+      expect(result.gameOver).toBeUndefined();
+    });
+
+    it('resends the game-over payload when rejoining during AFTERMATH', async () => {
+      const creator = {
+        id: '',
+        name: 'Alice',
+        roomId: '',
+        isHost: false,
+        bankrupt: false,
+        socketId: 'socket-1',
+      };
+      const roomState = await engine.createRoom(creator);
+      const playerId = Array.from(roomState.players.keys())[0];
+      roomState.room.status = RoomStatus.AFTERMATH;
+      await engine.markPlayerDisconnected('socket-1');
+
+      const result = await engine.rejoinRoom(roomState.room.id, playerId, 'socket-2');
+
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+      expect(result.gameOver).toBeDefined();
+      expect(result.gameOver!.winner.id).toBe(playerId);
+      expect(result.gameDeck).toBeUndefined();
+      expect(result.turnResolved).toBeUndefined();
     });
   });
 

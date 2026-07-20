@@ -7,7 +7,8 @@
     "maxStrategicDecisionsPerTurn": 1,
     "maxOperationalDecisionsPerTurn": 2,
     "totalMarketVolumeTonnesPerYear": 10000,
-    "marketFixed": true
+    "marketFixed": true,
+    "digDeeperCost": 10000
   },
 
   "playerStartingValues": {

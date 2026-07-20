@@ -1,4 +1,4 @@
-import type { DecisionDefinition, GameSettings } from './gameTypes.js';
+import type { DecisionDefinition, GameSettings, IncomingAttackInfo } from './gameTypes.js';
 
 // ============================================================
 // Room & Phase Types
@@ -90,6 +90,10 @@ export enum ClientEvents {
   ROOM_LIST = 'room:list',
   CHAT_MESSAGE = 'chat:message',
   GAME_SUBMIT_DECISIONS = 'game:submitDecisions',
+  /** Pay to reveal the next tier of intel on an incoming attack — instant, outside turn resolution. */
+  GAME_DIG_DEEPER = 'game:digDeeper',
+  /** Re-associate an existing player (by id) with a new socket after a disconnect, within the server's grace period. */
+  ROOM_REJOIN = 'room:rejoin',
 }
 
 // Server → Client events
@@ -109,6 +113,8 @@ export enum ServerEvents {
   GAME_OVER = 'game:over',
   ERROR = 'error',
   CHAT_MESSAGE = 'chat:message',
+  /** Sent only to the requesting socket — never broadcast — with the newly-unlocked intel tier. */
+  GAME_DIG_DEEPER_RESULT = 'game:digDeeperResult',
 }
 
 // ============================================================
@@ -118,6 +124,17 @@ export enum ServerEvents {
 export interface RoomJoinPayload {
   playerName: string;
   roomName?: string;
+}
+
+/** Payload for `room:rejoin` — resume an existing session (id-only, no auth in this app: the pair itself is the bearer credential, same trust model as every other player id already in use). */
+export interface RoomRejoinPayload {
+  roomId: string;
+  playerId: string;
+}
+
+/** Payload for `game:digDeeper` — spend `gameSettings.digDeeperCost` to reveal the next tier of intel on one attack. */
+export interface DigDeeperPayload {
+  attackId: string;
 }
 
 // ===========================================================
@@ -152,6 +169,14 @@ export interface RoomInfo {
 
 export interface RoomsListedResponse {
   rooms: RoomInfo[];
+}
+
+/** Response for `game:digDeeperResult` — sent only to the socket that paid for the dig. */
+export interface DigDeeperResultPayload {
+  attackId: string;
+  cost: number;
+  newCash: number;
+  attack: IncomingAttackInfo;
 }
 
 

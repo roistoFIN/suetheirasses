@@ -35,6 +35,32 @@ export function validateRoomJoin(data: unknown): RoomJoinPayload {
 }
 
 /**
+ * Zod schema for the `room:rejoin` Socket.IO event payload — resume an existing
+ * player session (within the server's disconnect grace period) on a new socket.
+ * Both fields identify an existing DB row; there's no separate auth token in this
+ * app (no passwords anywhere), so the id pair itself is the bearer credential,
+ * same trust model as every other player id already used throughout the app.
+ */
+export const roomRejoinSchema = z.object({
+  roomId: z.string().min(1).max(50),
+  playerId: z.string().min(1).max(50),
+});
+
+/** Inferred TypeScript type for validated room rejoin payloads. */
+export type RoomRejoinPayload = z.infer<typeof roomRejoinSchema>;
+
+/**
+ * Validates and parses raw data against the room rejoin schema.
+ *
+ * @param data - Raw payload from the `room:rejoin` Socket.IO event.
+ * @returns Validated `RoomRejoinPayload` object.
+ * @throws ZodValidationError if the payload fails any constraint.
+ */
+export function validateRoomRejoin(data: unknown): RoomRejoinPayload {
+  return roomRejoinSchema.parse(data);
+}
+
+/**
  * Zod schema for the `chat:message` Socket.IO event payload.
  *
  * Used for in-room chat communication between players during the waiting phase.
@@ -97,4 +123,26 @@ export type SubmitDecisionsPayload = z.infer<typeof submitDecisionsSchema>;
  */
 export function validateSubmitDecisions(data: unknown): SubmitDecisionsPayload {
   return submitDecisionsSchema.parse(data);
+}
+
+/**
+ * Zod schema for the `game:digDeeper` Socket.IO event payload — pay to reveal the next
+ * tier of intel on one incoming attack, identified by the attacking decision instance's id.
+ */
+export const digDeeperSchema = z.object({
+  attackId: z.string().min(1).max(100),
+});
+
+/** Inferred TypeScript type for validated dig-deeper payloads. */
+export type DigDeeperPayload = z.infer<typeof digDeeperSchema>;
+
+/**
+ * Validates and parses raw data against the dig-deeper schema.
+ *
+ * @param data - Raw payload from the `game:digDeeper` Socket.IO event.
+ * @returns Validated `DigDeeperPayload` object.
+ * @throws ZodValidationError if the payload fails any constraint.
+ */
+export function validateDigDeeper(data: unknown): DigDeeperPayload {
+  return digDeeperSchema.parse(data);
 }

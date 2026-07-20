@@ -48,6 +48,8 @@ export interface GameSettings {
   maxOperationalDecisionsPerTurn: number;
   totalMarketVolumeTonnesPerYear: number;
   marketFixed: boolean;
+  /** Cash cost of one "Dig Deeper" investigation click — deducted instantly, outside turn resolution. */
+  digDeeperCost: number;
 }
 
 export interface PlayerStartingValues {
@@ -248,6 +250,33 @@ export interface LegalCaseData {
   resolvedAt?: Date;
 }
 
+/**
+ * An offensive decision currently targeting this player (a `target.*`-bearing decision
+ * someone else deployed against them), revealed progressively as the player pays to
+ * "Dig Deeper" on it. Fields below a given tier stay `undefined` — the server never
+ * sends attacker identity or case details below the player's own unlocked investigation
+ * level, so there's no client-side reveal to inspect via devtools before paying for it.
+ */
+export interface IncomingAttackInfo {
+  /** Stable id of the attacking decision instance — pass back to `game:digDeeper`. */
+  attackId: string;
+  /** 0 = not yet investigated, 1-3 = how many "Dig Deeper" clicks have been spent on this attack. */
+  investigationLevel: number;
+  /** Revealed at investigationLevel >= 1 — who is behind it. */
+  attackerId?: string;
+  attackerName?: string;
+  /** Revealed at investigationLevel >= 2 — what they're doing to you. */
+  decisionName?: string;
+  decisionDescription?: string;
+  /** Human-readable summary of the current per-turn effect, e.g. "+20 Outrage, -20% Capacity Utilization". */
+  effectSummary?: string;
+  /** Revealed at investigationLevel >= 3 — the recommended lawsuit ground and an estimated win probability. */
+  suggestedGroundName?: string;
+  suggestedGroundDescription?: string;
+  /** 0-1 estimate using the attacker's current scrutiny/legal exposure — the real probability is still recomputed at trial time. */
+  successProbability?: number;
+}
+
 // ============================================================
 // Turn Result — what gets broadcast after each turn resolves
 // ============================================================
@@ -271,6 +300,8 @@ export interface PlayerTurnResult {
   activeDecisions: ActiveDecisionInstance[];
   legalCases: LegalCaseData[];
   riskGauge: number;
+  /** Offensive decisions currently targeting this player — see `IncomingAttackInfo`. */
+  incomingAttacks: IncomingAttackInfo[];
 }
 
 export interface TurnResolutionResult {

@@ -51,6 +51,7 @@ function makeConfig(overrides: Partial<GameConfig> = {}): GameConfig {
       maxOperationalDecisionsPerTurn: 3,
       totalMarketVolumeTonnesPerYear: 50000,
       marketFixed: true,
+      digDeeperCost: 10000,
     },
     playerStartingValues: {
       cash: 100000,
@@ -221,6 +222,27 @@ describe('GameLoop', () => {
         impacts: {
           supplySecurity: { type: 'absolute', schedule: { default: 0.1 } },
         },
+      },
+      {
+        decision: 'Bot Attack',
+        level: 'Operational',
+        description: 'Launch a coordinated cyberattack against a competitor',
+        nature: 'Dirty',
+        offensiveAction: true,
+        excludes: [],
+        impacts: {
+          cash: { type: 'absolute', schedule: { default: -12000 } },
+          'target.outrage': { type: 'absolute', schedule: { default: 20 } },
+          'target.capacityUtilization': { type: 'relative', schedule: { default: -0.2 } },
+        },
+        legalRisks: [
+          {
+            name: 'CFAA Digital Sabotage Lawsuit',
+            description: 'Sue for the DDoS attack that crashed your logistics infrastructure.',
+            probability: { 1: 0.2, default: 0.6 },
+            impact: { type: 'absolute', target: 'cash', schedule: { 1: -50000, default: -120000 } },
+          },
+        ],
       },
     ]);
   });
@@ -399,6 +421,54 @@ describe('GameLoop', () => {
       // Exclusive Deal should be deployed (Competitor Lock-in not submitted)
       const decisionNames = outcome.result.players[0].activeDecisions.map((d) => d.decisionName);
       expect(decisionNames).toContain('Exclusive Deal');
+    });
+
+    it('should route target.* impacts to the targeted player, not the deploying player', () => {
+      // Regression test: GameLoop.resolveTurn used to extract target.* impacts but
+      // never apply them, so offensive decisions (Bot Attack, Social Astroturf, etc.)
+      // silently had no effect on the chosen opponent.
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [],
+        operational: [{ name: 'Bot Attack', targetId: 'player-2' }],
+        lawsuits: [],
+      });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+      const bob = outcome.result.players.find((p) => p.playerId === 'player-2')!;
+
+      // Target absolute impact landed on the target (starting outrage: 10 + 20)
+      expect(bob.variables.outrage).toBe(30);
+      // Target relative impact landed on the target (starting capacityUtilization: 0.8 * (1 - 0.2))
+      expect(bob.variables.capacityUtilization).toBeCloseTo(0.64, 5);
+
+      // The deploying player's own state is untouched by the target.* fields —
+      // no stray "target.outrage" pollution and no self-inflicted effect.
+      expect(alice.variables.outrage).toBe(10);
+      expect(alice.variables.capacityUtilization).toBe(0.8);
+      expect((alice.variables as any)['target.outrage']).toBeUndefined();
+      expect((alice.variables as any)['target.capacityUtilization']).toBeUndefined();
+    });
+
+    it('should surface an incomingAttacks entry for the victim, un-investigated by default', () => {
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [],
+        operational: [{ name: 'Bot Attack', targetId: 'player-2' }],
+        lawsuits: [],
+      });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+      const bob = outcome.result.players.find((p) => p.playerId === 'player-2')!;
+
+      expect(bob.incomingAttacks).toHaveLength(1);
+      expect(bob.incomingAttacks[0].investigationLevel).toBe(0);
+      // Nothing revealed yet — no attacker identity below investigation level 1.
+      expect(bob.incomingAttacks[0].attackerId).toBeUndefined();
+      expect(bob.incomingAttacks[0].attackerName).toBeUndefined();
+      // Alice isn't being attacked by anyone.
+      expect(alice.incomingAttacks).toHaveLength(0);
     });
   });
 
@@ -612,6 +682,146 @@ describe('GameLoop', () => {
       gameLoop.resolveTurn('room-1', 1, twoPlayers());
 
       expect(gameLoop.getSubmissionCount('room-1')).toBe(0);
+    });
+  });
+
+  describe('digDeeper', () => {
+    // Builds a fixture where player-1 has one persisted Bot Attack decision instance
+    // targeting player-2 — bypasses a full resolveTurn cycle since digDeeper only
+    // needs cash + engineState, letting each test set up cash/investigation state
+    // directly for the exact scenario under test.
+    const ATTACK_ID = 'attack-1';
+    function makeAttackFixture(overrides: { victimCash?: number; victimInvestigations?: Record<string, number> } = {}): EngineDataInput[] {
+      return makePlayers([
+        {
+          id: 'player-1',
+          name: 'Alice',
+          engineState: {
+            activeDecisions: [
+              { id: ATTACK_ID, definitionName: 'Bot Attack', deployedYear: 1, elapsedYears: 0, isMatured: true, targetId: 'player-2' },
+            ],
+          },
+        },
+        {
+          id: 'player-2',
+          name: 'Bob',
+          // GameLoop reads cash from `variables.cash`, not the `company.cash` column
+          // (that's only kept in sync by the persistence layer) — override it here.
+          variables: makeVars({ cash: overrides.victimCash ?? 100000 }),
+          engineState: { investigations: overrides.victimInvestigations ?? {} },
+        },
+      ]);
+    }
+
+    it('dig 1 reveals only the attacker identity', () => {
+      const outcome = gameLoop.digDeeper('player-2', ATTACK_ID, makeAttackFixture());
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.cost).toBe(10000);
+      expect(outcome.newCash).toBe(90000);
+      // GameLoop reads cash from variables.cash (readVariables), not a separate column —
+      // the caller must persist this alongside engineStateUpdate or the next call (or the
+      // next normal turn) reads stale, pre-deduction cash back out.
+      expect(outcome.variables.cash).toBe(90000);
+      expect(outcome.attack.investigationLevel).toBe(1);
+      expect(outcome.attack.attackerId).toBe('player-1');
+      expect(outcome.attack.attackerName).toBe('Alice');
+      expect(outcome.attack.decisionName).toBeUndefined();
+      expect(outcome.attack.suggestedGroundName).toBeUndefined();
+      expect(outcome.engineStateUpdate.investigations[ATTACK_ID]).toBe(1);
+    });
+
+    it('dig 2 adds the decision name and effect summary', () => {
+      const outcome = gameLoop.digDeeper('player-2', ATTACK_ID, makeAttackFixture({ victimInvestigations: { [ATTACK_ID]: 1 } }));
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.attack.investigationLevel).toBe(2);
+      expect(outcome.attack.decisionName).toBe('Bot Attack');
+      expect(outcome.attack.effectSummary).toContain('Outrage');
+      expect(outcome.attack.suggestedGroundName).toBeUndefined();
+    });
+
+    it('dig 3 adds the suggested lawsuit ground and a success probability', () => {
+      const outcome = gameLoop.digDeeper('player-2', ATTACK_ID, makeAttackFixture({ victimInvestigations: { [ATTACK_ID]: 2 } }));
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.attack.investigationLevel).toBe(3);
+      expect(outcome.attack.suggestedGroundName).toBe('CFAA Digital Sabotage Lawsuit');
+      expect(outcome.attack.successProbability).toBeGreaterThan(0);
+      expect(outcome.attack.successProbability).toBeLessThanOrEqual(1);
+    });
+
+    it('sequential digs accumulate cost — the second dig charges from the already-decremented cash', () => {
+      // Regression test: GameEngine.digDeeper originally persisted the `cash` column but
+      // not `variables.cash` (the JSONB field GameLoop actually reads via readVariables),
+      // so every dig recomputed its cost against the same stale starting cash instead of
+      // accumulating. Simulates that exact caller pattern: feed each dig's full persisted
+      // output (variables + engineStateUpdate) as the next call's input.
+      const dig1 = gameLoop.digDeeper('player-2', ATTACK_ID, makeAttackFixture());
+      expect(dig1.success).toBe(true);
+      if (!dig1.success) return;
+      expect(dig1.newCash).toBe(90000);
+
+      const playersAfterDig1 = makePlayers([
+        { id: 'player-1', name: 'Alice', engineState: { activeDecisions: [{ id: ATTACK_ID, definitionName: 'Bot Attack', deployedYear: 1, elapsedYears: 0, isMatured: true, targetId: 'player-2' }] } },
+        { id: 'player-2', name: 'Bob', variables: dig1.variables, engineState: dig1.engineStateUpdate },
+      ]);
+
+      const dig2 = gameLoop.digDeeper('player-2', ATTACK_ID, playersAfterDig1);
+      expect(dig2.success).toBe(true);
+      if (!dig2.success) return;
+      // 80000, not 90000 again — the deduction from dig 1 must carry forward.
+      expect(dig2.newCash).toBe(80000);
+      expect(dig2.variables.cash).toBe(80000);
+    });
+
+    it('dig 4 fails — already fully investigated, no charge', () => {
+      const outcome = gameLoop.digDeeper('player-2', ATTACK_ID, makeAttackFixture({ victimInvestigations: { [ATTACK_ID]: 3 } }));
+
+      expect(outcome).toEqual({ success: false, reason: 'already_fully_investigated' });
+    });
+
+    it('fails with insufficient_funds and does not charge when cash is below the cost', () => {
+      const outcome = gameLoop.digDeeper('player-2', ATTACK_ID, makeAttackFixture({ victimCash: 5000 }));
+
+      expect(outcome).toEqual({ success: false, reason: 'insufficient_funds' });
+    });
+
+    it('fails with invalid_attack for a bogus attack id', () => {
+      const outcome = gameLoop.digDeeper('player-2', 'not-a-real-attack', makeAttackFixture());
+
+      expect(outcome).toEqual({ success: false, reason: 'invalid_attack' });
+    });
+
+    it('fails with invalid_attack when the attack does not target the caller', () => {
+      // player-1's Bot Attack targets player-2 — player-1 can't dig on their own attack.
+      const outcome = gameLoop.digDeeper('player-1', ATTACK_ID, makeAttackFixture());
+
+      expect(outcome).toEqual({ success: false, reason: 'invalid_attack' });
+    });
+
+    it('investigations persisted via digDeeper survive an unrelated normal turn resolving', () => {
+      const digOutcome = gameLoop.digDeeper('player-2', ATTACK_ID, makeAttackFixture());
+      expect(digOutcome.success).toBe(true);
+      if (!digOutcome.success) return;
+
+      // Simulate GameEngine persisting the dig, then a normal turn resolving afterward —
+      // regression guard for readEngineState/Step-12 dropping unknown engineState keys.
+      const players = makePlayers([
+        { id: 'player-1', name: 'Alice', engineState: { activeDecisions: [{ id: ATTACK_ID, definitionName: 'Bot Attack', deployedYear: 1, elapsedYears: 0, isMatured: true, targetId: 'player-2' }] } },
+        { id: 'player-2', name: 'Bob', cash: digOutcome.newCash, engineState: digOutcome.engineStateUpdate },
+      ]);
+
+      const turnOutcome = gameLoop.resolveTurn('room-1', 2, players);
+      const bobUpdate = turnOutcome.companyUpdates.find((u) => u.playerId === 'player-2')!;
+      expect(bobUpdate.engineState.investigations[ATTACK_ID]).toBe(1);
+
+      const bob = turnOutcome.result.players.find((p) => p.playerId === 'player-2')!;
+      expect(bob.incomingAttacks[0].investigationLevel).toBe(1);
+      expect(bob.incomingAttacks[0].attackerName).toBe('Alice');
     });
   });
 

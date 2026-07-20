@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
+import { Box, Stack, Text, Loader } from '@mantine/core';
 import { useSocketStore } from './stores/socketStore';
 import { useGameStore } from './stores/gameStore';
 import Matchmaking from './pages/Matchmaking';
@@ -8,7 +9,7 @@ import GameOver from './pages/GameOver';
 
 const App: React.FC = () => {
   const { connect, disconnect } = useSocketStore();
-  const { currentPhase } = useGameStore();
+  const { currentPhase, isRejoining } = useGameStore();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -53,6 +54,20 @@ const App: React.FC = () => {
         return '/';
     }
   };
+
+  // Attempting to resume a saved session (page reload, back button, brief network
+  // drop) — hold off on rendering Matchmaking, which would otherwise flash for a
+  // moment before the room:rejoin response arrives and currentPhase gets set.
+  if (isRejoining) {
+    return (
+      <Box style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
+        <Stack align="center" gap="md">
+          <Loader />
+          <Text c="dimmed" fw={500}>Reconnecting…</Text>
+        </Stack>
+      </Box>
+    );
+  }
 
   return (
     <Routes>

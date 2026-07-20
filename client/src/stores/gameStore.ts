@@ -11,6 +11,7 @@ import {
   type DecisionDefinition,
   type GameSettings,
   type GameDeckResponse,
+  type DigDeeperResultPayload,
 } from '@suetheirasses/shared';
 
 interface GameState {
@@ -40,6 +41,8 @@ interface GameState {
   turnResults: TurnResolutionResult | null;
   handleTurnResolved: (data: TurnResolutionResult) => void;
   clearTurnResults: () => void;
+  /** Instant, out-of-band "Dig Deeper" response — patches just the requesting player's cash + incomingAttacks. */
+  applyDigDeeperResult: (playerId: string, data: DigDeeperResultPayload) => void;
 
   // Decision deck — the 45-decision library + per-turn limits, sent once per game
   decisions: DecisionDefinition[];
@@ -56,6 +59,10 @@ interface GameState {
   setError: (error: ErrorResponse | null) => void;
   notification: string | null;
   setNotification: (message: string | null) => void;
+
+  /** True while attempting to resume a saved session on connect — gates the first paint so the landing page doesn't flash before the attempt resolves. */
+  isRejoining: boolean;
+  setIsRejoining: (isRejoining: boolean) => void;
 }
 
 export const useGameStore = create<GameState>((set) => ({
@@ -73,6 +80,7 @@ export const useGameStore = create<GameState>((set) => ({
   gameOver: null,
   error: null,
   notification: null,
+  isRejoining: false,
 
   updateRoom: (room) => set({ room, currentPhase: room.status }),
   updatePlayer: (player) => set({ player }),
@@ -120,11 +128,25 @@ export const useGameStore = create<GameState>((set) => ({
       round: data.round,
     }),
   clearTurnResults: () => set({ turnResults: null }),
+  applyDigDeeperResult: (playerId, data) =>
+    set((state) => {
+      if (!state.turnResults) return {};
+      const players = state.turnResults.players.map((p) => {
+        if (p.playerId !== playerId) return p;
+        return {
+          ...p,
+          variables: { ...p.variables, cash: data.newCash },
+          incomingAttacks: p.incomingAttacks.map((a) => (a.attackId === data.attackId ? data.attack : a)),
+        };
+      });
+      return { turnResults: { ...state.turnResults, players } };
+    }),
   setGameDeck: (data) => set({ decisions: data.decisions, gameSettings: data.gameSettings }),
   setGameOver: (data) => set({ gameOver: data, notification: `Game Over! ${data.winner?.name || 'Unknown'} wins!` }),
   clearGameOver: () => set({ gameOver: null }),
   setError: (error) => set({ error }),
   setNotification: (notification) => set({ notification }),
+  setIsRejoining: (isRejoining) => set({ isRejoining }),
   setCompanies: (companies) => {
     const companyMap = new Map<string, Company>();
     for (const c of companies) {

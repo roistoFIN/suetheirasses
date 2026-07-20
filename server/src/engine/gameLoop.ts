@@ -34,6 +34,7 @@ import type {
   TurnResolutionResult,
   LegalCaseData,
   SubmittedDecisions,
+  IncomingAttackInfo,
 } from '@suetheirasses/shared';
 import {
   applyDepreciation,
@@ -45,9 +46,10 @@ import {
   calculateMaturityYears as calcMaturity,
   calculateAdjustedProbability,
   calculateLegalExposureRatio,
+  applyTargetImpacts,
 } from './calcEngine.js';
-import { DecisionEngine } from './decisionEngine.js';
-import type { DeployedDecision } from './decisionEngine.js';
+import { DecisionEngine, MAX_INVESTIGATION_LEVEL, summarizeTargetImpacts, pickBestGround } from './decisionEngine.js';
+import type { DeployedDecision, TargetImpactResult } from './decisionEngine.js';
 import { LegalEngine } from './legalEngine.js';
 
 // ============================================================
@@ -91,6 +93,8 @@ export interface PersistedDecisionInstance {
   deployedYear: number;
   elapsedYears: number;
   isMatured: boolean;
+  /** The player this decision's `target.*` impacts route to — set when deployed against an opponent. */
+  targetId?: string;
 }
 
 /** The `Company` row fields the caller must write back to the DB for one still-active player after a turn resolves. */
@@ -102,6 +106,8 @@ export interface CompanyPersistUpdate {
     activeDecisions: PersistedDecisionInstance[];
     depreciationLedger: DepreciationEntry[];
     legalCases: LegalCaseData[];
+    /** "Dig Deeper" progress: attacking decision instance id -> investigation level (1-3). */
+    investigations: Record<string, number>;
   };
 }
 
@@ -118,6 +124,26 @@ export interface TurnResolutionOutcome {
   bankruptedPlayers: BankruptedPlayer[];
 }
 
+/** Result of a `digDeeper` call — a lightweight, single-player, out-of-band mutation (not part of turn resolution). */
+export type DigDeeperOutcome =
+  | { success: false; reason: 'player_not_found' | 'invalid_attack' | 'already_fully_investigated' | 'insufficient_funds' }
+  | {
+      success: true;
+      attackId: string;
+      cost: number;
+      newCash: number;
+      attack: IncomingAttackInfo;
+      /**
+       * The requesting player's full `variables` JSONB to persist, cash already decremented.
+       * Must be written alongside the `cash` column — `GameLoop` reads cash from
+       * `variables.cash` (via `readVariables`), not the column, so writing only the column
+       * would leave the next call (or the next normal turn resolution) reading stale cash.
+       */
+      variables: PlayerVariables;
+      /** The requesting player's full engineState to persist — existing keys carried through unchanged, only `investigations` updated. */
+      engineStateUpdate: CompanyPersistUpdate['engineState'];
+    };
+
 // ============================================================
 // Internal types — not exported, used only within this module
 // ============================================================
@@ -127,6 +153,7 @@ interface CompanyEngineState {
   activeDecisions: DeployedDecision[];
   depreciationLedger: DepreciationEntry[];
   legalCases: LegalCaseData[];
+  investigations: Record<string, number>;
 }
 
 interface PlayerTurnContext {
@@ -229,6 +256,7 @@ export class GameLoop {
     // Extract absolute schedule deltas directly from impact application (FORMULAS §4-§5)
     const absDeltasMap = new Map<string, { revenueDelta: number; financeCostDelta: number; taxCostDelta: number; receivablesDelta: number; cashDelta: number }>();
     const varsList: PlayerVariables[] = [];
+    const targetImpactQueue: TargetImpactResult[] = [];
     for (const [pid, ctx] of ctxs) {
       const result = this.decisionEngine.advanceAndApply(
         pid,
@@ -254,7 +282,24 @@ export class GameLoop {
         cashDelta: result.absDeltas.cashDelta + newDecisionAbsDeltas.cashDelta,
       });
 
+      // Collect this player's outgoing target.* effects (FORMULAS §0/A1) — applied after
+      // every player has advanced, so it doesn't matter which player's turn is processed
+      // first in this loop.
+      targetImpactQueue.push(...this.decisionEngine.collectTargetImpacts(ctx.engineState.activeDecisions));
+
       varsList.push(result.updatedVars);
+    }
+
+    // Apply queued target.* effects to their targets, then refresh varsList so the
+    // Step 4 competitiveness/market-share calc sees the post-attack state.
+    for (const entry of targetImpactQueue) {
+      if (entry.targetId === undefined) continue;
+      const targetCtx = ctxs.get(entry.targetId);
+      if (!targetCtx) continue; // target no longer in the game (already bankrupt)
+      targetCtx.vars = applyTargetImpacts(targetCtx.vars, entry.impacts, entry.elapsedYears);
+    }
+    for (let i = 0; i < playerIds.length; i++) {
+      varsList[i] = ctxs.get(playerIds[i])!.vars;
     }
 
     // ── Step 3 — Depreciation ledger (FORMULAS §1) ────────────
@@ -507,9 +552,11 @@ export class GameLoop {
             deployedYear: d.deployedYear,
             elapsedYears: d.elapsedYears,
             isMatured: d.isMatured,
+            targetId: d.targetId,
           })),
           depreciationLedger: ctx.engineState.depreciationLedger,
           legalCases: allCases.filter(c => c.plaintiffId === pid || c.defendantId === pid),
+          investigations: ctx.engineState.investigations,
         },
       });
     }
@@ -546,6 +593,7 @@ export class GameLoop {
         })),
         legalCases: allCases.filter(c => c.plaintiffId === pid || c.defendantId === pid),
         riskGauge: riskMap.get(pid) ?? 0,
+        incomingAttacks: this.buildIncomingAttacks(pid, ctxs, playersStillActive),
       });
     }
 
@@ -644,10 +692,85 @@ export class GameLoop {
         activeDecisions: [],
         legalCases: [],
         riskGauge: calculateRiskGauge(vars, [], this.adminVars),
+        incomingAttacks: [],
       });
     }
 
     return { round, players: results, gameOver: false };
+  }
+
+  /**
+   * "Dig Deeper" — pay `gameSettings.digDeeperCost` to reveal the next tier of intel on
+   * one incoming attack. Unlike `resolveTurn`, this is NOT part of the turn cycle: it's
+   * a single-player, out-of-band action a client can trigger any time during GAME_PHASE,
+   * independent of the turn timer. Still pure (no Prisma/Socket.IO) — the caller
+   * (`GameEngine.digDeeper`) persists `engineStateUpdate`/`newCash` and emits the result
+   * back to just the requesting socket.
+   */
+  digDeeper(playerId: string, attackId: string, players: EngineDataInput[]): DigDeeperOutcome {
+    const byId = new Map<string, { name: string; vars: PlayerVariables; engineState: CompanyEngineState }>();
+    for (const p of players) {
+      if (!p.company) continue;
+      byId.set(p.id, {
+        name: p.name,
+        vars: this.readVariables(p.company.variables as any),
+        engineState: this.readEngineState(p.company),
+      });
+    }
+
+    const me = byId.get(playerId);
+    if (!me) return { success: false, reason: 'player_not_found' };
+
+    // The attacking decision instance lives in SOME OTHER player's activeDecisions,
+    // targeting this player — never trust the client past that.
+    let attacker: { id: string; name: string; decision: DeployedDecision } | null = null;
+    for (const [pid, state] of byId) {
+      if (pid === playerId) continue;
+      const inst = state.engineState.activeDecisions.find(d => d.id === attackId && d.targetId === playerId);
+      if (inst) {
+        attacker = { id: pid, name: state.name, decision: inst };
+        break;
+      }
+    }
+    if (!attacker) return { success: false, reason: 'invalid_attack' };
+
+    const targetImpacts = this.decisionEngine.getTargetImpacts(attacker.decision.definition.impacts);
+    if (targetImpacts.size === 0) return { success: false, reason: 'invalid_attack' };
+
+    const currentLevel = me.engineState.investigations[attackId] ?? 0;
+    if (currentLevel >= MAX_INVESTIGATION_LEVEL) return { success: false, reason: 'already_fully_investigated' };
+
+    const cost = this.config.gameSettings.digDeeperCost;
+    if (me.vars.cash < cost) return { success: false, reason: 'insufficient_funds' };
+
+    const newLevel = currentLevel + 1;
+    const newCash = me.vars.cash - cost;
+    const newInvestigations = { ...me.engineState.investigations, [attackId]: newLevel };
+
+    const attackerVars = byId.get(attacker.id)!.vars;
+    const attack = this.revealAttack(attacker.id, attacker.name, attacker.decision, newLevel, attackerVars);
+
+    return {
+      success: true,
+      attackId,
+      cost,
+      newCash,
+      attack,
+      variables: this.stripInternal({ ...me.vars, cash: newCash }),
+      engineStateUpdate: {
+        activeDecisions: me.engineState.activeDecisions.map(d => ({
+          id: d.id,
+          definitionName: d.definition.decision,
+          deployedYear: d.deployedYear,
+          elapsedYears: d.elapsedYears,
+          isMatured: d.isMatured,
+          targetId: d.targetId,
+        })),
+        depreciationLedger: me.engineState.depreciationLedger,
+        legalCases: me.engineState.legalCases,
+        investigations: newInvestigations,
+      },
+    };
   }
 
   // ============================================================
@@ -664,10 +787,59 @@ export class GameLoop {
         deployedYear: d.deployedYear,
         elapsedYears: d.elapsedYears,
         isMatured: d.isMatured,
+        targetId: d.targetId,
       })),
       depreciationLedger: (raw.depreciationLedger ?? []) as DepreciationEntry[],
       legalCases: (raw.legalCases ?? []) as LegalCaseData[],
+      investigations: (raw.investigations ?? {}) as Record<string, number>,
     };
+  }
+
+  /**
+   * Scan every OTHER still-active player's activeDecisions for ones targeting `pid`,
+   * revealing fields progressively per `pid`'s own persisted investigation level for
+   * that attack (never the attacker's — this player only ever unlocks intel about
+   * attacks against them, via `digDeeper`). A now-bankrupt attacker's decisions are
+   * excluded — `attackerCtxIds` is the still-active player set for this turn.
+   */
+  private buildIncomingAttacks(pid: string, ctxs: Map<string, PlayerTurnContext>, attackerCtxIds: string[]): IncomingAttackInfo[] {
+    const myInvestigations = ctxs.get(pid)!.engineState.investigations;
+    const attacks: IncomingAttackInfo[] = [];
+    for (const attackerId of attackerCtxIds) {
+      if (attackerId === pid) continue;
+      const attackerCtx = ctxs.get(attackerId)!;
+      for (const d of attackerCtx.engineState.activeDecisions) {
+        if (d.targetId !== pid) continue;
+        const targetImpacts = this.decisionEngine.getTargetImpacts(d.definition.impacts);
+        if (targetImpacts.size === 0) continue;
+        const level = myInvestigations[d.id] ?? 0;
+        attacks.push(this.revealAttack(attackerId, attackerCtx.playerName, d, level, attackerCtx.vars));
+      }
+    }
+    return attacks;
+  }
+
+  /** Builds the progressively-revealed intel for one incoming attack at the given investigation level. */
+  private revealAttack(attackerId: string, attackerName: string, decision: DeployedDecision, level: number, attackerVars: PlayerVariables): IncomingAttackInfo {
+    const info: IncomingAttackInfo = { attackId: decision.id, investigationLevel: level };
+    if (level >= 1) {
+      info.attackerId = attackerId;
+      info.attackerName = attackerName;
+    }
+    if (level >= 2) {
+      info.decisionName = decision.definition.decision;
+      info.decisionDescription = decision.definition.description;
+      info.effectSummary = summarizeTargetImpacts(decision.definition.impacts, decision.elapsedYears);
+    }
+    if (level >= 3) {
+      const best = pickBestGround(decision.definition, decision.elapsedYears, attackerVars, this.adminVars);
+      if (best) {
+        info.suggestedGroundName = best.name;
+        info.suggestedGroundDescription = best.description;
+        info.successProbability = best.probability;
+      }
+    }
+    return info;
   }
 
   private processNewDecisions(ctx: PlayerTurnContext, year: number): void {
@@ -678,7 +850,7 @@ export class GameLoop {
     // Track absolute deltas from newly deployed decisions on the same turn
     const newDecisionAbsDeltas: Array<{ revenueDelta: number; financeCostDelta: number; taxCostDelta: number; receivablesDelta: number; cashDelta: number }> = [];
 
-    for (const { name } of sub.strategic.slice(0, maxStrat)) {
+    for (const { name, targetId } of sub.strategic.slice(0, maxStrat)) {
       const def = this.decisionEngine.getDef(name);
       if (!def) continue;
       const ok = this.decisionEngine.canDeploy(
@@ -689,7 +861,7 @@ export class GameLoop {
         maxOp,
       );
       if (!ok.allowed) continue;
-      const inst = this.decisionEngine.deploy(ctx.playerId, def, year);
+      const inst = this.decisionEngine.deploy(ctx.playerId, def, year, targetId);
       ctx.engineState.activeDecisions.push(inst);
       const result = this.decisionEngine.applyImpactsForYear(ctx.vars, name, def.impacts, 0, year);
       ctx.vars = result.updatedVars;
@@ -701,7 +873,7 @@ export class GameLoop {
       newDecisionAbsDeltas.push(result.absDeltas);
     }
 
-    for (const { name } of sub.operational.slice(0, maxOp)) {
+    for (const { name, targetId } of sub.operational.slice(0, maxOp)) {
       const def = this.decisionEngine.getDef(name);
       if (!def) continue;
       const ok = this.decisionEngine.canDeploy(
@@ -712,7 +884,7 @@ export class GameLoop {
         maxOp,
       );
       if (!ok.allowed) continue;
-      const inst = this.decisionEngine.deploy(ctx.playerId, def, year);
+      const inst = this.decisionEngine.deploy(ctx.playerId, def, year, targetId);
       ctx.engineState.activeDecisions.push(inst);
       const result = this.decisionEngine.applyImpactsForYear(ctx.vars, name, def.impacts, 0, year);
       ctx.vars = result.updatedVars;

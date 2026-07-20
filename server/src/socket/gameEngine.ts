@@ -17,8 +17,9 @@ import {
   type DecisionDefinition,
   type GameConfig,
   type GameSettings,
+  type TurnResolutionResult,
 } from '@suetheirasses/shared';
-import { validateRoomJoin, validateSubmitDecisions } from '../validation/schemas.js';
+import { validateRoomJoin, validateSubmitDecisions, validateDigDeeper, validateRoomRejoin } from '../validation/schemas.js';
 import { GameLoop } from '../engine/gameLoop.js';
 import gameEngineData from '../data/game_engine.json' with { type: 'json' };
 import gameConfigData from '../data/game_config.json' with { type: 'json' };
@@ -36,6 +37,14 @@ export class GameEngine {
   private cleanupInterval: NodeJS.Timeout | null = null;
   // How long (ms) before a room with no connected players is considered stale
   private readonly STALE_ROOM_THRESHOLD = 60_000;
+  // Reconnection grace period: players who disconnect are kept in the room (not
+  // deleted) for this long, keyed by playerId since their old socketId is now dead.
+  // Swept by the same heartbeat interval that cleans up stale rooms.
+  private disconnectedPlayers: Map<string, { roomId: string; disconnectedAt: number }> = new Map();
+  private readonly RECONNECT_GRACE_PERIOD_MS = 60_000;
+  // Each room's last resolved turn (or round-1 starting snapshot) — re-sent to a
+  // reconnecting player immediately instead of making them wait for the next turn.
+  private lastTurnResults: Map<string, TurnResolutionResult> = new Map();
   // Core turn-resolution engine — authoritative source of all GAME_PHASE calculations (FORMULAS.md)
   private gameLoop: GameLoop;
 
@@ -53,6 +62,31 @@ export class GameEngine {
   }
 
   /**
+   * "Dig Deeper" — pay to reveal the next tier of intel on one incoming attack. Unlike
+   * `resolveGameTurn`, this happens instantly, outside the turn-resolution cycle: a
+   * single Prisma write for the requesting player only, no broadcast to the room (the
+   * attacker's identity is private intel for the investigating player alone).
+   */
+  async digDeeper(roomId: string, playerId: string, attackId: string): Promise<import('../engine/gameLoop.js').DigDeeperOutcome> {
+    const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
+    const outcome = this.gameLoop.digDeeper(playerId, attackId, dbPlayers);
+    if (outcome.success) {
+      await this.prisma.company.update({
+        where: { playerId },
+        data: {
+          cash: outcome.newCash,
+          // GameLoop reads cash from variables.cash (JSONB), not the cash column — both
+          // must be written or the next dig (or the next normal turn resolution) reads
+          // stale pre-deduction cash back out.
+          variables: outcome.variables as any,
+          engineState: outcome.engineStateUpdate as any,
+        },
+      });
+    }
+    return outcome;
+  }
+
+  /**
    * Broadcast each player's starting-position snapshot the instant the game starts,
    * so the client renders the game room immediately instead of a blank loading state
    * for the whole first round's timer.
@@ -60,6 +94,7 @@ export class GameEngine {
   async broadcastInitialSnapshot(roomId: string, round: number): Promise<void> {
     const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
     const snapshot = this.gameLoop.getInitialSnapshot(roomId, round, dbPlayers);
+    this.lastTurnResults.set(roomId, snapshot);
     this.io.to(roomId).emit(ServerEvents.TURN_RESOLVED, snapshot);
   }
 
@@ -71,7 +106,11 @@ export class GameEngine {
     });
   }
 
-  /** Periodically clean up rooms where all players have disconnected (crash recovery). */
+  /**
+   * Periodically clean up rooms where all players have disconnected (crash recovery),
+   * and finalize the removal of any player whose reconnect grace period has expired
+   * without them coming back via `room:rejoin`.
+   */
   private startHeartbeatCleanup(): void {
     this.cleanupInterval = setInterval(() => {
       const now = Date.now();
@@ -82,6 +121,7 @@ export class GameEngine {
             console.log(`[Heartbeat] Cleaning up stale room ${roomId} (no players for ${this.STALE_ROOM_THRESHOLD}ms)`);
             this.rooms.delete(roomId);
             this.roomLastActivity.delete(roomId);
+            this.lastTurnResults.delete(roomId);
             // Also clean up from DB to prevent ghost rooms
             this.prisma.room.delete({ where: { id: roomId } }).catch((err) => {
               if ((err as any).code !== 'P2025') {
@@ -89,6 +129,15 @@ export class GameEngine {
               }
             });
           }
+        }
+      }
+
+      for (const [playerId, { roomId, disconnectedAt }] of this.disconnectedPlayers.entries()) {
+        if (now - disconnectedAt > this.RECONNECT_GRACE_PERIOD_MS) {
+          console.log(`[Heartbeat] Finalizing removal of player ${playerId} (no reconnect within ${this.RECONNECT_GRACE_PERIOD_MS}ms)`);
+          this.finalizePlayerRemoval(roomId, playerId).catch((err) => {
+            console.error(`[Heartbeat] Failed to finalize removal of player ${playerId}:`, err);
+          });
         }
       }
     }, 10_000); // Check every 10 seconds
@@ -220,9 +269,16 @@ export class GameEngine {
     return roomState;
   }
 
-  async removePlayer(socketId: string): Promise<void> {
+  /**
+   * A socket disconnected — network hiccup, back button, refresh, whatever. Don't
+   * delete the player yet: just mark them as having no live connection and keep
+   * them in `roomState.players` (their open decisions/lawsuits keep resolving
+   * normally, exactly like an AFK player who didn't submit this turn). They get
+   * `RECONNECT_GRACE_PERIOD_MS` to reconnect via `room:rejoin` before the heartbeat
+   * sweep calls `finalizePlayerRemoval`. No DB write happens here at all.
+   */
+  async markPlayerDisconnected(socketId: string): Promise<void> {
     const roomId = this.playerToRoom.get(socketId);
-    if (!roomId) return;
     if (!roomId) return;
 
     const roomState = this.rooms.get(roomId);
@@ -233,40 +289,64 @@ export class GameEngine {
       (p: Player) => p.socketId === socketId
     ) as Player | undefined;
 
-    if (player) {
-      // Clean up database records atomically using transaction
-      try {
-        await this.prisma.$transaction(async (tx) => {
-          const company = await tx.company.findUnique({
-            where: { playerId: player.id },
-          });
-          if (company) {
-            await tx.asset.deleteMany({
-              where: { companyId: company.id },
-            });
-            await tx.company.delete({
-              where: { id: company.id },
-            });
-          }
+    this.playerToRoom.delete(socketId);
+    if (!player) return; // already removed (e.g. kicked just before this fired)
 
-          await tx.player.delete({
-            where: { id: player.id },
-          });
+    player.socketId = null;
+    this.disconnectedPlayers.set(player.id, { roomId, disconnectedAt: Date.now() });
+    this.touchRoomActivity(roomId);
+  }
+
+  /**
+   * Actually remove a player who never reconnected within the grace period — same
+   * DB cleanup `removePlayer` always did, just deferred and keyed by `playerId`
+   * (their old `socketId` is long dead by the time this runs). Broadcasts
+   * `ROOM_PLAYER_LEFT` so the rest of the room learns they're actually gone.
+   */
+  private async finalizePlayerRemoval(roomId: string, playerId: string): Promise<void> {
+    this.disconnectedPlayers.delete(playerId);
+
+    const roomState = this.rooms.get(roomId);
+    if (!roomState) return;
+
+    const player = roomState.players.get(playerId);
+    if (!player) return;
+
+    // Clean up database records atomically using transaction
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const company = await tx.company.findUnique({
+          where: { playerId },
         });
-      } catch (error) {
-        console.error(`Failed to clean up player ${player.id} from DB:`, error);
-      }
+        if (company) {
+          await tx.asset.deleteMany({
+            where: { companyId: company.id },
+          });
+          await tx.company.delete({
+            where: { id: company.id },
+          });
+        }
 
-      roomState.players.delete(player.id);
+        await tx.player.delete({
+          where: { id: playerId },
+        });
+      });
+    } catch (error) {
+      console.error(`Failed to clean up player ${playerId} from DB:`, error);
     }
 
-    this.playerToRoom.delete(socketId);
-
-    // Update activity timestamp after player removal
+    roomState.players.delete(playerId);
     this.touchRoomActivity(roomId);
+
+    this.io.to(roomId).emit(ServerEvents.ROOM_PLAYER_LEFT, {
+      playerId,
+      playerName: player.name,
+      roomId,
+    });
 
     if (roomState.players.size === 0) {
       this.rooms.delete(roomId);
+      this.lastTurnResults.delete(roomId);
       // Also clean up the room from the database to prevent ghost rooms
       // from appearing in quick join queries
       try {
@@ -366,6 +446,7 @@ export class GameEngine {
         });
       }
 
+      this.lastTurnResults.set(roomId, outcome.result);
       this.io.to(roomId).emit(ServerEvents.TURN_RESOLVED, outcome.result);
 
       const result = outcome.result;
@@ -509,6 +590,93 @@ export class GameEngine {
   public broadcastRoomState(roomId: string, event: string, data: unknown): void {
     this.io.to(roomId).emit(event, data);
   }
+
+  /** Builds the `room:joined` payload for one player — shared by the fresh-join and rejoin paths. */
+  public buildRoomJoinedPayload(roomState: RoomState, player: Player): { room: Room; player: Player; companies: Company[] } {
+    const allPlayers: Player[] = Array.from(roomState.players.values()).map((p: Player) => ({
+      id: p.id,
+      name: p.name,
+      roomId: p.roomId,
+      isHost: p.isHost,
+      bankrupt: p.bankrupt,
+      companyId: p.companyId ?? undefined,
+      socketId: p.socketId ?? undefined,
+    }));
+
+    const fullRoom: Room = {
+      id: roomState.room.id,
+      status: roomState.room.status,
+      maxPlayers: roomState.room.maxPlayers,
+      currentPhaseRound: roomState.room.currentPhaseRound,
+      players: allPlayers,
+      createdAt: roomState.room.createdAt,
+    };
+
+    return {
+      room: fullRoom,
+      player: {
+        id: player.id,
+        name: player.name,
+        isHost: player.isHost,
+        bankrupt: player.bankrupt,
+        roomId: fullRoom.id,
+      },
+      companies: [],
+    };
+  }
+
+  /**
+   * Re-associate an existing player (previously disconnected, still within the
+   * grace period) with a new socket. Returns everything the caller needs to emit —
+   * this method does no Socket.IO I/O itself, matching the `digDeeper` pattern —
+   * or `{ success: false }` if the room or player no longer exists (grace period
+   * already expired, room cleaned up, or a stale/bogus session).
+   */
+  async rejoinRoom(roomId: string, playerId: string, socketId: string): Promise<
+    | { success: false }
+    | {
+        success: true;
+        roomJoined: { room: Room; player: Player; companies: Company[] };
+        gameDeck?: { decisions: DecisionDefinition[]; gameSettings: GameSettings };
+        turnResolved?: TurnResolutionResult;
+        gameOver?: GameOverResponse;
+      }
+  > {
+    const roomState = this.rooms.get(roomId);
+    if (!roomState) return { success: false };
+
+    const player = roomState.players.get(playerId);
+    if (!player) return { success: false };
+
+    player.socketId = socketId;
+    this.playerToRoom.set(socketId, roomId);
+    this.disconnectedPlayers.delete(playerId);
+    this.touchRoomActivity(roomId);
+
+    const result: {
+      success: true;
+      roomJoined: { room: Room; player: Player; companies: Company[] };
+      gameDeck?: { decisions: DecisionDefinition[]; gameSettings: GameSettings };
+      turnResolved?: TurnResolutionResult;
+      gameOver?: GameOverResponse;
+    } = {
+      success: true,
+      roomJoined: this.buildRoomJoinedPayload(roomState, player),
+    };
+
+    if (roomState.room.status === RoomStatus.GAME_PHASE) {
+      result.gameDeck = {
+        decisions: gameEngineData as unknown as DecisionDefinition[],
+        gameSettings: gameConfigData.gameSettings as GameSettings,
+      };
+      const lastTurn = this.lastTurnResults.get(roomId);
+      if (lastTurn) result.turnResolved = lastTurn;
+    } else if (roomState.room.status === RoomStatus.AFTERMATH) {
+      result.gameOver = await this.buildGameOverPayload(roomId);
+    }
+
+    return result;
+  }
 }
 
 export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngine {
@@ -613,45 +781,16 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
           return;
         }
 
-        // Build the full room state with all players from the in-memory map
-        const allPlayers: Player[] = Array.from(roomState.players.values()).map((p: Player) => ({
-          id: p.id,
-          name: p.name,
-          roomId: p.roomId,
-          isHost: p.isHost,
-          bankrupt: p.bankrupt,
-          companyId: p.companyId ?? undefined,
-          socketId: p.socketId ?? undefined,
-        }));
-
-        const fullRoom: Room = {
-          id: roomState.room.id,
-          status: roomState.room.status,
-          maxPlayers: roomState.room.maxPlayers,
-          currentPhaseRound: roomState.room.currentPhaseRound,
-          players: allPlayers,
-          createdAt: roomState.room.createdAt,
-        };
-
         // Send room state to the joining player
-        socket.emit(ServerEvents.ROOM_JOINED, {
-          room: fullRoom,
-          player: {
-            id: joiningPlayer.id,
-            name: joiningPlayer.name,
-            isHost: joiningPlayer.isHost,
-            bankrupt: joiningPlayer.bankrupt,
-            roomId: fullRoom.id,
-          },
-          companies: [],
-        });
+        const roomJoinedPayload = engine.buildRoomJoinedPayload(roomState, joiningPlayer);
+        socket.emit(ServerEvents.ROOM_JOINED, roomJoinedPayload);
 
         // Notify other players about the new player (exclude the joining player)
         socket.broadcast.to(roomState.room.id).emit(ServerEvents.ROOM_PLAYER_JOINED, {
           playerId: joiningPlayer.id,
           playerName: joiningPlayer.name,
           isHost: joiningPlayer.isHost,
-          roomId: fullRoom.id,
+          roomId: roomJoinedPayload.room.id,
         });
 
         // Join socket room
@@ -661,6 +800,34 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
         socket.emit(ServerEvents.ERROR, {
           code: 'JOIN_FAILED',
           message: error.message || 'Failed to join room',
+        });
+      }
+    });
+
+    // Resume an existing session (within the disconnect grace period) on a new socket —
+    // e.g. after a page refresh, an accidental back button, or a brief network drop.
+    socket.on(ClientEvents.ROOM_REJOIN, async (payload: unknown) => {
+      try {
+        const { roomId, playerId } = validateRoomRejoin(payload);
+        const result = await engine.rejoinRoom(roomId, playerId, socket.id);
+
+        if (!result.success) {
+          socket.emit(ServerEvents.ERROR, {
+            code: 'REJOIN_FAILED',
+            message: 'This session no longer exists — it may have expired or the game may have ended.',
+          });
+          return;
+        }
+
+        socket.join(roomId);
+        socket.emit(ServerEvents.ROOM_JOINED, result.roomJoined);
+        if (result.gameDeck) socket.emit(ServerEvents.GAME_DECK, result.gameDeck);
+        if (result.turnResolved) socket.emit(ServerEvents.TURN_RESOLVED, result.turnResolved);
+        if (result.gameOver) socket.emit(ServerEvents.GAME_OVER, result.gameOver);
+      } catch (error: any) {
+        socket.emit(ServerEvents.ERROR, {
+          code: 'REJOIN_FAILED',
+          message: error.message || 'Failed to rejoin room',
         });
       }
     });
@@ -873,10 +1040,49 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
       }
     });
 
-    // Disconnect
+    // "Dig Deeper" — pay to reveal the next tier of intel on an incoming attack.
+    // Instant, outside the turn-resolution cycle — result goes only to this socket.
+    socket.on(ClientEvents.GAME_DIG_DEEPER, async (payload: unknown) => {
+      const roomId = engine.getPlayerRoom(socket.id);
+      if (!roomId) return;
+
+      const roomState = engine.rooms.get(roomId);
+      if (!roomState || roomState.room.status !== RoomStatus.GAME_PHASE) return;
+
+      const player = Array.from(roomState.players.values()).find(
+        (p: Player) => p.socketId === socket.id,
+      );
+      if (!player) return;
+
+      try {
+        const { attackId } = validateDigDeeper(payload);
+        const outcome = await engine.digDeeper(roomId, player.id, attackId);
+        if (!outcome.success) {
+          socket.emit(ServerEvents.ERROR, {
+            code: 'DIG_DEEPER_FAILED',
+            message: outcome.reason,
+          });
+          return;
+        }
+        socket.emit(ServerEvents.GAME_DIG_DEEPER_RESULT, {
+          attackId: outcome.attackId,
+          cost: outcome.cost,
+          newCash: outcome.newCash,
+          attack: outcome.attack,
+        });
+      } catch (error: any) {
+        socket.emit(ServerEvents.ERROR, {
+          code: 'INVALID_DIG_DEEPER',
+          message: error.message || 'Invalid dig deeper request',
+        });
+      }
+    });
+
+    // Disconnect — don't delete immediately, give them RECONNECT_GRACE_PERIOD_MS to
+    // reconnect via room:rejoin (network hiccup, accidental back button, refresh).
     socket.on('disconnect', async () => {
       console.log(`Player disconnected: ${socket.id}`);
-      await engine.removePlayer(socket.id);
+      await engine.markPlayerDisconnected(socket.id);
     });
   });
 

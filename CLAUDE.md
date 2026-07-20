@@ -20,8 +20,7 @@ as `FORMULAS §N`) and `game_engine.json`/`game_config.json` (canonical copies o
 decision library and starting/admin values). `server/src/data/` holds the runtime copies
 actually loaded by the server. Never derive game math from the code alone — check
 FORMULAS.md first, since the code documents known deliberate deviations from spec (see
-README's *Lawsuits* section) and at least one known gap (`target.*` impact fields are
-extracted but not yet applied to targets in `GameLoop.resolveTurn`).
+README's *Lawsuits* section).
 
 ## Commands
 
@@ -115,15 +114,21 @@ mocking at all — if you need a test double for Prisma or `Server`, you're test
 `GameEngine` (`server/src/socket/gameEngine.test.ts`), not `GameLoop`.
 
 `GameLoop` persists each active decision as a `PersistedDecisionInstance`
-(`{ id, definitionName, deployedYear, elapsedYears, isMatured }`) rather than the full
-`DeployedDecision` (which embeds the whole `DecisionDefinition` object) — `definitionName`
-is looked back up against the loaded decision library on read (`readEngineState` →
-`DecisionEngine.getDef`), since definitions are static and already loaded from
-`game_engine.json` at startup. Keep persisted decision instances in this serialized,
-name-keyed form; don't reintroduce embedding the full definition object into
+(`{ id, definitionName, deployedYear, elapsedYears, isMatured, targetId? }`) rather than
+the full `DeployedDecision` (which embeds the whole `DecisionDefinition` object) —
+`definitionName` is looked back up against the loaded decision library on read
+(`readEngineState` → `DecisionEngine.getDef`), since definitions are static and already
+loaded from `game_engine.json` at startup. Keep persisted decision instances in this
+serialized, name-keyed form; don't reintroduce embedding the full definition object into
 `Company.engineState`, or the write/read shapes drift apart again (this was a real bug
 until fixed — `gameLoop.test.ts`'s "round-trip regression" test guards against it
-recurring).
+recurring). `targetId` (set when a decision like Bot Attack is deployed against a chosen
+opponent) round-trips the same way and drives two things downstream: `target.*` impacts
+apply to that player each turn (`applyTargetImpacts` in `calcEngine.ts`, called from
+`resolveTurn`'s Step 2), and `buildIncomingAttacks` uses it to surface the "somebody
+attacked you" hint + progressive "Dig Deeper" reveal (see README's *Attack Awareness &
+Dig Deeper* section) — never derive one of these without the other; they read the same
+`targetId`.
 
 ### Everything per-round is client-full-replacement, not incremental
 
@@ -131,6 +136,20 @@ recurring).
 (strategic/operational decisions + lawsuit filings); the server always treats it as a
 full replacement for that in-flight turn, never a delta. Keep this in mind when touching
 either the client submission logic (`GamePhase.tsx`) or `GameLoop.submitDecisions`.
+
+### Two exceptions to "everything happens in resolveTurn": Dig Deeper and reconnection
+
+Almost every gameplay effect only ever happens inside the turn-timer-driven
+`resolveTurn`/`resolveGameTurn` cycle. Two things deliberately don't: `GameLoop.digDeeper`
+(pay $10k to reveal the next tier of intel on an incoming attack) and
+`GameEngine.rejoinRoom`/`markPlayerDisconnected`/`finalizePlayerRemoval` (session
+resume after a disconnect). Both mutate `Company` state instantly, outside the turn
+cycle — `digDeeper` still keeps `GameLoop` pure (no Prisma/Socket.IO in it; `GameEngine`
+does the one-off write), but if you're looking for "why did this player's cash/state
+change and I don't see it in `resolveTurn`," check these two paths first. The
+disconnect-grace-period sweep (`GameEngine`'s heartbeat interval, `RECONNECT_GRACE_PERIOD_MS`)
+mirrors the pre-existing stale-room cleanup (`STALE_ROOM_THRESHOLD`) pattern rather than
+using a per-player `setTimeout` — extend that same interval, don't add a second one.
 
 ### JSONB game state, typed columns only for what needs querying
 

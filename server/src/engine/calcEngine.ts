@@ -417,6 +417,7 @@ export function applyDecisionImpacts(
 
   for (const [field, impact] of Object.entries(impacts)) {
     if (field.startsWith('competitor')) continue; // Handled in cross-player resolution
+    if (field.startsWith('target.')) continue; // Routed to the targeted player — see extractTargetImpacts/applyTargetImpacts
 
     const value = getScheduleValue(impact.schedule, elapsedYears);
     if (value === 0) continue;
@@ -430,6 +431,7 @@ export function applyDecisionImpacts(
   // Also track positive absolute additions to assets/intangibleAssets for depreciation ledger
   for (const [field, impact] of Object.entries(impacts)) {
     if (field.startsWith('competitor')) continue;
+    if (field.startsWith('target.')) continue;
 
     const value = getScheduleValue(impact.schedule, elapsedYears);
     if (value === 0) continue;

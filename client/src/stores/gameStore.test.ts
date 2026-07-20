@@ -306,6 +306,7 @@ describe('gameStore', () => {
         activeDecisions: [],
         legalCases: [],
         riskGauge: 15,
+        incomingAttacks: [],
       };
 
       const turnResult: TurnResolutionResult = {
@@ -318,6 +319,71 @@ describe('gameStore', () => {
 
       expect(useGameStore.getState().turnResults).toEqual(turnResult);
       expect(useGameStore.getState().round).toBe(1);
+    });
+  });
+
+  describe('applyDigDeeperResult', () => {
+    const makePlayer = (overrides: Partial<PlayerTurnResult> = {}): PlayerTurnResult => ({
+      playerId: 'player-1',
+      playerName: 'Alice',
+      variables: {
+        cash: 100000, assets: 1000000, intangibleAssets: 100000, debt: 0,
+        reserves: 0, operatingExpenses: 20000, staffCost: 10000,
+        materialCostPerTon: 500, otherIncome: 0, price: 700,
+        capacityUtilization: 1.0, processingLevel: 0.5, energyIntensity: 50,
+        moistureContent: 0.3, nutrientConsistency: 0.3, supplySecurity: 0.5,
+        logisticsCostPerTon: 50, processLoss: 0.1, installedCapacity: 350,
+        totalSharesOutstanding: 10000, shareOwnership: { self: 1.0 },
+        outrage: 0, scrutiny: 0, breakdowns: 0, contaminationRisk: 0,
+        odorComplaints: 0, tokenLiability: 0, carbonFootprint: 0,
+        stockVolume: 0, demand: 0,
+      },
+      derived: {
+        equity: 1200000, revenue: 245000, volume: 350, receivables: 30000,
+        financeCost: 5000, taxCost: 2800, depreciation: 3300, stockValue: 120,
+        marketShare: 0.33, competitiveness: 1.2,
+      },
+      activeDecisions: [],
+      legalCases: [],
+      riskGauge: 15,
+      incomingAttacks: [{ attackId: 'attack-1', investigationLevel: 0 }],
+      ...overrides,
+    });
+
+    it('patches only the requesting player\'s cash and matching attack entry', () => {
+      const me = makePlayer();
+      const rival = makePlayer({ playerId: 'player-2', playerName: 'Bob', incomingAttacks: [] });
+      useGameStore.getState().handleTurnResolved({ round: 1, players: [me, rival], gameOver: false });
+
+      useGameStore.getState().applyDigDeeperResult('player-1', {
+        attackId: 'attack-1',
+        cost: 10000,
+        newCash: 90000,
+        attack: { attackId: 'attack-1', investigationLevel: 1, attackerId: 'player-3', attackerName: 'Carol' },
+      });
+
+      const updated = useGameStore.getState().turnResults!.players;
+      const updatedMe = updated.find((p) => p.playerId === 'player-1')!;
+      const updatedRival = updated.find((p) => p.playerId === 'player-2')!;
+
+      expect(updatedMe.variables.cash).toBe(90000);
+      expect(updatedMe.incomingAttacks).toEqual([{ attackId: 'attack-1', investigationLevel: 1, attackerId: 'player-3', attackerName: 'Carol' }]);
+      // Other fields untouched.
+      expect(updatedMe.variables.assets).toBe(1000000);
+      // Other players untouched.
+      expect(updatedRival).toEqual(rival);
+    });
+
+    it('is a no-op when there are no turn results yet', () => {
+      expect(() =>
+        useGameStore.getState().applyDigDeeperResult('player-1', {
+          attackId: 'attack-1',
+          cost: 10000,
+          newCash: 90000,
+          attack: { attackId: 'attack-1', investigationLevel: 1 },
+        }),
+      ).not.toThrow();
+      expect(useGameStore.getState().turnResults).toBeNull();
     });
   });
 

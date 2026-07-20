@@ -1,4 +1,6 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import type { Socket } from 'socket.io-client';
 import {
   Modal, Stack, Text, Badge, Button, Flex, TextInput,
   Slider, Divider, Box,
@@ -9,6 +11,7 @@ import {
   ServerEvents, ClientEvents,
   type PlayerTurnResult, type LegalCaseData,
   type DecisionDefinition, type GameSettings, type SubmittedDecisions,
+  type IncomingAttackInfo,
 } from '@suetheirasses/shared';
 import {
   IconClock, IconFileText,
@@ -281,7 +284,8 @@ const gpStyles = {
 
 export default function GamePhase() {
   const { socket } = useSocketStore();
-  const { player, turnResults, timer, currentPhase, updateTimer, decisions, gameSettings } = useGameStore();
+  const { player, turnResults, timer, currentPhase, updateTimer, decisions, gameSettings, isRejoining } = useGameStore();
+  const navigate = useNavigate();
   const [myData, setMyData] = useState<PlayerTurnResult | null>(null);
   const [competitors, setCompetitors] = useState<PlayerTurnResult[]>([]);
   // Previous turn's snapshot — kept only to compute the "since last turn" trend arrows
@@ -291,6 +295,10 @@ export default function GamePhase() {
   const [localTimer, setLocalTimer] = useState(timer);
   const [drillDown, setDrillDown] = useState<{ type: string; data?: PlayerTurnResult; field?: string } | null>(null);
   const [sueModalOpen, setSueModalOpen] = useState(false);
+  // Set when a player jumps into the Sue flow via a fully-investigated attack's
+  // "SUE NOW" shortcut — pre-fills SueModal's target + ground, still requires the
+  // player's own "QUEUE LAWSUIT" confirmation click.
+  const [sueSuggestion, setSueSuggestion] = useState<{ targetId: string; groundName: string } | null>(null);
   const [riskInfoCase, setRiskInfoCase] = useState<LegalCaseData | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -302,6 +310,16 @@ export default function GamePhase() {
     setPending(next);
     socket?.emit(ClientEvents.GAME_SUBMIT_DECISIONS, next);
   };
+
+  // Dead-end guard: landing here with a genuinely empty store (no player, and no
+  // session-resume attempt in flight) means there's nothing to render and nothing
+  // to wait for — send them back to matchmaking instead of hanging on the "Waiting
+  // for game data..." spinner below forever.
+  useEffect(() => {
+    if (!player && !isRejoining) {
+      navigate('/', { replace: true });
+    }
+  }, [player, isRejoining, navigate]);
 
   // Sync from store on turn resolution. Capture the outgoing values as "previous"
   // before overwriting, so KPI/intel trend arrows have something to compare against.
@@ -410,6 +428,16 @@ export default function GamePhase() {
         <Stack gap="md" style={{ flex: 1, minWidth: 320 }}>
           <SectionCard title={`Open Lawsuits (${myLegalCases.filter((c) => c.status !== 'resolved').length})`}>
             <Stack gap="sm">
+              <IncomingAttackHints
+                attacks={myData.incomingAttacks}
+                cash={vars.cash}
+                digDeeperCost={gameSettings?.digDeeperCost ?? 10000}
+                socket={socket}
+                onSueNow={(targetId, groundName) => {
+                  setSueSuggestion({ targetId, groundName });
+                  setSueModalOpen(true);
+                }}
+              />
               <Button variant="filled" color="red" leftSection={<IconSwords size={16} />} onClick={() => setSueModalOpen(true)} style={{ ...boldStyle }}>
                 📋 SUE THEIR ASSES
               </Button>
@@ -458,8 +486,16 @@ export default function GamePhase() {
         )}
       </Modal>
 
-      <Modal opened={sueModalOpen} onClose={() => setSueModalOpen(false)} size="lg" centered title={<Text style={{ ...boldStyle, fontSize: '0.9rem' }}>📋 SUE THEIR ASSES</Text>}>
-        <SueModal competitors={competitors} decisions={decisions} gameSettings={gameSettings} pending={pending} onSubmitPending={submitPending} />
+      <Modal opened={sueModalOpen} onClose={() => { setSueModalOpen(false); setSueSuggestion(null); }} size="lg" centered title={<Text style={{ ...boldStyle, fontSize: '0.9rem' }}>📋 SUE THEIR ASSES</Text>}>
+        <SueModal
+          competitors={competitors}
+          decisions={decisions}
+          gameSettings={gameSettings}
+          pending={pending}
+          onSubmitPending={submitPending}
+          prefillTargetId={sueSuggestion?.targetId}
+          prefillGroundName={sueSuggestion?.groundName}
+        />
       </Modal>
 
       <Modal opened={riskInfoCase !== null} onClose={() => setRiskInfoCase(null)} size="md" centered title={<Text style={{ ...boldStyle, fontSize: '0.85rem' }}>⚠️ RISK BREAKDOWN</Text>}>
@@ -984,6 +1020,88 @@ function CounterOfferSlider({ caseData }: CounterOfferSliderProps) {
       <Slider flex={1} min={lastTheirOffer} max={maxOffer} step={500} value={slider} onChange={setSlider} color="#dc2626" />
       <Text style={{ ...boldStyle, fontSize: '0.8rem', minWidth: 70, textAlign: 'right' }}>{fmt(slider)}</Text>
     </Flex>
+  );
+}
+
+// ============================================================
+// Sub-components — Incoming Attack Hints
+// ============================================================
+
+interface IncomingAttackHintsProps {
+  attacks: IncomingAttackInfo[];
+  cash: number;
+  digDeeperCost: number;
+  socket: Socket | null;
+  onSueNow: (targetId: string, groundName: string) => void;
+}
+
+function IncomingAttackHints({ attacks, cash, digDeeperCost, socket, onSueNow }: IncomingAttackHintsProps) {
+  if (attacks.length === 0) return null;
+  return (
+    <Stack gap={6}>
+      {attacks.map((attack) => (
+        <AttackHintCard key={attack.attackId} attack={attack} cash={cash} digDeeperCost={digDeeperCost} socket={socket} onSueNow={onSueNow} />
+      ))}
+    </Stack>
+  );
+}
+
+function AttackHintCard({ attack, cash, digDeeperCost, socket, onSueNow }: {
+  attack: IncomingAttackInfo;
+  cash: number;
+  digDeeperCost: number;
+  socket: Socket | null;
+  onSueNow: (targetId: string, groundName: string) => void;
+}) {
+  const fullyInvestigated = attack.investigationLevel >= 3;
+  const canAfford = cash >= digDeeperCost;
+  const headline = attack.attackerName ? `⚠️ ${attack.attackerName} did something to you.` : '⚠️ Somebody did something to you.';
+
+  return (
+    <div style={{ padding: 10, border: '3px solid #ea580c', borderRadius: 8, background: '#fff7ed' }}>
+      <Text style={{ ...boldStyle, fontSize: '0.8rem' }}>{headline}</Text>
+
+      {attack.decisionName && (
+        <Text size="xs" style={{ marginTop: 4 }}>
+          <strong>{attack.decisionName}</strong>{attack.effectSummary ? ` — ${attack.effectSummary}` : ''}
+        </Text>
+      )}
+      {attack.decisionDescription && (
+        <Text size="xs" c="dimmed" style={{ fontStyle: 'italic', lineHeight: 1.4 }}>{attack.decisionDescription}</Text>
+      )}
+
+      {attack.suggestedGroundName && (
+        <Box style={{ marginTop: 8, padding: 8, background: '#fff', border: '1px solid #fed7aa', borderRadius: 6 }}>
+          <Text style={{ ...boldStyle, fontSize: '0.75rem' }}>Suggested: {attack.suggestedGroundName}</Text>
+          <Text size="xs" c="dimmed" style={{ lineHeight: 1.4 }}>{attack.suggestedGroundDescription}</Text>
+          <Text size="xs" style={{ marginTop: 4 }}>Estimated success: <strong>{Math.round((attack.successProbability ?? 0) * 100)}%</strong></Text>
+          <Button
+            size="xs"
+            color="red"
+            fullWidth
+            mt={6}
+            leftSection={<IconGavel size={12} />}
+            onClick={() => onSueNow(attack.attackerId!, attack.suggestedGroundName!)}
+          >
+            SUE NOW
+          </Button>
+        </Box>
+      )}
+
+      {!fullyInvestigated && (
+        <Button
+          size="xs"
+          variant="outline"
+          color="orange"
+          fullWidth
+          mt={8}
+          disabled={!canAfford}
+          onClick={() => socket?.emit(ClientEvents.GAME_DIG_DEEPER, { attackId: attack.attackId })}
+        >
+          🔍 Dig Deeper (${digDeeperCost.toLocaleString()}){!canAfford ? ' — not enough cash' : ''}
+        </Button>
+      )}
+    </div>
   );
 }
 
@@ -1530,9 +1648,12 @@ interface SueModalProps {
   gameSettings: GameSettings | null;
   pending: SubmittedDecisions;
   onSubmitPending: (next: SubmittedDecisions) => void;
+  /** Pre-select a target + ground — set via a fully-investigated attack's "SUE NOW" shortcut. */
+  prefillTargetId?: string;
+  prefillGroundName?: string;
 }
 
-function SueModal({ competitors, decisions, gameSettings, pending, onSubmitPending }: SueModalProps) {
+function SueModal({ competitors, decisions, gameSettings, pending, onSubmitPending, prefillTargetId, prefillGroundName }: SueModalProps) {
   const [query, setQuery] = useState('');
   const [selectedGround, setSelectedGround] = useState<DerivedGround | null>(null);
   const [targetRival, setTargetRival] = useState<string>('');
@@ -1541,6 +1662,19 @@ function SueModal({ competitors, decisions, gameSettings, pending, onSubmitPendi
   const grounds = target ? getGroundsAgainst(target, decisions) : [];
   const q = query.trim().toLowerCase();
   const results = q === '' ? grounds : grounds.filter((g) => g.groundName.toLowerCase().includes(q) || g.description.toLowerCase().includes(q));
+
+  // Applied via a useEffect (not a useState initializer) so it works regardless of
+  // whether Mantine keeps this component mounted across modal open/close cycles.
+  useEffect(() => {
+    if (!prefillTargetId) return;
+    setTargetRival(prefillTargetId);
+    if (!prefillGroundName) return;
+    const prefillTarget = competitors.find((c) => c.playerId === prefillTargetId);
+    if (!prefillTarget) return;
+    const match = getGroundsAgainst(prefillTarget, decisions).find((g) => g.groundName === prefillGroundName);
+    if (match) setSelectedGround(match);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillTargetId, prefillGroundName]);
 
   const maxLawsuits = gameSettings?.maxLawsuitsPerPlayerPerTurn ?? Infinity;
   const atLimit = pending.lawsuits.length >= maxLawsuits;
