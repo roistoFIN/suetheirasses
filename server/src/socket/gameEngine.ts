@@ -11,16 +11,17 @@ import {
   type Room,
   type RoomState,
   type RoomInfo,
+  type Company,
+  type GameOverResponse,
+  type PlayerStanding,
+  type DecisionDefinition,
+  type GameConfig,
+  type GameSettings,
 } from '@suetheirasses/shared';
-import { strategyPhase } from './phases/strategyPhase.js';
-import { lawsuitsPhase } from './phases/lawsuitsPhase.js';
-import { resolutionPhase } from './phases/resolutionPhase.js';
-import {
-  validateRoomJoin,
-  validateStrategySubmit,
-  validateLawsuitFile,
-  validateLawsuitRespond,
-} from '../validation/schemas.js';
+import { validateRoomJoin, validateSubmitDecisions } from '../validation/schemas.js';
+import { GameLoop } from '../engine/gameLoop.js';
+import gameEngineData from '../data/game_engine.json' with { type: 'json' };
+import gameConfigData from '../data/game_config.json' with { type: 'json' };
 
 
 export class GameEngine {
@@ -35,11 +36,39 @@ export class GameEngine {
   private cleanupInterval: NodeJS.Timeout | null = null;
   // How long (ms) before a room with no connected players is considered stale
   private readonly STALE_ROOM_THRESHOLD = 60_000;
+  // Core turn-resolution engine — authoritative source of all GAME_PHASE calculations (FORMULAS.md)
+  private gameLoop: GameLoop;
 
   constructor(io: Server, prisma: PrismaClient) {
     this.io = io;
     this.prisma = prisma;
+    this.gameLoop = new GameLoop(gameConfigData as unknown as GameConfig);
+    this.gameLoop.loadDecisions(gameEngineData as unknown as DecisionDefinition[]);
     this.startHeartbeatCleanup();
+  }
+
+  /** Submit one player's decisions for the current GAME_PHASE turn. */
+  submitDecisions(roomId: string, playerId: string, decisions: import('@suetheirasses/shared').SubmittedDecisions): void {
+    this.gameLoop.submitDecisions(roomId, playerId, decisions);
+  }
+
+  /**
+   * Broadcast each player's starting-position snapshot the instant the game starts,
+   * so the client renders the game room immediately instead of a blank loading state
+   * for the whole first round's timer.
+   */
+  async broadcastInitialSnapshot(roomId: string, round: number): Promise<void> {
+    const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
+    const snapshot = this.gameLoop.getInitialSnapshot(roomId, round, dbPlayers);
+    this.io.to(roomId).emit(ServerEvents.TURN_RESOLVED, snapshot);
+  }
+
+  /** Load every non-bankrupt player + company row GameLoop needs to resolve/preview a turn. */
+  private async loadActiveCompanyPlayers(roomId: string) {
+    return this.prisma.player.findMany({
+      where: { roomId, bankrupt: false },
+      include: { company: true },
+    });
   }
 
   /** Periodically clean up rooms where all players have disconnected (crash recovery). */
@@ -129,7 +158,6 @@ export class GameEngine {
     const roomState: RoomState = {
       room: room as any,
       players: new Map([[dbPlayer.id, syncedPlayer]]),
-      submissions: new Map(),
       timer: null,
       timerValue: 0,
     };
@@ -221,16 +249,6 @@ export class GameEngine {
             });
           }
 
-          // Delete all lawsuits involving this player (as plaintiff or defendant)
-          await tx.lawsuit.deleteMany({
-            where: {
-              OR: [
-                { plaintiffId: player.id },
-                { defendantId: player.id },
-              ],
-            },
-          });
-
           await tx.player.delete({
             where: { id: player.id },
           });
@@ -274,7 +292,7 @@ export class GameEngine {
       const nextIdx = currentIdx + 1;
 
       if (nextIdx >= PHASE_ORDER.length) {
-        // Game over - handled by resolution phase
+        // Already at the last phase — nothing further to advance to.
         return;
       }
 
@@ -286,9 +304,6 @@ export class GameEngine {
 
       // Now mutate in-memory state (safe - DB is already consistent)
       roomState.room.status = nextPhase;
-
-      // Reset submissions for new phase
-      roomState.submissions.clear();
 
       // Start timer if applicable
       this.clearTimer(roomId);
@@ -309,6 +324,128 @@ export class GameEngine {
     }
   }
 
+  /**
+   * Resolve the current GAME_PHASE turn via GameLoop, then either loop into
+   * another GAME_PHASE round or — once only one player remains — transition
+   * to AFTERMATH. GAME_PHASE is not a single linear step in PHASE_ORDER; it
+   * repeats every `turnDurationSeconds` until the game is over (FORMULAS §12).
+   */
+  async resolveGameTurn(roomId: string): Promise<void> {
+    if (this.advancingRooms.has(roomId)) return;
+    this.advancingRooms.add(roomId);
+
+    try {
+      const roomState = this.rooms.get(roomId);
+      if (!roomState) return;
+
+      const round = roomState.room.currentPhaseRound;
+      const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
+      const outcome = this.gameLoop.resolveTurn(roomId, round, dbPlayers);
+
+      // Persist bankruptcies first (matches GameLoop's original in-loop ordering),
+      // then still-active players' updated engine state, then broadcast the turn.
+      for (const bankrupted of outcome.bankruptedPlayers) {
+        await this.prisma.player.update({
+          where: { id: bankrupted.playerId },
+          data: { bankrupt: true },
+        });
+        this.io.to(roomId).emit(ServerEvents.PLAYER_BANKRUPT, {
+          playerId: bankrupted.playerId,
+          playerName: bankrupted.playerName,
+        });
+      }
+
+      for (const update of outcome.companyUpdates) {
+        await this.prisma.company.update({
+          where: { playerId: update.playerId },
+          data: {
+            cash: update.cash,
+            variables: update.variables as any,
+            engineState: update.engineState as any,
+          },
+        });
+      }
+
+      this.io.to(roomId).emit(ServerEvents.TURN_RESOLVED, outcome.result);
+
+      const result = outcome.result;
+      if (result.gameOver) {
+        roomState.room.status = RoomStatus.AFTERMATH;
+        await this.syncRoomToDB(roomId);
+
+        const gameOverPayload = await this.buildGameOverPayload(roomId, result.winnerId);
+        this.io.to(roomId).emit(ServerEvents.GAME_OVER, gameOverPayload);
+
+        this.broadcastRoomState(roomId, ServerEvents.PHASE_CHANGED, {
+          phase: RoomStatus.AFTERMATH,
+          round: roomState.room.currentPhaseRound,
+          timeLimit: PHASE_TIMERS[RoomStatus.AFTERMATH],
+        });
+        this.startTimer(roomId, PHASE_TIMERS[RoomStatus.AFTERMATH]);
+        return;
+      }
+
+      // Not over — loop into the next GAME_PHASE round.
+      roomState.room.currentPhaseRound = round + 1;
+      await this.syncRoomToDB(roomId);
+
+      this.broadcastRoomState(roomId, ServerEvents.PHASE_CHANGED, {
+        phase: RoomStatus.GAME_PHASE,
+        round: roomState.room.currentPhaseRound,
+        timeLimit: PHASE_TIMERS[RoomStatus.GAME_PHASE],
+      });
+      this.startTimer(roomId, PHASE_TIMERS[RoomStatus.GAME_PHASE]);
+    } catch (error) {
+      console.error(`Failed to resolve game turn for room ${roomId}:`, error);
+    } finally {
+      this.advancingRooms.delete(roomId);
+    }
+  }
+
+  /** Build the winner + ranked standings payload once only one player remains (FORMULAS §12). */
+  private async buildGameOverPayload(roomId: string, winnerId?: string): Promise<GameOverResponse> {
+    const dbPlayers = await this.prisma.player.findMany({
+      where: { roomId },
+      include: { company: { include: { assets: true } } },
+    });
+
+    const toSharedPlayer = (p: (typeof dbPlayers)[number]): Player => ({
+      id: p.id,
+      name: p.name,
+      roomId: p.roomId,
+      isHost: (p as any).isHost ?? false,
+      bankrupt: p.bankrupt,
+      companyId: p.companyId ?? undefined,
+      socketId: p.socketId ?? null,
+    });
+
+    const toSharedCompany = (p: (typeof dbPlayers)[number]): Company | null =>
+      p.company
+        ? {
+            id: p.company.id,
+            playerId: p.company.playerId,
+            cash: Number(p.company.cash),
+            debt: Number(p.company.debt),
+            assets: p.company.assets.map((a) => ({ id: a.id, companyId: a.companyId, type: a.type, value: Number(a.value) })),
+          }
+        : null;
+
+    const standings: PlayerStanding[] = dbPlayers
+      .sort((a, b) => Number(b.company?.cash ?? 0) - Number(a.company?.cash ?? 0))
+      .map((p, index) => ({
+        player: toSharedPlayer(p),
+        company: toSharedCompany(p),
+        rank: index + 1,
+      }));
+
+    const winnerDbPlayer = dbPlayers.find((p) => p.id === winnerId) ?? dbPlayers.find((p) => !p.bankrupt) ?? dbPlayers[0];
+
+    return {
+      winner: toSharedPlayer(winnerDbPlayer),
+      finalStandings: standings,
+    };
+  }
+
   startTimer(roomId: string, seconds: number): void {
     const roomState = this.rooms.get(roomId);
     if (!roomState) return;
@@ -322,9 +459,15 @@ export class GameEngine {
 
       if (roomState.timerValue <= 0) {
         this.clearTimer(roomId);
-        this.advancePhase(roomId).catch((error) => {
-          console.error(`Timer-triggered phase advance failed for room ${roomId}:`, error);
-        });
+        if (roomState.room.status === RoomStatus.GAME_PHASE) {
+          this.resolveGameTurn(roomId).catch((error) => {
+            console.error(`Turn resolution failed for room ${roomId}:`, error);
+          });
+        } else {
+          this.advancePhase(roomId).catch((error) => {
+            console.error(`Timer-triggered phase advance failed for room ${roomId}:`, error);
+          });
+        }
       }
     }, 1000);
   }
@@ -624,15 +767,6 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
             });
           }
 
-          await tx.lawsuit.deleteMany({
-            where: {
-              OR: [
-                { plaintiffId: playerToKick.id },
-                { defendantId: playerToKick.id },
-              ],
-            },
-          });
-
           await tx.player.delete({
             where: { id: playerToKick.id },
           });
@@ -691,80 +825,50 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
       // Only start from WAITING phase
       if (roomState.room.status !== RoomStatus.WAITING) return;
 
-      // Start the game
-      roomState.room.status = RoomStatus.STRATEGY;
+      // Start the game — enter GAME_PHASE
+      roomState.room.status = RoomStatus.GAME_PHASE;
       roomState.room.currentPhaseRound = 1;
       await engine.syncRoomToDB(roomId);
-      engine.startTimer(roomId, PHASE_TIMERS[RoomStatus.STRATEGY]);
+      engine.startTimer(roomId, PHASE_TIMERS[RoomStatus.GAME_PHASE]);
 
       engine.broadcastRoomState(roomId, ServerEvents.PHASE_CHANGED, {
-        phase: RoomStatus.STRATEGY,
+        phase: RoomStatus.GAME_PHASE,
         round: 1,
-        timeLimit: PHASE_TIMERS[RoomStatus.STRATEGY],
+        timeLimit: PHASE_TIMERS[RoomStatus.GAME_PHASE],
       });
+
+      // Send the decision library + per-turn limits once — it's static for the
+      // whole game, so the client can render the real Decision Deck immediately.
+      engine.broadcastRoomState(roomId, ServerEvents.GAME_DECK, {
+        decisions: gameEngineData as unknown as DecisionDefinition[],
+        gameSettings: gameConfigData.gameSettings as GameSettings,
+      });
+
+      // Players land straight in the game room with real starting numbers —
+      // no blank "waiting for game data" screen for the whole first round.
+      await engine.broadcastInitialSnapshot(roomId, 1);
     });
 
-    // Strategy submission
-    socket.on(ClientEvents.STRATEGY_SUBMIT, async (payload) => {
+    // Submit strategic/operational decisions for the current GAME_PHASE turn
+    socket.on(ClientEvents.GAME_SUBMIT_DECISIONS, (payload: unknown) => {
+      const roomId = engine.getPlayerRoom(socket.id);
+      if (!roomId) return;
+
+      const roomState = engine.rooms.get(roomId);
+      if (!roomState || roomState.room.status !== RoomStatus.GAME_PHASE) return;
+
+      const player = Array.from(roomState.players.values()).find(
+        (p: Player) => p.socketId === socket.id,
+      );
+      if (!player) return;
+
       try {
-        const roomId = engine.getPlayerRoom(socket.id);
-        if (!roomId) return;
-
-        const roomState = engine.rooms.get(roomId);
-        if (!roomState || roomState.room.status !== RoomStatus.STRATEGY) return;
-
-        const validated = validateStrategySubmit(payload);
-        roomState.submissions.set(socket.id, validated);
-
-        // Check if all players submitted
-        if (roomState.submissions.size === roomState.players.size) {
-          engine.clearTimer(roomId);
-          await strategyPhase.resolve(roomId, roomState, io, prisma);
-          // Transition to Results phase (passive display)
-          await engine.advancePhase(roomId);
-        }
+        const validated = validateSubmitDecisions(payload);
+        engine.submitDecisions(roomId, player.id, validated);
       } catch (error: any) {
         socket.emit(ServerEvents.ERROR, {
-          code: 'STRATEGY_SUBMIT_FAILED',
-          message: error.message,
-        });
-      }
-    });
-
-    // Lawsuit filing
-    socket.on(ClientEvents.LAWSUIT_FILE, async (payload) => {
-      try {
-        const roomId = engine.getPlayerRoom(socket.id);
-        if (!roomId) return;
-
-        const roomState = engine.rooms.get(roomId);
-        if (!roomState || roomState.room.status !== RoomStatus.LAWSUITS) return;
-
-        const validated = validateLawsuitFile(payload);
-        await lawsuitsPhase.fileLawsuit(socket.id, roomId, validated, io, prisma);
-      } catch (error: any) {
-        socket.emit(ServerEvents.ERROR, {
-          code: 'LAWSUIT_FILE_FAILED',
-          message: error.message,
-        });
-      }
-    });
-
-    // Lawsuit response
-    socket.on(ClientEvents.LAWSUIT_RESPOND, async (payload) => {
-      try {
-        const roomId = engine.getPlayerRoom(socket.id);
-        if (!roomId) return;
-
-        const roomState = engine.rooms.get(roomId);
-        if (!roomState || roomState.room.status !== RoomStatus.RESOLVING) return;
-
-        const validated = validateLawsuitRespond(payload);
-        await resolutionPhase.respondToLawsuit(socket.id, roomId, validated, io, prisma);
-      } catch (error: any) {
-        socket.emit(ServerEvents.ERROR, {
-          code: 'LAWSUIT_RESPOND_FAILED',
-          message: error.message,
+          code: 'INVALID_DECISIONS',
+          message: error.message || 'Invalid decision submission',
         });
       }
     });

@@ -5,9 +5,12 @@ import {
   type Player,
   type Company,
   type PhaseChangedResponse,
-  type ResultsRevealResponse,
   type GameOverResponse,
   type ErrorResponse,
+  type TurnResolutionResult,
+  type DecisionDefinition,
+  type GameSettings,
+  type GameDeckResponse,
 } from '@suetheirasses/shared';
 
 interface GameState {
@@ -15,7 +18,7 @@ interface GameState {
   room: Room | null;
   updateRoom: (room: Room) => void;
 
-  // Player state
+  // Player state — the current player's identity
   player: Player | null;
   updatePlayer: (player: Player) => void;
   kickPlayer: (playerId: string) => void;
@@ -33,13 +36,20 @@ interface GameState {
   updatePhase: (data: PhaseChangedResponse) => void;
   updateTimer: (timeLeft: number) => void;
 
-  // Results
-  results: ResultsRevealResponse | null;
-  updateResults: (data: ResultsRevealResponse) => void;
+  // Turn results — all players' computed states after each turn
+  turnResults: TurnResolutionResult | null;
+  handleTurnResolved: (data: TurnResolutionResult) => void;
+  clearTurnResults: () => void;
+
+  // Decision deck — the 45-decision library + per-turn limits, sent once per game
+  decisions: DecisionDefinition[];
+  gameSettings: GameSettings | null;
+  setGameDeck: (data: GameDeckResponse) => void;
 
   // Game over
   gameOver: GameOverResponse | null;
   setGameOver: (data: GameOverResponse) => void;
+  clearGameOver: () => void;
 
   // UI state
   error: ErrorResponse | null;
@@ -56,7 +66,10 @@ export const useGameStore = create<GameState>((set) => ({
   currentPhase: null,
   round: 1,
   timer: 0,
-  results: null,
+
+  turnResults: null,
+  decisions: [],
+  gameSettings: null,
   gameOver: null,
   error: null,
   notification: null,
@@ -101,8 +114,15 @@ export const useGameStore = create<GameState>((set) => ({
       room: state.room ? { ...state.room, status: data.phase } : null,
     })),
   updateTimer: (timeLeft) => set({ timer: timeLeft }),
-  updateResults: (data) => set({ results: data, notification: 'Phase results revealed!' }),
+  handleTurnResolved: (data) =>
+    set({
+      turnResults: data,
+      round: data.round,
+    }),
+  clearTurnResults: () => set({ turnResults: null }),
+  setGameDeck: (data) => set({ decisions: data.decisions, gameSettings: data.gameSettings }),
   setGameOver: (data) => set({ gameOver: data, notification: `Game Over! ${data.winner?.name || 'Unknown'} wins!` }),
+  clearGameOver: () => set({ gameOver: null }),
   setError: (error) => set({ error }),
   setNotification: (notification) => set({ notification }),
   setCompanies: (companies) => {

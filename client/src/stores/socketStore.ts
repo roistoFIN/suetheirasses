@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { io, Socket } from 'socket.io-client';
-import { ServerEvents, type RoomJoinedResponse, type PhaseChangedResponse, type ResultsRevealResponse, type GameOverResponse, type ErrorResponse } from '@suetheirasses/shared';
+import { ServerEvents, type RoomJoinedResponse, type PhaseChangedResponse, type GameOverResponse, type ErrorResponse, type TurnResolutionResult, type GameDeckResponse } from '@suetheirasses/shared';
 import { useGameStore } from './gameStore';
 
 interface SocketState {
@@ -78,16 +78,22 @@ export const useSocketStore = create<SocketState>((set, get) => ({
       updatePhase(data);
     });
 
+    socket.on(ServerEvents.TURN_RESOLVED, (data: TurnResolutionResult) => {
+      console.log('Turn resolved:', data);
+      const { handleTurnResolved } = useGameStore.getState();
+      handleTurnResolved(data);
+    });
+
+    socket.on(ServerEvents.GAME_DECK, (data: GameDeckResponse) => {
+      console.log('Game deck loaded:', data.decisions.length, 'decisions');
+      const { setGameDeck } = useGameStore.getState();
+      setGameDeck(data);
+    });
+
     socket.on(ServerEvents.TIMER_UPDATE, (data: { timeLeft: number }) => {
       console.log('Timer update:', data);
       const { updateTimer } = useGameStore.getState();
       updateTimer(data.timeLeft);
-    });
-
-    socket.on(ServerEvents.RESULTS_REVEAL, (data: ResultsRevealResponse) => {
-      console.log('Results reveal:', data);
-      const { updateResults } = useGameStore.getState();
-      updateResults(data);
     });
 
     socket.on(ServerEvents.PLAYER_BANKRUPT, (data: { playerId: string; playerName: string }) => {

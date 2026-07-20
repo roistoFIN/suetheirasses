@@ -1,0 +1,3323 @@
+[
+  {
+    "decision": "New Factory",
+    "level": "Strategic",
+    "description": "Build a new production facility to scale up your long-term output capacity. Increases depreciation and operating expenses.",
+    "nature": "Traditional",
+    "offensiveAction": false,
+    "excludes": [],
+    "impacts": {
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "1": -100000,
+          "2": -100000,
+          "default": 0
+        }
+      },
+      "assets": {
+        "type": "absolute",
+        "schedule": {
+          "1": 50000,
+          "2": 150000,
+          "default": 0
+        }
+      },
+      "capacityUtilization": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0.0,
+          "2": 0.0,
+          "default": -0.3
+        }
+      },
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0,
+          "2": 0,
+          "default": 25000
+        }
+      },
+      "carbonFootprint": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0.0,
+          "2": 0.0,
+          "default": 15.0
+        }
+      },
+      "installedCapacity": {
+        "type": "relative",
+        "schedule": {
+          "1": 0.0,
+          "2": 0.0,
+          "default": 0.4
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Private Nuisance and Industrial Encroachment Tort",
+        "description": "Sue the competitor for private nuisance; the continuous industrial noise from their new factory's fans decreases your property value and disrupts your employees.",
+        "probability": {
+          "1": 0.02,
+          "2": 0.05,
+          "default": 0.08
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -10000,
+            "default": -25000
+          }
+        }
+      },
+      {
+        "name": "Environmental Impact Assessment (EIA) Non-Compliance Suit",
+        "description": "File an injunction to halt construction due to the competitor's failure to secure valid regional environmental permits, delaying their operational timeline.",
+        "probability": {
+          "1": 0.04,
+          "2": 0.08,
+          "default": 0.12
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -20000,
+            "default": -40000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Strategic footprint expansion to maximize regional synergy.",
+      "Capital expenditure allocated towards next-generation infrastructure scalability.",
+      "Scaling physical manufacturing infrastructure to meet projected global demand vectors.",
+      "Localized asset concentration to mitigate cross-border supply chain volatility."
+    ],
+    "cashFlowCategory": "investing"
+  },
+  {
+    "decision": "Vertical Integration",
+    "level": "Strategic",
+    "description": "Acquire or build your own supply chain components to reduce reliance on third-party suppliers and lower material costs.",
+    "nature": "Traditional",
+    "offensiveAction": false,
+    "excludes": [],
+    "impacts": {
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "1": -80000,
+          "default": 0
+        }
+      },
+      "assets": {
+        "type": "absolute",
+        "schedule": {
+          "1": 80000,
+          "default": 0
+        }
+      },
+      "supplySecurity": {
+        "type": "relative",
+        "schedule": {
+          "1": 0.0,
+          "default": 0.3
+        }
+      },
+      "materialCostPerTon": {
+        "type": "relative",
+        "schedule": {
+          "1": 0.0,
+          "default": -0.15
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Sherman Act Section 2 Private Antitrust Litigation",
+        "description": "Sue the competitor for illegal vertical foreclosure and price squeezing; their complete supply chain control is used to deny you critical raw materials and destroy your production.",
+        "probability": {
+          "1": 0.05,
+          "2": 0.12,
+          "default": 0.15
+        },
+        "impact": {
+          "type": "relative",
+          "target": "revenue",
+          "schedule": {
+            "1": -0.02,
+            "default": -0.05
+          }
+        }
+      },
+      {
+        "name": "Breach of Exclusivity and Supply Poaching Claim",
+        "description": "Sue the competitor for tortious inducement; they coerced your long-term logistics and raw material partners to break existing exclusivity contracts.",
+        "probability": {
+          "1": 0.06,
+          "2": 0.1,
+          "default": 0.14
+        },
+        "impact": {
+          "type": "relative",
+          "target": "revenue",
+          "schedule": {
+            "1": -0.03,
+            "default": -0.06
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Upstream asset optimization to internalize value-chain efficiencies.",
+      "Holistic structural alignment of our primary resource dependencies.",
+      "Internalizing supplier margins to enhance consolidated equity value.",
+      "Constructing an end-to-end self-sustaining operational ecosystem."
+    ],
+    "cashFlowCategory": "investing"
+  },
+  {
+    "decision": "Organic Shift",
+    "level": "Strategic",
+    "description": "Transition your production lines entirely to organic standards. Lowers volume but increases prices and improves public reputation.",
+    "nature": "Traditional",
+    "offensiveAction": false,
+    "excludes": [
+      "Artificial Greenwashing",
+      "24/7 Lighting",
+      "Laxatives in Feed",
+      "Aggressive Sale"
+    ],
+    "impacts": {
+      "operatingExpenses": {
+        "type": "relative",
+        "schedule": {
+          "1": 0.1,
+          "2": 0.15,
+          "3": 0.2,
+          "default": 0.2
+        }
+      },
+      "intangibleAssets": {
+        "type": "absolute",
+        "schedule": {
+          "1": 10000,
+          "2": 25000,
+          "3": 50000,
+          "default": 0
+        }
+      },
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "1": -40000,
+          "2": -30000,
+          "3": -10000,
+          "default": 0
+        }
+      },
+      "price": {
+        "type": "relative",
+        "schedule": {
+          "1": 0.1,
+          "2": 0.2,
+          "3": 0.35,
+          "default": 0.45
+        }
+      },
+      "outrage": {
+        "type": "absolute",
+        "schedule": {
+          "1": -10,
+          "2": -25,
+          "3": -50,
+          "default": -60
+        }
+      },
+      "processingLevel": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0.1,
+          "2": 0.2,
+          "3": 0.3,
+          "default": 0.4
+        }
+      },
+      "nutrientConsistency": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0.05,
+          "2": 0.15,
+          "3": 0.2,
+          "default": 0.25
+        }
+      },
+      "capacityUtilization": {
+        "type": "relative",
+        "schedule": {
+          "1": -0.05,
+          "2": -0.12,
+          "3": -0.2,
+          "default": -0.2
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Lanham Act False Advertising & Unfair Competition",
+        "description": "Sue the competitor for false advertising and unfair competition; their substandard 'organic' labeling misleads the market and unlawfully diverts your customers and revenue.",
+        "probability": {
+          "1": 0.04,
+          "default": 0.02
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -15000,
+            "default": -5000
+          }
+        }
+      },
+      {
+        "name": "Certification Fraud & Supply Chain Deception Claim",
+        "description": "Sue the competitor for commercial fraud; they are mixing conventional feed into their 'organic' lines to artificially sustain output volume.",
+        "probability": {
+          "1": 0.05,
+          "2": 0.08,
+          "default": 0.1
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -25000,
+            "default": -10000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Phasing into premium eco-centric product portfolios.",
+      "A deliberate pivot towards holistic, nature-aligned output paradigms.",
+      "Capturing high-margin ethical consumer segments through natural product alignment.",
+      "De-escalating chemical dependencies to future-proof regulatory compliance."
+    ],
+    "cashFlowCategory": "investing"
+  },
+  {
+    "decision": "Pelleting Research and Development",
+    "level": "Strategic",
+    "description": "Invest in technology to process feed into high-efficiency pellets, driving up product value and margins.",
+    "nature": "Traditional",
+    "offensiveAction": false,
+    "excludes": [],
+    "impacts": {
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "1": -30000,
+          "2": -30000,
+          "default": 0
+        }
+      },
+      "intangibleAssets": {
+        "type": "absolute",
+        "schedule": {
+          "1": 30000,
+          "2": 60000,
+          "default": 0
+        }
+      },
+      "price": {
+        "type": "relative",
+        "schedule": {
+          "1": 0.0,
+          "2": 0.0,
+          "default": 0.25
+        }
+      },
+      "processingLevel": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0.0,
+          "2": 0.0,
+          "default": 0.5
+        }
+      },
+      "energyIntensity": {
+        "type": "relative",
+        "schedule": {
+          "1": 0.0,
+          "2": 0.0,
+          "default": 0.2
+        }
+      },
+      "moistureContent": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0.0,
+          "2": 0.0,
+          "default": -0.12
+        }
+      },
+      "nutrientConsistency": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0.0,
+          "2": 0.0,
+          "default": 0.15
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Patent Infringement Litigation (35 U.S.C. § 271)",
+        "description": "Sue the competitor for patent infringement; their new compression screw technology copies your protected molecular aggregation design without a license.",
+        "probability": {
+          "1": 0.02,
+          "2": 0.08,
+          "default": 0.12
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -20000,
+            "default": -45000
+          }
+        }
+      },
+      {
+        "name": "Trade Secret Theft and Industrial Espionage Action",
+        "description": "File a civil claim for trade secret misappropriation; a former lead engineer shared proprietary extrusion formulas with the competitor.",
+        "probability": {
+          "1": 0.03,
+          "2": 0.07,
+          "default": 0.11
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -30000,
+            "default": -60000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Investing in advanced bio-density manipulation technology.",
+      "Optimizing molecular aggregation architectures for premium agricultural delivery.",
+      "Accelerating feed efficiency paradigms through capital-intensive biochemical R&D.",
+      "Deploying proprietary physical processing to capture downstream price premiums."
+    ],
+    "cashFlowCategory": "investing"
+  },
+  {
+    "decision": "Business-to-Business Key Accounts",
+    "level": "Strategic",
+    "description": "Focus your sales force on securing large, stable corporate contracts at a slightly discounted price per unit.",
+    "nature": "Traditional",
+    "offensiveAction": false,
+    "excludes": [],
+    "impacts": {
+      "staffCost": {
+        "type": "absolute",
+        "schedule": {
+          "1": 10000,
+          "2": 12000,
+          "default": 15000
+        }
+      },
+      "price": {
+        "type": "relative",
+        "schedule": {
+          "1": -0.02,
+          "2": -0.04,
+          "default": -0.05
+        }
+      },
+      "logisticsCostPerTon": {
+        "type": "relative",
+        "schedule": {
+          "1": 0.01,
+          "2": 0.03,
+          "default": 0.05
+        }
+      },
+      "demand": {
+        "type": "absolute",
+        "schedule": {
+          "1": 2.0,
+          "2": 6.0,
+          "default": 15.0
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Robinson-Patman Act Private Price Discrimination Suit",
+        "description": "Sue the competitor for unlawful price discrimination; they offer predatory, unjustified wholesale discounts to large institutional clients to exclude you from the market.",
+        "probability": {
+          "1": 0.01,
+          "2": 0.05,
+          "default": 0.07
+        },
+        "impact": {
+          "type": "relative",
+          "target": "revenue",
+          "schedule": {
+            "default": -0.03
+          }
+        }
+      },
+      {
+        "name": "Exclusive Dealing & Market Foreclosure Counter-Suit",
+        "description": "Sue the competitor for violating antitrust laws by locking major buyers into long-term exclusive contracts that foreclose the market.",
+        "probability": {
+          "1": 0.04,
+          "2": 0.08,
+          "default": 0.1
+        },
+        "impact": {
+          "type": "relative",
+          "target": "revenue",
+          "schedule": {
+            "default": -0.04
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Deepening high-volume institutional partner integration.",
+      "Volume-driven commercial agreements with macro-level stakeholders.",
+      "Securing long-term revenue predictability via macroeconomic corporate syndication.",
+      "Transitioning from transactional retail models to systemic enterprise integration."
+    ]
+  },
+  {
+    "decision": "Patent Portfolio",
+    "level": "Strategic",
+    "description": "File and secure intellectual property rights to protect your innovations and slow down competitor research efforts.",
+    "nature": "Traditional",
+    "offensiveAction": true,
+    "excludes": [],
+    "impacts": {
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "1": -15000,
+          "2": -15000,
+          "default": 0
+        }
+      },
+      "intangibleAssets": {
+        "type": "absolute",
+        "schedule": {
+          "1": 15000,
+          "2": 30000,
+          "default": 0
+        }
+      },
+      "target.processingLevel": {
+        "type": "relative",
+        "schedule": {
+          "1": -0.0,
+          "2": -0.1,
+          "default": -0.2
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Declaratory Judgment of Patent Invalidity & Unfair Competition",
+        "description": "File a lawsuit to invalidate the competitor's overly broad patents; their generic claims block your R&D and constitute unfair competition.",
+        "probability": {
+          "1": 0.05,
+          "2": 0.1,
+          "default": 0.15
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -12000,
+            "default": -30000
+          }
+        }
+      },
+      {
+        "name": "Antitrust Patent Tying & Market Foreclosure Action",
+        "description": "Sue the competitor for antitrust violations; they are conditioning the license of essential patents on the purchase of unrelated products.",
+        "probability": {
+          "1": 0.03,
+          "2": 0.06,
+          "default": 0.09
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -25000,
+            "default": -50000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Safeguarding our proprietary innovation ecosystem.",
+      "Constructing a robust legal moat around intellectual capital assets.",
+      "Monetizing intellectual property to establish a defensive legal framework.",
+      "Systematizing innovation tracking to protect core technological breakthroughs."
+    ],
+    "cashFlowCategory": "investing"
+  },
+  {
+    "decision": "Bank Loan",
+    "level": "Strategic",
+    "description": "Secure a traditional bank loan to instantly boost your cash reserves. Requires steady long-term interest and principal repayments.",
+    "nature": "Traditional",
+    "offensiveAction": false,
+    "excludes": [
+      "Payday Loan"
+    ],
+    "impacts": {
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "1": 100000,
+          "default": -15000
+        }
+      },
+      "debt": {
+        "type": "absolute",
+        "schedule": {
+          "1": 100000,
+          "default": -10000
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Intercreditor Agreement Covenant Breach Litigation",
+        "description": "Sue the competitor for breach of contract; their aggressive additional debt violates your senior creditor rights and compromises shared financial collateral.",
+        "probability": {
+          "1": 0.01,
+          "default": 0.03
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "default": -8000
+          }
+        }
+      },
+      {
+        "name": "Fraudulent Misrepresentation in Credit Procurement",
+        "description": "File a whistleblower action alleging the competitor falsified collateral valuations to secure their senior credit line, threatening market stability.",
+        "probability": {
+          "1": 0.02,
+          "default": 0.05
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "default": -15000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Leveraging external institutional liquidity facilities.",
+      "Optimizing our capital structure via proactive debt instrument utilization.",
+      "Utilizing non-dilutive commercial capital to accelerate strategic execution.",
+      "Optimizing liquidity ratios through institutional credit underwriting."
+    ],
+    "cashFlowCategory": "financing"
+  },
+  {
+    "decision": "Share Issuance",
+    "level": "Strategic",
+    "description": "Issue new equity to the market to raise capital without taking on debt, though it will dilute current share prices.",
+    "nature": "Traditional",
+    "offensiveAction": false,
+    "excludes": [],
+    "impacts": {
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "1": 150000,
+          "default": 0
+        }
+      },
+      "sharesAmount": {
+        "type": "absolute",
+        "schedule": {
+          "1": 50000,
+          "default": 0
+        }
+      },
+      "price": {
+        "type": "relative",
+        "schedule": {
+          "1": -0.1,
+          "default": 0.0
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Common Law Fraud & Competitor Stock Depreciation Claim",
+        "description": "Sue the competitor for shareholder fraud; as a strategic minority shareholder, challenge their failure to disclose operational losses during the new stock issuance, which devalued your investment.",
+        "probability": {
+          "1": 0.05,
+          "2": 0.08,
+          "default": 0.04
+        },
+        "impact": {
+          "type": "relative",
+          "target": "equity",
+          "schedule": {
+            "1": -0.05,
+            "default": -0.02
+          }
+        }
+      },
+      {
+        "name": "Securities Act Disclosure & Material Omission Claim",
+        "description": "Launch a class-action challenge against their stock prospectus for omitting critical operational risks, depressing overall sector asset values.",
+        "probability": {
+          "1": 0.03,
+          "2": 0.06,
+          "default": 0.08
+        },
+        "impact": {
+          "type": "relative",
+          "target": "equity",
+          "schedule": {
+            "1": -0.04,
+            "default": -0.03
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Inviting public equity participation to capitalize future horizons.",
+      "Enhancing market-facing float to democratize asset ownership.",
+      "Broadening institutional equity ownership to diversify capitalization sources.",
+      "Harnessing public market liquidity to fund non-debt strategic expansion."
+    ],
+    "cashFlowCategory": "financing"
+  },
+  {
+    "decision": "Sale & Leaseback",
+    "level": "Strategic",
+    "description": "Sell your physical assets for immediate cash and lease them back. Frees up capital but creates ongoing rental expenses.",
+    "nature": "Grey Area",
+    "offensiveAction": false,
+    "excludes": [],
+    "impacts": {
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "1": 120000,
+          "default": 0
+        }
+      },
+      "assets": {
+        "type": "absolute",
+        "schedule": {
+          "1": -100000,
+          "default": 0
+        }
+      },
+      "otherIncome": {
+        "type": "absolute",
+        "schedule": {
+          "1": 20000,
+          "default": 0
+        }
+      },
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0,
+          "default": 15000
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Uniform Voidable Transactions Act (UVTA) Fraudulent Conveyance Claim",
+        "description": "Sue the competitor for fraudulent conveyance; their sale and leaseback arrangement is a sham transaction designed to hide physical assets from your outstanding claims.",
+        "probability": {
+          "1": 0.1,
+          "2": 0.2,
+          "default": 0.25
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -20000,
+            "default": -55000
+          }
+        }
+      },
+      {
+        "name": "Capital Leases Recharacterization Tax Litigation",
+        "description": "Challenge the transaction structure in court; the sham sale hides a secured loan, triggering severe back-tax assessments and asset re-audits.",
+        "probability": {
+          "1": 0.08,
+          "2": 0.15,
+          "default": 0.22
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -35000,
+            "default": -70000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Transitioning to an agile, asset-light balance sheet optimization model.",
+      "Unlocking latent liquidity from physical property via dynamic corporate leasing.",
+      "Monetizing static illiquid real estate to fund high-growth core operations.",
+      "Converting fixed capital liabilities into predictable operational cash flows."
+    ],
+    "cashFlowCategory": "investing"
+  },
+  {
+    "decision": "Tax Planning",
+    "level": "Strategic",
+    "description": "Restructure your corporate entities to minimize your tax burden, though this will attract closer regulatory scrutiny.",
+    "nature": "Grey Area",
+    "offensiveAction": false,
+    "excludes": [],
+    "impacts": {
+      "scrutiny": {
+        "type": "absolute",
+        "schedule": {
+          "1": 10,
+          "default": 20
+        }
+      },
+      "taxCost": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0,
+          "default": -20000
+        }
+      },
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "1": 5000,
+          "default": 2000
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Civil RICO Unfair Competitive Advantage Suit",
+        "description": "Sue the competitor under civil RICO or unfair competition laws; their illicit tax avoidance schemes through shell companies create an unlawful, artificial cost advantage.",
+        "probability": {
+          "1": 0.15,
+          "2": 0.3,
+          "default": 0.4
+        },
+        "impact": {
+          "type": "relative",
+          "target": "revenue",
+          "schedule": {
+            "1": -0.05,
+            "default": -0.15
+          }
+        }
+      },
+      {
+        "name": "Transfer Pricing Manipulation & Tax Evasion Suit",
+        "description": "Initiate a formal audit challenge; the competitor's arbitrary cross-border transfer prices artificially deflate local taxable income, risking retroactive penalties.",
+        "probability": {
+          "1": 0.12,
+          "2": 0.25,
+          "default": 0.35
+        },
+        "impact": {
+          "type": "relative",
+          "target": "revenue",
+          "schedule": {
+            "1": -0.08,
+            "default": -0.2
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Cross-border optimization of fiscal responsibilities.",
+      "Strategic structural alignment with multi-jurisdictional efficiency frameworks.",
+      "Structuring corporate legal entities to maximize post-tax shareholder returns.",
+      "Dynamic jurisdictional alignment of fiscal obligations within statutory limits."
+    ]
+  },
+  {
+    "decision": "Patent Trolling",
+    "level": "Strategic",
+    "description": "Launch aggressive, speculative patent lawsuits against competitors to drain their cash reserves and disrupt their operations.",
+    "nature": "Grey Area",
+    "offensiveAction": true,
+    "excludes": [],
+    "impacts": {
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "1": 10000,
+          "default": 5000
+        }
+      },
+      "target.cash": {
+        "type": "absolute",
+        "schedule": {
+          "1": -25000,
+          "default": -15000
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Antitrust Sham Litigation Counter-Suit",
+        "description": "File an antitrust counter-suit for sham litigation; the competitor's continuous, groundless patent lawsuits via shell companies are intended solely to drain your capital and restrict competition.",
+        "probability": {
+          "1": 0.2,
+          "2": 0.35,
+          "default": 0.45
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -40000,
+            "default": -90000
+          }
+        }
+      },
+      {
+        "name": "Malicious Prosecution & Tortious Abuse of Process Claim",
+        "description": "Counter-sue the competitor for malicious civil prosecution; their repetitive, baseless patent enforcement actions aim solely to break your legal budget.",
+        "probability": {
+          "1": 0.18,
+          "2": 0.3,
+          "default": 0.4
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -50000,
+            "default": -100000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Proactive enforcement of intellectual property compliance across the industry ecosystem.",
+      "Monetizing legal rights to safeguard market-wide innovation fairness.",
+      "Vigorously defending broad intellectual boundaries against generic industry encroachment.",
+      "Extracting fair economic rent from uncompensated technological adopters."
+    ]
+  },
+  {
+    "decision": "Talent Poaching",
+    "level": "Strategic",
+    "description": "Offer premium salaries to directly recruit top-tier employees away from your competitors, damaging their operational efficiency.",
+    "nature": "Grey Area",
+    "offensiveAction": true,
+    "excludes": [],
+    "impacts": {
+      "staffCost": {
+        "type": "absolute",
+        "schedule": {
+          "1": 15000,
+          "default": 10000
+        }
+      },
+      "processLoss": {
+        "type": "absolute",
+        "schedule": {
+          "1": -0.02,
+          "default": -0.05
+        }
+      },
+      "target.processLoss": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0.04,
+          "default": 0.06
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Tortious Interference with Contractual Relations & Trade Secret Misappropriation",
+        "description": "Sue the competitor for tortious interference and trade secret misappropriation; they systematically induce your top talent to violate non-compete and NDA agreements to steal your intellectual property.",
+        "probability": {
+          "1": 0.15,
+          "2": 0.25,
+          "default": 0.2
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -25000,
+            "default": -50000
+          }
+        }
+      },
+      {
+        "name": "Breach of Fiduciary Duty & Civil Conspiracy Claim",
+        "description": "Sue the competitor and the departed executives for raiding entire operational departments systematically to dismantle your internal continuity.",
+        "probability": {
+          "1": 0.12,
+          "2": 0.22,
+          "default": 0.18
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -30000,
+            "default": -65000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Dynamic human capital reallocation from broader industry peers.",
+      "Onboarding market-vetted competencies via competitive value-propositions.",
+      "Attracting top-tier market-vetted competencies through premium value propositions.",
+      "Accelerating corporate knowledge transfers by onboarding elite industry leadership."
+    ]
+  },
+  {
+    "decision": "Off-Balance-Sheet Special Purpose Vehicle",
+    "level": "Strategic",
+    "description": "Set up a separate legal entity to hide debt and inflate your company's apparent financial health. High risk of future fraud claims.",
+    "nature": "Grey Area",
+    "offensiveAction": false,
+    "excludes": [],
+    "impacts": {
+      "debt": {
+        "type": "absolute",
+        "schedule": {
+          "1": -50000,
+          "default": 0
+        }
+      },
+      "assets": {
+        "type": "absolute",
+        "schedule": {
+          "1": 50000,
+          "default": 0
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Common Law Corporate Fraud & Piercing the Corporate Veil Action",
+        "description": "Sue the competitor for corporate fraud and move to pierce the corporate veil; they use shadow entities to hide toxic liabilities, obscuring insolvency risks to you as a contract partner.",
+        "probability": {
+          "1": 0.2,
+          "2": 0.45,
+          "default": 0.6
+        },
+        "impact": {
+          "type": "relative",
+          "target": "equity",
+          "schedule": {
+            "1": -0.1,
+            "default": -0.3
+          }
+        }
+      },
+      {
+        "name": "Fraudulent Concealment & Shareholder Derivative Action",
+        "description": "File a derivative suit to pierce the shell entity; the competitor is intentionally masking toxic asset depreciation to mislead joint-venture partners.",
+        "probability": {
+          "1": 0.15,
+          "2": 0.35,
+          "default": 0.5
+        },
+        "impact": {
+          "type": "relative",
+          "target": "equity",
+          "schedule": {
+            "1": -0.15,
+            "default": -0.4
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Utilizing modular entity architectures for risk-isolated venture incubation.",
+      "De-risking the primary balance sheet through external specialized asset structures.",
+      "Isolating speculative project liabilities through structurally independent corporate vehicles.",
+      "Optimizing enterprise transparency by decoupling experimental capital structures."
+    ]
+  },
+  {
+    "decision": "Artificial Greenwashing",
+    "level": "Strategic",
+    "description": "Launch a massive marketing campaign promoting eco-friendly practices without actually changing your production methods.",
+    "nature": "Dirty",
+    "offensiveAction": false,
+    "excludes": [
+      "Organic Shift"
+    ],
+    "impacts": {
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "1": 15000,
+          "default": 5000
+        }
+      },
+      "price": {
+        "type": "relative",
+        "schedule": {
+          "1": 0.1,
+          "default": 0.05
+        }
+      },
+      "outrage": {
+        "type": "absolute",
+        "schedule": {
+          "1": 15,
+          "default": 25
+        }
+      },
+      "carbonFootprint": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0.0,
+          "default": 0.0
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Lanham Act § 43(a) Commercial Misrepresentation & Unfair Competition",
+        "description": "Sue the competitor for commercial misrepresentation and unfair competition; their deceptive greenwashing campaign steals market share and customers from your genuinely eco-friendly business.",
+        "probability": {
+          "1": 0.15,
+          "2": 0.3,
+          "default": 0.35
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -30000,
+            "default": -65000
+          }
+        }
+      },
+      {
+        "name": "Consumer Protection Act False Advertising Claim",
+        "description": "Sue the competitor for deceptive trade practices; their 'eco-friendly' marketing campaign directly violates national truth-in-advertising standards.",
+        "probability": {
+          "1": 0.12,
+          "2": 0.25,
+          "default": 0.3
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -40000,
+            "default": -80000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Amplifying our green corporate narrative through aggressive market-facing perception management.",
+      "Optimizing brand positioning via narrative-focused ESG alignment.",
+      "Elevating environmental brand awareness through high-impact perception management.",
+      "Aligning public narrative vectors with long-term macroeconomic ESG frameworks."
+    ]
+  },
+  {
+    "decision": "Raw Material Monopoly",
+    "level": "Strategic",
+    "description": "Sign exclusive contracts to corner the market on vital raw materials, starving competitors of essential production inputs.",
+    "nature": "Dirty",
+    "offensiveAction": true,
+    "excludes": [],
+    "impacts": {
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "1": -40000,
+          "default": 0
+        }
+      },
+      "materialCostPerTon": {
+        "type": "relative",
+        "schedule": {
+          "1": 0.1,
+          "default": 0.05
+        }
+      },
+      "intangibleAssets": {
+        "type": "absolute",
+        "schedule": {
+          "1": 40000,
+          "default": 0
+        }
+      },
+      "target.supplySecurity": {
+        "type": "relative",
+        "schedule": {
+          "1": -0.25,
+          "default": -0.2
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Clayton Act Section 4 Private Treble Damages Antitrust Action",
+        "description": "File an antitrust lawsuit for monopoly via exclusive contracts and seek treble damages; the competitor has intentionally blocked your access to critical raw materials and essential inputs.",
+        "probability": {
+          "1": 0.1,
+          "2": 0.35,
+          "default": 0.5
+        },
+        "impact": {
+          "type": "relative",
+          "target": "revenue",
+          "schedule": {
+            "1": -0.05,
+            "default": -0.2
+          }
+        }
+      },
+      {
+        "name": "Essential Facilities Doctrine Antitrust Litigation",
+        "description": "File an antitrust suit alleging the competitor controls an essential supply facility and refuses to deal, seeking a court-ordered supply mandate.",
+        "probability": {
+          "1": 0.08,
+          "2": 0.28,
+          "default": 0.42
+        },
+        "impact": {
+          "type": "relative",
+          "target": "revenue",
+          "schedule": {
+            "1": -0.12,
+            "default": -0.25
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Securing long-term regional resource sustainability through exclusive single-source vendor networks.",
+      "Proactive macroeconomic stabilization of the upstream material ecosystem.",
+      "Stabilizing critical supply infrastructure through strategic vendor exclusivity.",
+      "Insulating core production lines from macro resource scarcity trends."
+    ],
+    "cashFlowCategory": "investing"
+  },
+  {
+    "decision": "Union Agitation",
+    "level": "Strategic",
+    "description": "Secretly fund and instigate labor strikes or union protests at a competitor's facility to freeze their production.",
+    "nature": "Dirty",
+    "offensiveAction": true,
+    "excludes": [],
+    "impacts": {
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "1": -20000,
+          "default": -5000
+        }
+      },
+      "target.capacityUtilization": {
+        "type": "relative",
+        "schedule": {
+          "1": -0.3,
+          "default": -0.15
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Civil RICO Action for Industrial Sabotage & Labor Infiltration",
+        "description": "Sue the competitor under civil RICO for industrial sabotage; they secretly infiltrated and funded your labor unions to instigate baseless strikes and freeze your production.",
+        "probability": {
+          "1": 0.15,
+          "2": 0.25,
+          "default": 0.35
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -35000,
+            "default": -75000
+          }
+        }
+      },
+      {
+        "name": "National Labor Relations Act (NLRA) Unfair Labor Practice Suit",
+        "description": "File a federal complaint proving the competitor engaged in illicit third-party labor interference to sabotage your manufacturing workforce.",
+        "probability": {
+          "1": 0.1,
+          "2": 0.2,
+          "default": 0.3
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -45000,
+            "default": -90000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Catalyzing structural labor-market socio-reflections at external industry facilities.",
+      "Supporting grassroots operational voice enhancements in neighboring business ecosystems.",
+      "Encouraging a holistic socio-labor dialogue within the broader manufacturing sector.",
+      "Supporting decentralized employee welfare advocacy across competitive footprints."
+    ],
+    "cashFlowCategory": "operating"
+  },
+  {
+    "decision": "Venture Capital Shadow Money",
+    "level": "Strategic",
+    "description": "Accept massive funding from anonymous, high-risk venture capital sources. Boosts cash but severely escalates personal CEO risk.",
+    "nature": "Dirty",
+    "offensiveAction": false,
+    "excludes": [],
+    "impacts": {
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "1": 250000,
+          "default": 0
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Unfair Competition via Illicit Capitalization and Market Distortion",
+        "description": "Sue the competitor for unfair competition; challenge their use of unregulated shadow venture capital used to illegally undercut market prices.",
+        "probability": {
+          "1": 0.25,
+          "2": 0.5,
+          "default": 0.7
+        },
+        "impact": {
+          "type": "relative",
+          "target": "revenue",
+          "schedule": {
+            "1": -0.1,
+            "default": -0.4
+          }
+        }
+      },
+      {
+        "name": "Anti-Money Laundering (AML) Compliance Failure Action",
+        "description": "File a regulatory report challenging the competitor's anonymous funding sources, triggering an asset freeze and an exhaustive forensic audit.",
+        "probability": {
+          "1": 0.2,
+          "2": 0.4,
+          "default": 0.55
+        },
+        "impact": {
+          "type": "relative",
+          "target": "revenue",
+          "schedule": {
+            "1": -0.25,
+            "default": -0.5
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Securing alternative, privacy-centric global liquidity streams.",
+      "Strategic capital acceleration partnership with confidential non-traditional institutional funds.",
+      "Partnering with flexible, confidential global funds to maximize strategic agility.",
+      "Securing private capital acceleration pools outside traditional restrictive bank networks."
+    ],
+    "cashFlowCategory": "financing"
+  },
+  {
+    "decision": "Feed Quality Up",
+    "level": "Operational",
+    "description": "Purchase higher-grade feed to improve animal welfare. Reduces flock mortality and public outrage but raises material costs.",
+    "nature": "Traditional",
+    "offensiveAction": false,
+    "excludes": [
+      "Laxatives in Feed"
+    ],
+    "impacts": {
+      "outrage": {
+        "type": "absolute",
+        "schedule": {
+          "default": -15
+        }
+      },
+      "nutrientConsistency": {
+        "type": "absolute",
+        "schedule": {
+          "default": 0.1
+        }
+      },
+      "odorComplaints": {
+        "type": "absolute",
+        "schedule": {
+          "default": -5
+        }
+      },
+      "materialCostPerTon": {
+        "type": "relative",
+        "schedule": {
+          "default": 0.12
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Breach of Contract for Substandard Delivery Warranties",
+        "description": "Sue the competitor if their high-grade marketing inadvertently sets a binding warranty standard they fail to meet during peak supply shortages.",
+        "probability": {
+          "1": 0.02,
+          "default": 0.04
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "default": -5000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Nutritional matrix enhancement for organic baseline metabolic optimization.",
+      "Voluntary upward indexing of baseline raw material specifications.",
+      "Upward indexing of biological inputs to optimize livestock metabolic performance.",
+      "Proactive commitment to supply chain transparency and product integrity."
+    ]
+  },
+  {
+    "decision": "Aggressive Sale",
+    "level": "Operational",
+    "description": "Liquidate excess inventory by aggressively cutting prices. Temporarily boosts volume while squeezing profit margins.",
+    "nature": "Traditional",
+    "offensiveAction": true,
+    "excludes": [
+      "Organic Shift"
+    ],
+    "impacts": {
+      "price": {
+        "type": "relative",
+        "schedule": {
+          "default": -0.15
+        }
+      },
+      "stockVolume": {
+        "type": "absolute",
+        "schedule": {
+          "default": -30.0
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Sherman Act Section 2 Private Predatory Pricing Suit",
+        "description": "Sue the competitor for predatory pricing; they are liquidating inventory well below marginal cost to force you into bankruptcy and monopolize the market.",
+        "probability": {
+          "1": 0.02,
+          "2": 0.05,
+          "default": 0.06
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -10000,
+            "default": -20000
+          }
+        }
+      },
+      {
+        "name": "Unfair Trade Practices Act Loss-Leader Litigation",
+        "description": "File a regional lawsuit alleging the competitor's pricing model drops below statutory cost floors purely to eliminate local commercial competition.",
+        "probability": {
+          "1": 0.03,
+          "2": 0.06,
+          "default": 0.08
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -15000,
+            "default": -30000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "High-velocity inventory democratization initiatives.",
+      "Dynamic price-elasticity optimization to maximize community market penetration.",
+      "Executing strategic price elasticity models to maximize short-term cash liquidity.",
+      "Accelerating asset-turnover ratios through high-velocity commercial campaigns."
+    ]
+  },
+  {
+    "decision": "Maintenance Neglect",
+    "level": "Operational",
+    "description": "Delay routine equipment maintenance to cut immediate operating expenses, risking severe future breakdowns and accidents.",
+    "nature": "Traditional",
+    "offensiveAction": false,
+    "excludes": [
+      "Preventive Maintenance"
+    ],
+    "impacts": {
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "1": -15000,
+          "2": -15000,
+          "default": -15000
+        }
+      },
+      "breakdowns": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0.1,
+          "2": 0.25,
+          "default": 0.5
+        }
+      },
+      "assets": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0,
+          "2": -10000,
+          "default": -20000
+        }
+      },
+      "processLoss": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0.02,
+          "2": 0.08,
+          "default": 0.15
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Cross-Border Industrial Negligence & Vicarious Property Damage Tort",
+        "description": "Sue the competitor for gross negligence; their unmaintained equipment and neglected infrastructure present severe explosion and contamination risks that directly threaten your neighboring facilities.",
+        "probability": {
+          "1": 0.1,
+          "2": 0.25,
+          "default": 0.4
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -15000,
+            "default": -50000
+          }
+        }
+      },
+      {
+        "name": "Occupational Health and Safety (OSHA) Endangerment Suit",
+        "description": "File an emergency regulatory claim proving the competitor's unmaintained machinery poses an immediate, catastrophic risk to shared local labor pools.",
+        "probability": {
+          "1": 0.08,
+          "2": 0.2,
+          "default": 0.35
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -40000,
+            "default": -80000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Implementing a hyper-lean infrastructure depreciation deferral program.",
+      "Maximizing active asset runtime by eliminating redundant mechanical interruptions.",
+      "Optimizing capital efficiency by extending hardware lifecycles past traditional bounds.",
+      "Eliminating non-essential downtime to prioritize near-term volume fulfillment."
+    ]
+  },
+  {
+    "decision": "Digital Marketing",
+    "level": "Operational",
+    "description": "Deploy a targeted online advertising campaign to rapidly boost consumer demand and awareness for your products.",
+    "nature": "Traditional",
+    "offensiveAction": false,
+    "excludes": [],
+    "impacts": {
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "default": 12000
+        }
+      },
+      "demand": {
+        "type": "absolute",
+        "schedule": {
+          "default": 18.0
+        }
+      },
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "default": -12000
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Trademark Infringement & Keyword Piracy Litigation",
+        "description": "Sue the competitor for trademark infringement; their digital ads illegally hijack your protected brand keywords to redirect your customers to their site.",
+        "probability": {
+          "1": 0.02,
+          "default": 0.04
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "default": -12000
+          }
+        }
+      },
+      {
+        "name": "Data Privacy Act (GDPR/CCPA) Non-Compliance Claim",
+        "description": "File a consumer data violation lawsuit; the competitor's tracking pixels illegally harvest competitor audience data without explicit user consent.",
+        "probability": {
+          "1": 0.03,
+          "default": 0.06
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "default": -15000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Algorithmic audience engagement and modern consumer funnel conversion scaling.",
+      "Expanding our virtual consumer touchpoints via dynamic data-driven narrative deployment.",
+      "Scaling algorithmic consumer engagement architectures to drive brand omnipresence.",
+      "Leveraging predictive user data pools to maximize advertising conversion metrics."
+    ],
+    "cashFlowCategory": "operating"
+  },
+  {
+    "decision": "Cheap Logistics",
+    "level": "Operational",
+    "description": "Switch to the cheapest available transport providers to lower freight costs, risking public outrage over lower standards.",
+    "nature": "Traditional",
+    "offensiveAction": false,
+    "excludes": [],
+    "impacts": {
+      "logisticsCostPerTon": {
+        "type": "relative",
+        "schedule": {
+          "default": -0.2
+        }
+      },
+      "outrage": {
+        "type": "absolute",
+        "schedule": {
+          "default": 12
+        }
+      },
+      "contaminationRisk": {
+        "type": "absolute",
+        "schedule": {
+          "default": 0.08
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Joint and Several Liability for Environmental Contamination Tort",
+        "description": "Sue the competitor for joint environmental contamination; their uncertified low-cost logistics trucks leak chemicals into shared transit and storage areas, imposing cleanup costs on you.",
+        "probability": {
+          "1": 0.05,
+          "2": 0.12,
+          "default": 0.18
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -8000,
+            "default": -22000
+          }
+        }
+      },
+      {
+        "name": "Public Highway Safety and Unlicensed Carrier Tort",
+        "description": "Sue the competitor for corporate negligence; their cut-rate logistics fleet utilizes uninsured, overloaded vehicles that disrupt common freight pathways.",
+        "probability": {
+          "1": 0.04,
+          "2": 0.1,
+          "default": 0.15
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -18000,
+            "default": -36000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Cost-rationalized supply chain velocity and freight mapping.",
+      "Streamlining distribution pathways via ultra-economical logistical arrangements.",
+      "Rationalizing freight-line economics to pass structural savings down the supply chain.",
+      "Utilizing unbundled baseline transit solutions to optimize regional distribution."
+    ]
+  },
+  {
+    "decision": "24/7 Lighting",
+    "level": "Operational",
+    "description": "Keep production facilities illuminated around the clock to maximize output volume, at the expense of higher energy costs and mortality.",
+    "nature": "Traditional",
+    "offensiveAction": false,
+    "excludes": [
+      "Organic Shift"
+    ],
+    "impacts": {
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "default": 8000
+        }
+      },
+      "capacityUtilization": {
+        "type": "absolute",
+        "schedule": {
+          "default": 0.15
+        }
+      },
+      "energyIntensity": {
+        "type": "relative",
+        "schedule": {
+          "default": 0.1
+        }
+      },
+      "breakdowns": {
+        "type": "absolute",
+        "schedule": {
+          "default": 0.05
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Light Pollution Trespass & Tortious Interference with Labor Mobility",
+        "description": "Sue the competitor for light pollution trespass; their 24/7 high-powered floodlights shine directly into your facilities, disrupting shift workers and interfering with your operations.",
+        "probability": {
+          "1": 0.08,
+          "2": 0.15,
+          "default": 0.22
+        },
+        "impact": {
+          "type": "relative",
+          "target": "revenue",
+          "schedule": {
+            "1": -0.01,
+            "default": -0.03
+          }
+        }
+      },
+      {
+        "name": "Zoning Ordinance Breach & Environmental Nuisance Claim",
+        "description": "Sue the competitor for violating local municipal industrial light caps, seeking an injunction to force nighttime operational shutdowns.",
+        "probability": {
+          "1": 0.06,
+          "2": 0.12,
+          "default": 0.18
+        },
+        "impact": {
+          "type": "relative",
+          "target": "revenue",
+          "schedule": {
+            "1": -0.02,
+            "default": -0.04
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Continuous photo-period maximization to enhance biological throughput cycles.",
+      "Ergonomic full-spectrum illumination schedules for relentless operational continuity.",
+      "Maximizing biological asset throughput via continuous lighting synchronization.",
+      "Eliminating chronological operational gaps to sustain baseline output metrics."
+    ]
+  },
+  {
+    "decision": "Government Grants",
+    "level": "Operational",
+    "description": "Apply for public subsidies to secure free operational funding. Lowers public outrage and boosts cash if approved.",
+    "nature": "Traditional",
+    "offensiveAction": false,
+    "excludes": [],
+    "impacts": {
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "1": 20000,
+          "default": 0
+        }
+      },
+      "otherIncome": {
+        "type": "absolute",
+        "schedule": {
+          "1": 20000,
+          "default": 0
+        }
+      },
+      "outrage": {
+        "type": "absolute",
+        "schedule": {
+          "1": -5,
+          "default": 0
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Private Right of Action under False Claims Act / Competitor Qui Tam",
+        "description": "File a qui tam action against the competitor for subsidy fraud; they used falsified data to secure government development grants, entitling you to a portion of the statutory penalties.",
+        "probability": {
+          "1": 0.03,
+          "2": 0.06,
+          "default": 0.05
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -20000,
+            "default": -40000
+          }
+        }
+      },
+      {
+        "name": "Administrative Procedure Act Grant Allocation Challenge",
+        "description": "File a formal appeal to block the competitor's funding, proving their application relied on obsolete environmental metrics and distorted employment numbers.",
+        "probability": {
+          "1": 0.02,
+          "2": 0.04,
+          "default": 0.05
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -15000,
+            "default": -30000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Absorbing non-dilutive public-sector co-investments for regional development.",
+      "Securing state-level fiscal validation for circular economy excellence.",
+      "Securing non-dilutive state funding allocations to subsidize regional employment.",
+      "Aligning local manufacturing footprints with public-sector development grants."
+    ],
+    "cashFlowCategory": "operating"
+  },
+  {
+    "decision": "Preventive Maintenance",
+    "level": "Operational",
+    "description": "Invest heavily in regular equipment servicing to drastically reduce unexpected breakdowns and lower flock mortality rates.",
+    "nature": "Traditional",
+    "offensiveAction": false,
+    "excludes": [
+      "Maintenance Neglect"
+    ],
+    "impacts": {
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "default": 18000
+        }
+      },
+      "breakdowns": {
+        "type": "absolute",
+        "schedule": {
+          "default": -0.15
+        }
+      },
+      "processLoss": {
+        "type": "absolute",
+        "schedule": {
+          "default": -0.04
+        }
+      },
+      "assets": {
+        "type": "absolute",
+        "schedule": {
+          "default": 5000
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Equipment Certification Regulatory Audit Dispute",
+        "description": "File a claim against their outsourced engineering auditors if the preventive maintenance logs fail to comply with strict statutory safety filings.",
+        "probability": {
+          "1": 0.01,
+          "default": 0.03
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "default": -8000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Proactive mitigation of physical hardware depreciation schedules.",
+      "Total Productive Maintenance (TPM) alignment to guarantee zero-fault quality assurance.",
+      "Implementing continuous Total Productive Maintenance to insulate against failure vectors.",
+      "Systematizing hardware asset protection to extend long-term production baselines."
+    ]
+  },
+  {
+    "decision": "Staff Training & Development",
+    "level": "Operational",
+    "description": "Train your workforce to eliminate operational errors, lowering mortality rates and making staff resistant to competitor poaching.",
+    "nature": "Traditional",
+    "offensiveAction": false,
+    "excludes": [],
+    "impacts": {
+      "staffCost": {
+        "type": "absolute",
+        "schedule": {
+          "1": 12000,
+          "default": 5000
+        }
+      },
+      "processLoss": {
+        "type": "absolute",
+        "schedule": {
+          "1": -0.02,
+          "default": -0.05
+        }
+      },
+      "contaminationRisk": {
+        "type": "absolute",
+        "schedule": {
+          "1": -0.05,
+          "default": -0.1
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Non-Compete Enforceability Class Action",
+        "description": "Face a labor countersuit challenging the restrictive training repayment clauses used to prevent workers from transitioning to rivals.",
+        "probability": {
+          "1": 0.02,
+          "default": 0.05
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "default": -10000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Upskilling internal human capital paradigms to maximize operational synergy.",
+      "Cognitive infrastructure upgrades for shop-floor specialists.",
+      "Cultivating deep operational competencies to drive bottom-up manufacturing efficiency.",
+      "Insulating organizational knowledge assets through continuous employee upskilling."
+    ]
+  },
+  {
+    "decision": "Quality Certification",
+    "level": "Operational",
+    "description": "Secure an independent quality seal to justify premium pricing and lower public outrage. Cannot be combined with dirty practices.",
+    "nature": "Traditional",
+    "offensiveAction": false,
+    "excludes": [
+      "Laxatives in Feed",
+      "Night Dumping"
+    ],
+    "impacts": {
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "1": 15000,
+          "default": 2000
+        }
+      },
+      "intangibleAssets": {
+        "type": "absolute",
+        "schedule": {
+          "1": 10000,
+          "default": 0
+        }
+      },
+      "price": {
+        "type": "relative",
+        "schedule": {
+          "1": 0.0,
+          "default": 0.08
+        }
+      },
+      "outrage": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0,
+          "default": -20
+        }
+      },
+      "nutrientConsistency": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0.05,
+          "default": 0.1
+        }
+      },
+      "scrutiny": {
+        "type": "absolute",
+        "schedule": {
+          "1": 10,
+          "default": 5
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "False Certification & Deceptive Marketing Suit",
+        "description": "Sue the competitor for consumer deception if their private auditor is found to have a conflict of interest, invalidating the seal.",
+        "probability": {
+          "1": 0.02,
+          "default": 0.04
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "default": -12000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Securing external bureaucratic validation of operational compliance.",
+      "Formal institutional standardization of our proprietary bio-metrics.",
+      "Validating operational compliance vectors through independent bureaucratic auditing.",
+      "Institutionalizing gold-standard quality frameworks to cement premium tier pricing."
+    ]
+  },
+  {
+    "decision": "Energy Efficiency Retrofit",
+    "level": "Operational",
+    "description": "Upgrade facilities with energy-saving systems to permanently lower utility costs. Requires upfront cash.",
+    "nature": "Traditional",
+    "offensiveAction": false,
+    "excludes": [],
+    "impacts": {
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "1": -40000,
+          "default": 0
+        }
+      },
+      "assets": {
+        "type": "absolute",
+        "schedule": {
+          "1": 40000,
+          "default": 0
+        }
+      },
+      "outrage": {
+        "type": "absolute",
+        "schedule": {
+          "1": -5,
+          "default": -5
+        }
+      },
+      "energyIntensity": {
+        "type": "relative",
+        "schedule": {
+          "1": 0.0,
+          "default": -0.3
+        }
+      },
+      "carbonFootprint": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0.0,
+          "default": -25.0
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Construction Code & Utility Compliance Dispute",
+        "description": "Face an administrative challenge from local utility providers if the grid modifications cause localized voltage drops or infrastructure strain.",
+        "probability": {
+          "1": 0.01,
+          "default": 0.03
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "default": -10000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Thermodynamic optimization of core manufacturing facilities.",
+      "Decarbonizing production baselines via structural energy-rationalization upgrades.",
+      "Optimizing facility thermodynamics to permanently lower baseline utility dependency.",
+      "Transitioning to a lean, climate-resilient manufacturing infrastructure paradigm."
+    ],
+    "cashFlowCategory": "investing"
+  },
+  {
+    "decision": "Compliance Hotline",
+    "level": "Operational",
+    "description": "Establish an internal whistleblowing channel to catch legal issues early, reducing long-term regulatory scrutiny and outrage.",
+    "nature": "Traditional",
+    "offensiveAction": false,
+    "excludes": [
+      "Staff Intimidation",
+      "Non-Disclosure Severance"
+    ],
+    "impacts": {
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "default": 6000
+        }
+      },
+      "scrutiny": {
+        "type": "absolute",
+        "schedule": {
+          "default": -15
+        }
+      },
+      "outrage": {
+        "type": "absolute",
+        "schedule": {
+          "default": -10
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Whistleblower Retaliation Injunction Support",
+        "description": "A competitor-backed legal team files an injunction alleging your compliance hotline was used to identify and penalize internal union organizers.",
+        "probability": {
+          "1": 0.03,
+          "default": 0.05
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "default": -15000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Democratic deployment of internal transparent feedback mechanics.",
+      "Institutionalizing a bottom-up self-auditing framework for absolute integrity.",
+      "Establishing transparent, bottom-up corporate governance reporting mechanisms.",
+      "De-risking regulatory compliance portfolios via voluntary self-auditing frameworks."
+    ]
+  },
+  {
+    "decision": "Reporting Rivals",
+    "level": "Operational",
+    "description": "File formal complaints with regulatory bodies detailing your competitors' questionable or illegal operations to trigger audits.",
+    "nature": "Grey Area",
+    "offensiveAction": true,
+    "excludes": [],
+    "impacts": {
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "default": 2000
+        }
+      },
+      "target.scrutiny": {
+        "type": "absolute",
+        "schedule": {
+          "default": 25
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Malicious Prosecution & Tortious Abuse of Regulatory Process",
+        "description": "Sue the competitor for malicious prosecution and abuse of process; their continuous, groundless regulatory reports constitute illegal harassment designed to inflate your audit costs and damage your reputation.",
+        "probability": {
+          "1": 0.05,
+          "2": 0.1,
+          "default": 0.12
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -10000,
+            "default": -25000
+          }
+        }
+      },
+      {
+        "name": "Defamation & Intentional Interference with Business Relations",
+        "description": "Counter-sue the competitor for filing knowingly false reports with state regulators to freeze your operational permits during peak sales cycles.",
+        "probability": {
+          "1": 0.04,
+          "2": 0.08,
+          "default": 0.1
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -20000,
+            "default": -35000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Voluntarily facilitating inter-corporate market accountability frameworks.",
+      "Proactively collaborating with state regulators to maintain a balanced playing field.",
+      "Voluntarily facilitating inter-corporate market accountability frameworks.",
+      "Enforcing cross-industry adherence to statutory compliance frameworks."
+    ]
+  },
+  {
+    "decision": "Excess Dividend",
+    "level": "Operational",
+    "description": "Pay out a massive cash dividend to please shareholders, heavily draining company cash and equity reserves.",
+    "nature": "Grey Area",
+    "offensiveAction": false,
+    "excludes": [],
+    "impacts": {
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "1": -80000,
+          "default": 0
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Creditor Invalidation of Capital Distribution (UVTA Action)",
+        "description": "As a creditor or claimant, challenge the competitor's unlawful dividend distributions; they are deliberately draining cash to shareholders to evade paying your outstanding claims.",
+        "probability": {
+          "1": 0.12,
+          "2": 0.2,
+          "default": 0.15
+        },
+        "impact": {
+          "type": "relative",
+          "target": "equity",
+          "schedule": {
+            "1": -0.05,
+            "default": -0.1
+          }
+        }
+      },
+      {
+        "name": "Corporate Insolvency & Fraudulent Transfer Action",
+        "description": "Sue to claw back the dividend payouts, arguing the distribution leaves the competitor undercapitalized to cover outstanding tort and operational liabilities.",
+        "probability": {
+          "1": 0.1,
+          "2": 0.16,
+          "default": 0.12
+        },
+        "impact": {
+          "type": "relative",
+          "target": "equity",
+          "schedule": {
+            "1": -0.04,
+            "default": -0.08
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Maximizing capital velocity returns for our valued investment stakeholders.",
+      "Proactive liquidation and prompt repatriation of corporate surplus to equity holders.",
+      "Optimizing shareholder capital repatriation models to maximize equity velocity.",
+      "Returning unallocated surplus liquidity directly to the investment foundation."
+    ],
+    "cashFlowCategory": "financing"
+  },
+  {
+    "decision": "Payday Loan",
+    "level": "Operational",
+    "description": "Take out a high-interest, short-term loan for immediate emergency cash. Heavily increases overall bankruptcy risk.",
+    "nature": "Grey Area",
+    "offensiveAction": false,
+    "excludes": [
+      "Bank Loan"
+    ],
+    "impacts": {
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "1": 30000,
+          "default": -39000
+        }
+      },
+      "debt": {
+        "type": "absolute",
+        "schedule": {
+          "1": 30000,
+          "default": -30000
+        }
+      },
+      "financeCost": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0,
+          "default": 9000
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Senior Debt Contract Covenant Breach & Tortious Inducement Suit",
+        "description": "As a primary lender, sue the competitor for covenant breach; their high-risk short-term loans violate credit limits and expose your invested capital to severe default risk.",
+        "probability": {
+          "1": 0.05,
+          "2": 0.15,
+          "default": 0.2
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -12000,
+            "default": -35000
+          }
+        }
+      },
+      {
+        "name": "Subordinated Usury & Unconscionable Contract Challenge",
+        "description": "Lenders file a cross-claim asserting the competitor's high-interest emergency borrowing violates senior debt priority rules, triggering a technical default.",
+        "probability": {
+          "1": 0.04,
+          "2": 0.12,
+          "default": 0.16
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -25000,
+            "default": -50000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Utilizing dynamic, high-speed micro-liquidity injection windows.",
+      "Bridging transitional cash gaps via high-agility short-term specialized instruments.",
+      "Utilizing high-velocity short-term financing to bridge transient cash shortfalls.",
+      "Securing agile capital injections to maintain operational continuity during volatility."
+    ],
+    "cashFlowCategory": "financing"
+  },
+  {
+    "decision": "Non-Disclosure Severance",
+    "level": "Operational",
+    "description": "Offer premium exit packages with strict secrecy clauses to departing employees to bury internal scandals.",
+    "nature": "Grey Area",
+    "offensiveAction": false,
+    "excludes": [
+      "Compliance Hotline"
+    ],
+    "impacts": {
+      "staffCost": {
+        "type": "absolute",
+        "schedule": {
+          "1": 25000,
+          "default": 0
+        }
+      },
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "1": -25000,
+          "default": 0
+        }
+      },
+      "scrutiny": {
+        "type": "absolute",
+        "schedule": {
+          "1": -10,
+          "default": 0
+        }
+      },
+      "outrage": {
+        "type": "absolute",
+        "schedule": {
+          "1": -10,
+          "default": 0
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Federal Speak Out Act Statutory Invalidation Support Action",
+        "description": "Fund a lawsuit to invalidate a competitor's NDA under the Speak Out Act; breaking their unlawful secrecy clause allows you to legally hire their key expert and utilize their expertise.",
+        "probability": {
+          "1": 0.1,
+          "2": 0.18,
+          "default": 0.25
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -15000,
+            "default": -30000
+          }
+        }
+      },
+      {
+        "name": "Public Policy Non-Enforceability Counter-Suit",
+        "description": "Fund a challenge to the competitor's exit agreements, proving the NDA illegally suppresses evidence of environmental crimes, making it void.",
+        "probability": {
+          "1": 0.08,
+          "2": 0.15,
+          "default": 0.2
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -25000,
+            "default": -50000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Mutually agreed, privacy-wrapped human resource separation agreements.",
+      "Executing friction-free offboarding with strict corporate confidentiality consensus.",
+      "Protecting corporate intellectual capital through mutually agreed confidentiality separation.",
+      "Ensuring smooth corporate offboarding via friction-free exit packages."
+    ],
+    "cashFlowCategory": "operating"
+  },
+  {
+    "decision": "Channel Stuffing",
+    "level": "Operational",
+    "description": "Pressure distributors to overbuy inventory to artificially inflate the current quarter's revenue, hurting next year's sales.",
+    "nature": "Grey Area",
+    "offensiveAction": true,
+    "excludes": [],
+    "impacts": {
+      "revenue": {
+        "type": "absolute",
+        "schedule": {
+          "1": 40000,
+          "default": 0
+        }
+      },
+      "receivables": {
+        "type": "absolute",
+        "schedule": {
+          "1": 40000,
+          "default": 0
+        }
+      },
+      "demand": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0.0,
+          "2": -15.0,
+          "default": 0.0
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Common Law Corporate Fraud & Unfair Trade Practices Act Litigation",
+        "description": "Sue the competitor for unfair trade practices; their channel stuffing artificially inflates sales data and locks up distributor capital, preventing you from selling into those channels.",
+        "probability": {
+          "1": 0.15,
+          "2": 0.3,
+          "default": 0.45
+        },
+        "impact": {
+          "type": "relative",
+          "target": "revenue",
+          "schedule": {
+            "1": -0.04,
+            "default": -0.12
+          }
+        }
+      },
+      {
+        "name": "Securities Fraud & Revenue Recognition Litigation",
+        "description": "File a class-action suit showing the competitor's channel stuffing falsified quarterly earnings reports, triggering a major regulatory stock suspension.",
+        "probability": {
+          "1": 0.12,
+          "2": 0.26,
+          "default": 0.38
+        },
+        "impact": {
+          "type": "relative",
+          "target": "revenue",
+          "schedule": {
+            "1": -0.05,
+            "default": -0.15
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Forward-loading downstream distribution nodes to secure near-term market omnipresence.",
+      "Proactive retail inventory optimization through aggressive supply channel allocation.",
+      "Forward-loading regional distribution nodes to meet macro consumption cycles.",
+      "Optimizing downstream inventory positions to secure dominant retail market share."
+    ]
+  },
+  {
+    "decision": "Laxatives in Feed",
+    "level": "Operational",
+    "description": "Mix laxatives into animal feed drastically accelerating digestion and maximizing short-term volume. Extremely high mortality and legal risk.",
+    "nature": "Dirty",
+    "offensiveAction": true,
+    "excludes": [
+      "Feed Quality Up",
+      "Organic Shift",
+      "Quality Certification"
+    ],
+    "impacts": {
+      "moistureContent": {
+        "type": "absolute",
+        "schedule": {
+          "default": 0.25
+        }
+      },
+      "energyIntensity": {
+        "type": "relative",
+        "schedule": {
+          "default": 0.35
+        }
+      },
+      "contaminationRisk": {
+        "type": "absolute",
+        "schedule": {
+          "default": 0.2
+        }
+      },
+      "assets": {
+        "type": "absolute",
+        "schedule": {
+          "default": -15000
+        }
+      },
+      "capacityUtilization": {
+        "type": "relative",
+        "schedule": {
+          "default": 0.4
+        }
+      },
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "default": 5000
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Lanham Act Extreme Commercial Disparagement & Market Adulteration Tort",
+        "description": "Sue the competitor for product adulteration and market disparagement; their massive use of laxatives destroys industry reputation, directly damaging demand for your products.",
+        "probability": {
+          "1": 0.4,
+          "2": 0.65,
+          "default": 0.8
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -80000,
+            "default": -200000
+          }
+        }
+      },
+      {
+        "name": "Tortious Interference with Market Integrity & Unfair Competition Action",
+        "description": "Sue the competitor for unfair competition; their inhumane volume manipulation creates an illegal advantage that suppresses market prices and causes you direct commercial harm.",
+        "probability": {
+          "1": 0.3,
+          "default": 0.5
+        },
+        "impact": {
+          "type": "relative",
+          "target": "revenue",
+          "schedule": {
+            "1": -0.05,
+            "default": -0.15
+          }
+        }
+      },
+      {
+        "name": "Consumer Product Safety Act & Toxic Adulteration Claim",
+        "description": "File a major federal tort; the competitor's chemical feed additives have entered the public food chain, devastating industry-wide consumer confidence.",
+        "probability": {
+          "1": 0.35,
+          "2": 0.55,
+          "default": 0.7
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -150000,
+            "default": -300000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Accelerating biomass processing velocity via proprietary bio-catalytic metabolic enhancers.",
+      "Optimizing avian digestion cycles to dramatically improve raw yield throughput.",
+      "Accelerating metabolic throughput via proprietary organic digestion enhancers.",
+      "Maximizing volumetric yield metrics through focused biological cycle optimization."
+    ]
+  },
+  {
+    "decision": "Water Pumping",
+    "level": "Operational",
+    "description": "Artificially pump excess water into final products to increase their weight and boost margins. Serious risk of consumer fraud claims.",
+    "nature": "Dirty",
+    "offensiveAction": false,
+    "excludes": [],
+    "impacts": {
+      "moistureContent": {
+        "type": "absolute",
+        "schedule": {
+          "default": 0.18
+        }
+      },
+      "capacityUtilization": {
+        "type": "relative",
+        "schedule": {
+          "default": 0.15
+        }
+      },
+      "scrutiny": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0,
+          "default": 10
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Lanham Act § 43(a) Private Action for Product Weight Fraud",
+        "description": "Sue the competitor under the Lanham Act for product weight fraud; they sell water at solid cargo prices, distorting market rates and stealing your contracts and market share.",
+        "probability": {
+          "1": 0.25,
+          "2": 0.45,
+          "default": 0.6
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -30000,
+            "default": -85000
+          }
+        }
+      },
+      {
+        "name": "Weights and Measures Act Criminal Deception Injunction",
+        "description": "Coordinate with consumer groups to sue the competitor for systemic weight fraud, forcing a mandatory product recall across all retail chains.",
+        "probability": {
+          "1": 0.2,
+          "2": 0.38,
+          "default": 0.5
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -75000,
+            "default": -150000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Volumetric product enhancement via eco-friendly aqueous binding integration.",
+      "Optimizing hydric product density ratios to meet macro weight specifications.",
+      "Enhancing physical product moisture balance via stabilized aqueous binding.",
+      "Standardizing hydric density specifications to align with macro weight scales."
+    ]
+  },
+  {
+    "decision": "Staff Intimidation",
+    "level": "Operational",
+    "description": "Use aggressive management tactics to suppress wages and crush internal dissent, raising public outrage and legal risks.",
+    "nature": "Dirty",
+    "offensiveAction": false,
+    "excludes": [
+      "Compliance Hotline"
+    ],
+    "impacts": {
+      "staffCost": {
+        "type": "absolute",
+        "schedule": {
+          "default": -15000
+        }
+      },
+      "reserves": {
+        "type": "absolute",
+        "schedule": {
+          "default": 15000
+        }
+      },
+      "outrage": {
+        "type": "absolute",
+        "schedule": {
+          "default": 25
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Tortious Interference with Labor Mobility & Predator Exploitation Claim",
+        "description": "Sue the competitor for tortious interference with labor mobility; their coercive corporate environment unlawfully restricts employee movement and sabotages your recruitment efforts.",
+        "probability": {
+          "1": 0.2,
+          "2": 0.45,
+          "default": 0.55
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -25000,
+            "default": -60000
+          }
+        }
+      },
+      {
+        "name": "Hostile Work Environment & Fair Labor Standards Act (FLSA) Class Action",
+        "description": "Finance a massive employee class action against the competitor for wage theft and human rights violations, crippling their brand value.",
+        "probability": {
+          "1": 0.15,
+          "2": 0.38,
+          "default": 0.45
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -50000,
+            "default": -100000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Implementing strict, high-accountability management frameworks to drive performance.",
+      "Enforcing radical corporate cultural alignment via focused, top-down workplace discipline.",
+      "Enforcing rigorous high-accountability metrics to drive shop-floor performance.",
+      "Cultivating a disciplined, performance-focused manufacturing environment."
+    ]
+  },
+  {
+    "decision": "Night Dumping",
+    "level": "Operational",
+    "description": "Illegally dump toxic production waste under the cover of night to bypass waste disposal fees. Severe environmental crime risk.",
+    "nature": "Dirty",
+    "offensiveAction": false,
+    "excludes": [
+      "Quality Certification"
+    ],
+    "impacts": {
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "default": -20000
+        }
+      },
+      "reserves": {
+        "type": "absolute",
+        "schedule": {
+          "default": 40000
+        }
+      },
+      "scrutiny": {
+        "type": "absolute",
+        "schedule": {
+          "default": 40
+        }
+      },
+      "odorComplaints": {
+        "type": "absolute",
+        "schedule": {
+          "default": 35
+        }
+      },
+      "contaminationRisk": {
+        "type": "absolute",
+        "schedule": {
+          "default": 0.3
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Private Environmental Trespass & Toxic Nuisance Tort Litigation",
+        "description": "Sue the competitor for environmental trespass; their illegal toxic waste dumping leaks directly into your land and groundwater, forcing massive cleanup and operational halt costs on you.",
+        "probability": {
+          "1": 0.3,
+          "2": 0.55,
+          "default": 0.75
+        },
+        "impact": {
+          "type": "relative",
+          "target": "revenue",
+          "schedule": {
+            "1": -0.1,
+            "default": -0.35
+          }
+        }
+      },
+      {
+        "name": "Clean Water Act Private Enforcement & Punitive Damages Action",
+        "description": "Bring a federal lawsuit against the competitor for unauthorized toxic discharge, seeking heavy punitive damages and a total operational freeze.",
+        "probability": {
+          "1": 0.25,
+          "2": 0.45,
+          "default": 0.65
+        },
+        "impact": {
+          "type": "relative",
+          "target": "revenue",
+          "schedule": {
+            "1": -0.3,
+            "default": -0.5
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Low-visibility, off-peak byproduct reintegration into regional ecosystems.",
+      "Streamlining waste management dynamics through off-hours logistical dispersion cycles.",
+      "Optimizing operational byproduct dispersion during off-peak ecological windows.",
+      "Rationalizing resource disposal cycles via unbundled night-shift logistics."
+    ]
+  },
+  {
+    "decision": "Social Astroturf",
+    "level": "Operational",
+    "description": "Hire fake online accounts and bots to spread negative rumors about competitors, driving up their public outrage.",
+    "nature": "Dirty",
+    "offensiveAction": true,
+    "excludes": [],
+    "impacts": {
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "default": 8000
+        }
+      },
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "default": -8000
+        }
+      },
+      "target.outrage": {
+        "type": "absolute",
+        "schedule": {
+          "default": 20
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Lanham Act Trade Libel & Product Disparagement Lawsuit",
+        "description": "Sue the competitor for trade libel; challenge their deployment of bot farms to spread false contamination rumors intended to drain your customer base and destroy your brand reputation.",
+        "probability": {
+          "1": 0.1,
+          "2": 0.2,
+          "default": 0.3
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -15000,
+            "default": -45000
+          }
+        }
+      },
+      {
+        "name": "Cyber Fraud & Deceptive Marketing Practices Injunction",
+        "description": "Sue the competitor under consumer protection laws for organizing a coordinated smear campaign using fake digital profiles to mislead the public.",
+        "probability": {
+          "1": 0.08,
+          "2": 0.16,
+          "default": 0.25
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -35000,
+            "default": -70000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Sponsoring organic, decentralized sentiment corrections in open social channels.",
+      "Deploying crowd-vetted digital advocacy frameworks regarding macro sector structures.",
+      "Engaging decentralized digital communities to correct market narrative imbalances.",
+      "Deploying modern crowdsourced advocacy to protect regional industry reputation."
+    ],
+    "cashFlowCategory": "operating"
+  },
+  {
+    "decision": "Bot Attack",
+    "level": "Operational",
+    "description": "Launch a coordinated cyberattack against a competitor's digital infrastructure to disrupt their logistics and operations.",
+    "nature": "Dirty",
+    "offensiveAction": true,
+    "excludes": [],
+    "impacts": {
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "default": 12000
+        }
+      },
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "default": -12000
+        }
+      },
+      "target.capacityUtilization": {
+        "type": "relative",
+        "schedule": {
+          "default": -0.2
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Private Right of Action under Computer Fraud and Abuse Act (CFAA)",
+        "description": "File a CFAA lawsuit against the competitor for digital sabotage; their DDoS attack crashed your logistics infrastructure, creating a direct right to full revenue loss recovery.",
+        "probability": {
+          "1": 0.2,
+          "2": 0.4,
+          "default": 0.6
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -50000,
+            "default": -120000
+          }
+        }
+      },
+      {
+        "name": "State Cybercrime Statutory Damage Action",
+        "description": "File an executive lawsuit under state computer crime laws; trace the malicious bot traffic directly to the competitor's headquarters to claim treble damages.",
+        "probability": {
+          "1": 0.18,
+          "2": 0.35,
+          "default": 0.5
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -100000,
+            "default": -200000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Executing automated, unprompted server stress-testing protocols on sector peers.",
+      "Proactive digital capacity-loading evaluations of external logistical networks.",
+      "Conducting non-invasive digital stress-testing on shared infrastructure nodes.",
+      "Evaluating external network capacity baselines via automated traffic injection."
+    ],
+    "cashFlowCategory": "operating"
+  },
+  {
+    "decision": "Fox Release",
+    "level": "Operational",
+    "description": "Sabotage a competitor by deliberately releasing predators into their facilities to destroy their physical production assets.",
+    "nature": "Dirty",
+    "offensiveAction": true,
+    "excludes": [],
+    "impacts": {
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "default": 5000
+        }
+      },
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "default": -5000
+        }
+      },
+      "target.assets": {
+        "type": "absolute",
+        "schedule": {
+          "default": -30000
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Common Law Trespass & Intentional Destruction of Property",
+        "description": "Sue the competitor for trespass and property destruction; their employees were caught releasing predators into your production facilities to deliberately destroy your assets.",
+        "probability": {
+          "1": 0.15,
+          "2": 0.35,
+          "default": 0.55
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -40000,
+            "default": -95000
+          }
+        }
+      },
+      {
+        "name": "Criminal Sabotage & Tortious Eco-Terrorism Claim",
+        "description": "File a civil lawsuit for intentional property damage, using security footage to prove the competitor deliberately sabotaged your biosecurity locks.",
+        "probability": {
+          "1": 0.12,
+          "2": 0.3,
+          "default": 0.5
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -80000,
+            "default": -150000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Reintroducing indigenous biological elements to adjacent land parcels.",
+      "Stimulating native mammalian biodiversity in close proximity to neighboring agricultural sites.",
+      "Reintroducing native biological elements to balance agricultural land footprints.",
+      "Enriching localized mammalian biodiversity vectors across adjacent ecosystems."
+    ],
+    "cashFlowCategory": "operating"
+  },
+  {
+    "decision": "Slander Chief Executive Officer",
+    "level": "Operational",
+    "description": "Run an anonymous smear campaign against a competitor's Chief Executive Officer to tank their stock price and damage their reputation.",
+    "nature": "Dirty",
+    "offensiveAction": true,
+    "excludes": [],
+    "impacts": {
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "default": 6000
+        }
+      },
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "default": -6000
+        }
+      },
+      "target.outrage": {
+        "type": "absolute",
+        "schedule": {
+          "default": 25.0
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Defamation Per Se & Tortious Interference with Executive Contract",
+        "description": "Sue the competitor for defamation per se and tortious interference; their anonymous smear campaign targeting your CEO tanked your stock price and disrupted executive operations.",
+        "probability": {
+          "1": 0.15,
+          "2": 0.3,
+          "default": 0.4
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -30000,
+            "default": -70000
+          }
+        }
+      },
+      {
+        "name": "Securities Market Manipulation & Personal Defamation Tort",
+        "description": "Sue the competitor for corporate defamation; prove their smear campaign was calculated to trigger a market panic and artificially drop your valuation.",
+        "probability": {
+          "1": 0.12,
+          "2": 0.25,
+          "default": 0.35
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -60000,
+            "default": -120000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Initiating data-supported reputational corrections concerning peer leadership.",
+      "Sponsoring third-party public deconstructions of external executive governance capabilities.",
+      "Initiating data-supported reputational corrections concerning peer leadership.",
+      "Promoting transparency around competitor leadership accountability metrics."
+    ],
+    "cashFlowCategory": "operating"
+  },
+  {
+    "decision": "Hype Initial Coin Offering",
+    "level": "Operational",
+    "description": "Launch a speculative corporate cryptocurrency token to raise rapid cash from retail investors. Massive risk of regulatory crackdown.",
+    "nature": "Dirty",
+    "offensiveAction": false,
+    "excludes": [],
+    "impacts": {
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "1": 150000,
+          "default": 0
+        }
+      },
+      "tokenLiability": {
+        "type": "absolute",
+        "schedule": {
+          "1": 150000,
+          "default": 0
+        }
+      },
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "1": 15000,
+          "default": 0
+        }
+      },
+      "outrage": {
+        "type": "absolute",
+        "schedule": {
+          "1": 30,
+          "default": 50
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Unfair Competition & Fraudulent Capital Procurement Action",
+        "description": "Sue the competitor for unfair competition; challenge their fraudulent, unregistered crypto offering used to source illicit capital and undercut your legitimate business.",
+        "probability": {
+          "1": 0.3,
+          "2": 0.55,
+          "default": 0.75
+        },
+        "impact": {
+          "type": "relative",
+          "target": "equity",
+          "schedule": {
+            "1": -0.15,
+            "default": -0.45
+          }
+        }
+      },
+      {
+        "name": "SEC Rule 10b-5 Securities Fraud Enforcement Support",
+        "description": "Provide evidence to federal regulators proving the competitor's token offering is a classic Ponzi scheme, forcing a complete freeze of their corporate capital.",
+        "probability": {
+          "1": 0.25,
+          "2": 0.45,
+          "default": 0.65
+        },
+        "impact": {
+          "type": "relative",
+          "target": "equity",
+          "schedule": {
+            "1": -0.35,
+            "default": -0.6
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Launching a Web3-enabled fractional ecosystem utility token for decentralized crowdsourcing.",
+      "Tokenizing long-term circular farming utility assets via open cryptographic retail participation.",
+      "Pioneering decentralized Web3 capitalization models via utility token distribution.",
+      "Democratizing corporate asset appreciation through cryptographic public financing."
+    ],
+    "cashFlowCategory": "financing"
+  },
+  {
+    "decision": "Buy Shares",
+    "level": "Strategic",
+    "nature": "Grey Area",
+    "offensiveAction": true,
+    "description": "Purchase a block of another company's shares directly from its capitalization table at the prevailing market price, without requiring the target's consent. The investment amount and the target company are chosen at the moment this action is taken; cash and share-ownership effects are computed dynamically rather than on a fixed schedule.",
+    "excludes": [],
+    "variableAmount": true,
+    "requiresTarget": true,
+    "impacts": {
+      "target.operatingExpenses": {
+        "type": "relative",
+        "schedule": {
+          "default": 0.15
+        }
+      }
+    },
+    "legalRisks": [
+      {
+        "name": "Breach of Corporate Fiduciary Duty & Raiding Injunction",
+        "description": "Seek an immediate injunction against the competitor; they secretly acquired a significant stake to infiltrate your board, steal insider data, and force a hostile takeover.",
+        "probability": {
+          "1": 0.1,
+          "2": 0.15,
+          "default": 0.08
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -15000,
+            "default": -35000
+          }
+        }
+      },
+      {
+        "name": "Williams Act Disclosure Violation Litigation",
+        "description": "Sue the competitor for failing to disclose their 5% ownership threshold within the statutory timeline, seeking a freeze on their voting rights.",
+        "probability": {
+          "1": 0.08,
+          "2": 0.12,
+          "default": 0.15
+        },
+        "impact": {
+          "type": "absolute",
+          "target": "cash",
+          "schedule": {
+            "1": -20000,
+            "default": -45000
+          }
+        }
+      }
+    ],
+    "competitorsView": [
+      "Exploring unsolicited external equity synergies.",
+      "Strategic minority positioning to facilitate unprompted cross-corporate dialogue.",
+      "Executing tactical capital allocations to identify governance optimization opportunities.",
+      "Proactively exploring minority synergies to unlock unmapped enterprise value."
+    ],
+    "legalRiskConditions": {
+      "minPercentAcquiredInSingleTransaction": 0.05
+    },
+    "cashFlowCategory": "financing"
+  },
+  {
+    "decision": "Sell Shares",
+    "level": "Strategic",
+    "nature": "Traditional",
+    "offensiveAction": false,
+    "description": "Sell a portion of your held shares in any company (including your own) back to the external market at the prevailing market price, converting equity into cash. Shares can only be sold to the external market, never directly to another player.",
+    "excludes": [],
+    "variableAmount": true,
+    "requiresTarget": true,
+    "impacts": {},
+    "legalRisks": [],
+    "competitorsView": [
+      "Rebalancing our investment portfolio for optimal capital allocation.",
+      "Executing a routine divestment as part of ongoing treasury management.",
+      "Monetizing a non-core equity position to strengthen our balance sheet.",
+      "Adjusting our strategic holdings in line with long-term capital strategy."
+    ],
+    "cashFlowCategory": "financing"
+  }
+]

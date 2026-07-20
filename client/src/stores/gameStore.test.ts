@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useGameStore } from './gameStore';
 import { RoomStatus } from '@suetheirasses/shared';
-import type { Room, Player, PhaseChangedResponse, ResultsRevealResponse, GameOverResponse, ErrorResponse } from '@suetheirasses/shared';
+import type { Room, Player, PhaseChangedResponse, GameOverResponse, ErrorResponse, TurnResolutionResult, PlayerTurnResult } from '@suetheirasses/shared';
 
 // Helper to create a mock room
 const createMockRoom = (overrides: Partial<Room> = {}): Room => ({
@@ -27,14 +27,14 @@ const createMockPlayer = (overrides: Partial<Player> = {}): Player => ({
 // Helper to reset store to a clean initial state
 const resetStore = () => {
   const store = useGameStore.getState();
-  // Reset to initial values by setting each field
+  // Reset to initial values using store methods
   store.updateRoom(createMockRoom());
   store.updatePlayer(createMockPlayer());
   store.updatePhase({ phase: RoomStatus.WAITING, round: 1, timeLimit: 0 });
-  store.updateResults({ outcomes: [] } as ResultsRevealResponse);
-  store.setGameOver({ winner: { id: '', name: '', roomId: '', isHost: false, bankrupt: false }, finalStandings: [] });
   store.setError(null);
   store.setNotification(null);
+  store.clearTurnResults();
+  store.clearGameOver();
 };
 
 describe('gameStore', () => {
@@ -46,24 +46,16 @@ describe('gameStore', () => {
     it('should update room state', () => {
       const newRoom = createMockRoom({
         id: 'room-2',
-        status: RoomStatus.STRATEGY,
+        status: RoomStatus.GAME_PHASE,
       });
 
       useGameStore.getState().updateRoom(newRoom);
 
       expect(useGameStore.getState().room?.id).toBe('room-2');
-      expect(useGameStore.getState().room?.status).toBe(RoomStatus.STRATEGY);
+      expect(useGameStore.getState().room?.status).toBe(RoomStatus.GAME_PHASE);
     });
 
-    it('should update currentPhase when room is updated', () => {
-      const newRoom = createMockRoom({
-        status: RoomStatus.LAWSUITS,
-      });
 
-      useGameStore.getState().updateRoom(newRoom);
-
-      expect(useGameStore.getState().currentPhase).toBe(RoomStatus.LAWSUITS);
-    });
   });
 
   describe('updatePlayer', () => {
@@ -141,7 +133,7 @@ describe('gameStore', () => {
     it('should preserve other room properties when kicking a player', () => {
       const room = createMockRoom({
         id: 'room-1',
-        status: RoomStatus.STRATEGY,
+        status: RoomStatus.GAME_PHASE,
         maxPlayers: 4,
         currentPhaseRound: 3,
         players: [
@@ -154,7 +146,7 @@ describe('gameStore', () => {
       useGameStore.getState().kickPlayer('player-2');
 
       expect(useGameStore.getState().room?.id).toBe('room-1');
-      expect(useGameStore.getState().room?.status).toBe(RoomStatus.STRATEGY);
+      expect(useGameStore.getState().room?.status).toBe(RoomStatus.GAME_PHASE);
       expect(useGameStore.getState().room?.maxPlayers).toBe(4);
       expect(useGameStore.getState().room?.currentPhaseRound).toBe(3);
     });
@@ -259,29 +251,16 @@ describe('gameStore', () => {
   describe('updatePhase', () => {
     it('should update phase and round from phase changed response', () => {
       const phaseData: PhaseChangedResponse = {
-        phase: RoomStatus.STRATEGY,
+        phase: RoomStatus.GAME_PHASE,
         round: 2,
         timeLimit: 120,
       };
 
       useGameStore.getState().updatePhase(phaseData);
 
-      expect(useGameStore.getState().currentPhase).toBe(RoomStatus.STRATEGY);
+      expect(useGameStore.getState().currentPhase).toBe(RoomStatus.GAME_PHASE);
       expect(useGameStore.getState().round).toBe(2);
       expect(useGameStore.getState().timer).toBe(120);
-    });
-
-    it('should update phase to LAWSUITS', () => {
-      const phaseData: PhaseChangedResponse = {
-        phase: RoomStatus.LAWSUITS,
-        round: 1,
-        timeLimit: 90,
-      };
-
-      useGameStore.getState().updatePhase(phaseData);
-
-      expect(useGameStore.getState().currentPhase).toBe(RoomStatus.LAWSUITS);
-      expect(useGameStore.getState().timer).toBe(90);
     });
 
 
@@ -302,19 +281,43 @@ describe('gameStore', () => {
     });
   });
 
-  describe('updateResults', () => {
-    it('should store results data', () => {
-      const results: ResultsRevealResponse = {
-        outcomes: [
-          { playerId: 'player-1', playerName: 'Alice', changes: [] },
-          { playerId: 'player-2', playerName: 'Bob', changes: [] },
-        ],
+  describe('handleTurnResolved', () => {
+    it('should store turn resolution data', () => {
+      const playerData: PlayerTurnResult = {
+        playerId: 'player-1',
+        playerName: 'Alice',
+        variables: {
+          cash: 100000, assets: 1000000, intangibleAssets: 100000, debt: 0,
+          reserves: 0, operatingExpenses: 20000, staffCost: 10000,
+          materialCostPerTon: 500, otherIncome: 0, price: 700,
+          capacityUtilization: 1.0, processingLevel: 0.5, energyIntensity: 50,
+          moistureContent: 0.3, nutrientConsistency: 0.3, supplySecurity: 0.5,
+          logisticsCostPerTon: 50, processLoss: 0.1, installedCapacity: 350,
+          totalSharesOutstanding: 10000, shareOwnership: { self: 1.0 },
+          outrage: 0, scrutiny: 0, breakdowns: 0, contaminationRisk: 0,
+          odorComplaints: 0, tokenLiability: 0, carbonFootprint: 0,
+          stockVolume: 0, demand: 0,
+        },
+        derived: {
+          equity: 1200000, revenue: 245000, volume: 350, receivables: 30000,
+          financeCost: 5000, taxCost: 2800, depreciation: 3300, stockValue: 120,
+          marketShare: 0.33, competitiveness: 1.2,
+        },
+        activeDecisions: [],
+        legalCases: [],
+        riskGauge: 15,
       };
 
-      useGameStore.getState().updateResults(results);
+      const turnResult: TurnResolutionResult = {
+        round: 1,
+        players: [playerData],
+        gameOver: false,
+      };
 
-      expect(useGameStore.getState().results).toEqual(results);
-      expect(useGameStore.getState().results?.outcomes.length).toBe(2);
+      useGameStore.getState().handleTurnResolved(turnResult);
+
+      expect(useGameStore.getState().turnResults).toEqual(turnResult);
+      expect(useGameStore.getState().round).toBe(1);
     });
   });
 
@@ -411,9 +414,9 @@ describe('gameStore', () => {
       expect(useGameStore.getState().timer).toBe(0);
     });
 
-    it('should have null results after reset', () => {
+    it('should have null turnResults after reset', () => {
       resetStore();
-      expect(useGameStore.getState().results).toBeNull();
+      expect(useGameStore.getState().turnResults).toBeNull();
     });
 
     it('should have null gameOver after reset', () => {

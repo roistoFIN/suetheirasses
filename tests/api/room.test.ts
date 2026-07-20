@@ -128,14 +128,14 @@ describe('Room REST API', () => {
 
     await prisma.room.update({
       where: { id: roomId },
-      data: { status: RoomStatus.STRATEGY },
+      data: { status: RoomStatus.GAME_PHASE },
     });
 
     const room = await prisma.room.findUnique({
       where: { id: roomId },
     });
 
-    expect(room?.status).toBe(RoomStatus.STRATEGY);
+    expect(room?.status).toBe(RoomStatus.GAME_PHASE);
 
     await prisma.player.delete({ where: { id: playerId } });
     await prisma.room.delete({ where: { id: roomId } });
@@ -411,212 +411,6 @@ describe('Room REST API', () => {
     await prisma.room.delete({ where: { id: roomId } });
   });
 
-  it('should create and query lawsuits', async () => {
-    const prisma = getPrisma();
-    const roomId = `room-${Date.now()}-10`;
-    const plaintiffId = `plaintiff-${roomId}`;
-    const defendantId = `defendant-${roomId}`;
-
-    await prisma.room.create({
-      data: {
-        id: roomId,
-        status: RoomStatus.WAITING,
-        maxPlayers: 4,
-      },
-    });
-
-    const plaintiff = await prisma.player.create({
-      data: {
-        id: plaintiffId,
-        name: 'Plaintiff',
-        roomId: roomId,
-        companyId: `company-${plaintiffId}`,
-        socketId: `socket-${plaintiffId}`,
-        company: { create: { cash: 100000 } },
-      },
-    });
-
-    const defendant = await prisma.player.create({
-      data: {
-        id: defendantId,
-        name: 'Defendant',
-        roomId: roomId,
-        companyId: `company-${defendantId}`,
-        socketId: `socket-${defendantId}`,
-        company: { create: { cash: 100000 } },
-      },
-    });
-
-    const lawsuit = await prisma.lawsuit.create({
-      data: {
-        id: `lawsuit-${roomId}`,
-        plaintiffId: plaintiff.id,
-        defendantId: defendant.id,
-        claimAmount: 50000,
-        grounds: 'Breach of contract and negligence',
-        resolved: false,
-      },
-    });
-
-    expect(lawsuit.id).toBe(`lawsuit-${roomId}`);
-    expect(lawsuit.resolved).toBe(false);
-    expect(Number(lawsuit.claimAmount)).toBe(50000);
-
-    const plaintiffLawsuits = await prisma.lawsuit.findMany({
-      where: { plaintiffId: plaintiff.id, resolved: false },
-    });
-
-    expect(plaintiffLawsuits.length).toBe(1);
-
-    const defendantLawsuits = await prisma.lawsuit.findMany({
-      where: { defendantId: defendant.id, resolved: false },
-    });
-
-    expect(defendantLawsuits.length).toBe(1);
-
-    await prisma.player.delete({ where: { id: plaintiffId } });
-    await prisma.player.delete({ where: { id: defendantId } });
-    await prisma.room.delete({ where: { id: roomId } });
-  });
-
-  it('should resolve a lawsuit with verdict', async () => {
-    const prisma = getPrisma();
-    const roomId = `room-${Date.now()}-11`;
-    const plaintiffId = `plaintiff-${roomId}`;
-    const defendantId = `defendant-${roomId}`;
-
-    await prisma.room.create({
-      data: {
-        id: roomId,
-        status: RoomStatus.WAITING,
-        maxPlayers: 4,
-      },
-    });
-
-    const plaintiff = await prisma.player.create({
-      data: {
-        id: plaintiffId,
-        name: 'Plaintiff',
-        roomId: roomId,
-        companyId: `company-${plaintiffId}`,
-        socketId: `socket-${plaintiffId}`,
-        company: { create: { cash: 100000 } },
-      },
-    });
-
-    const defendant = await prisma.player.create({
-      data: {
-        id: defendantId,
-        name: 'Defendant',
-        roomId: roomId,
-        companyId: `company-${defendantId}`,
-        socketId: `socket-${defendantId}`,
-        company: { create: { cash: 100000 } },
-      },
-    });
-
-    const lawsuitId = `lawsuit-${roomId}`;
-    await prisma.lawsuit.create({
-      data: {
-        id: lawsuitId,
-        plaintiffId: plaintiff.id,
-        defendantId: defendant.id,
-        claimAmount: 50000,
-        grounds: 'Breach of contract',
-        resolved: false,
-      },
-    });
-
-    await prisma.lawsuit.update({
-      where: { id: lawsuitId },
-      data: {
-        resolved: true,
-        verdict: 'WON',
-        resolution: 'Court rules in favor of plaintiff',
-      },
-    });
-
-    const lawsuit = await prisma.lawsuit.findUnique({
-      where: { id: lawsuitId },
-    });
-
-    expect(lawsuit?.resolved).toBe(true);
-    expect(lawsuit?.verdict).toBe('WON');
-    expect(lawsuit?.resolution).toContain('plaintiff');
-
-    await prisma.player.delete({ where: { id: plaintiffId } });
-    await prisma.player.delete({ where: { id: defendantId } });
-    await prisma.room.delete({ where: { id: roomId } });
-  });
-
-  it('should transfer money on lawsuit verdict WON', async () => {
-    const prisma = getPrisma();
-    const roomId = `room-${Date.now()}-12`;
-    const plaintiffId = `plaintiff-${roomId}`;
-    const defendantId = `defendant-${roomId}`;
-
-    await prisma.room.create({
-      data: {
-        id: roomId,
-        status: RoomStatus.WAITING,
-        maxPlayers: 4,
-      },
-    });
-
-    const plaintiff = await prisma.player.create({
-      data: {
-        id: plaintiffId,
-        name: 'Plaintiff',
-        roomId: roomId,
-        companyId: `company-${plaintiffId}`,
-        socketId: `socket-${plaintiffId}`,
-        company: { create: { cash: 100000 } },
-      },
-    });
-
-    const defendant = await prisma.player.create({
-      data: {
-        id: defendantId,
-        name: 'Defendant',
-        roomId: roomId,
-        companyId: `company-${defendantId}`,
-        socketId: `socket-${defendantId}`,
-        company: { create: { cash: 100000 } },
-      },
-    });
-
-    const plaintiffCashBefore = Number((await prisma.company.findUnique({ where: { playerId: plaintiffId } }))?.cash);
-    const defendantCashBefore = Number((await prisma.company.findUnique({ where: { playerId: defendantId } }))?.cash);
-
-    await prisma.$transaction(async (tx) => {
-      await tx.company.update({
-        where: { playerId: defendantId },
-        data: { cash: { decrement: 50000 } },
-      });
-      await tx.company.update({
-        where: { playerId: plaintiffId },
-        data: { cash: { increment: 50000 } },
-      });
-    });
-
-    const plaintiffAfter = await prisma.player.findUnique({
-      where: { id: plaintiffId },
-      include: { company: true },
-    });
-
-    const defendantAfter = await prisma.player.findUnique({
-      where: { id: defendantId },
-      include: { company: true },
-    });
-
-    expect(Number(plaintiffAfter?.company?.cash)).toBe(plaintiffCashBefore + 50000);
-    expect(Number(defendantAfter?.company?.cash)).toBe(defendantCashBefore - 50000);
-
-    await prisma.player.delete({ where: { id: plaintiffId } });
-    await prisma.player.delete({ where: { id: defendantId } });
-    await prisma.room.delete({ where: { id: roomId } });
-  });
-
   it('should mark player as bankrupt', async () => {
     const prisma = getPrisma();
     const roomId = `room-${Date.now()}-13`;
@@ -707,125 +501,79 @@ describe('Room REST API', () => {
     await prisma.room.delete({ where: { id: roomId } });
   });
 
-  it('should clean up lawsuits on player cascade delete', async () => {
+  it('should default variables, lastTurnSnapshot, and engineState to empty objects', async () => {
     const prisma = getPrisma();
     const roomId = `room-${Date.now()}-15`;
-    const plaintiffId = `plaintiff-${roomId}`;
-    const defendantId = `defendant-${roomId}`;
+    const playerId = `player-${roomId}`;
 
     await prisma.room.create({
-      data: {
-        id: roomId,
-        status: RoomStatus.WAITING,
-        maxPlayers: 4,
-      },
+      data: { id: roomId, status: RoomStatus.WAITING, maxPlayers: 4 },
     });
 
-    const plaintiff = await prisma.player.create({
+    const player = await prisma.player.create({
       data: {
-        id: plaintiffId,
-        name: 'Plaintiff',
+        id: playerId,
+        name: 'EngineStatePlayer',
         roomId: roomId,
-        companyId: `company-${plaintiffId}`,
-        socketId: `socket-${plaintiffId}`,
+        companyId: `company-${playerId}`,
+        socketId: `socket-${playerId}`,
         company: { create: { cash: 100000 } },
       },
+      include: { company: true },
     });
 
-    await prisma.player.create({
-      data: {
-        id: defendantId,
-        name: 'Defendant',
-        roomId: roomId,
-        companyId: `company-${defendantId}`,
-        socketId: `socket-${defendantId}`,
-        company: { create: { cash: 100000 } },
-      },
-    });
+    expect(player.company?.variables).toEqual({});
+    expect(player.company?.lastTurnSnapshot).toEqual({});
+    expect(player.company?.engineState).toEqual({});
 
-    await prisma.lawsuit.create({
-      data: {
-        id: `lawsuit-${roomId}`,
-        plaintiffId: plaintiff.id,
-        defendantId: defendantId,
-        claimAmount: 50000,
-        grounds: 'Breach of contract',
-        resolved: false,
-      },
-    });
-
-    await prisma.player.delete({
-      where: { id: plaintiffId },
-    });
-
-    const lawsuits = await prisma.lawsuit.findMany({
-      where: { plaintiffId: plaintiffId },
-    });
-
-    expect(lawsuits.length).toBe(0);
-
-    await prisma.player.delete({ where: { id: defendantId } });
+    await prisma.player.delete({ where: { id: playerId } });
     await prisma.room.delete({ where: { id: roomId } });
   });
 
-  it('should clean up lawsuits on defendant cascade delete', async () => {
+  it('should persist GameLoop engine state (variables, engineState) across updates', async () => {
     const prisma = getPrisma();
     const roomId = `room-${Date.now()}-16`;
-    const plaintiffId = `plaintiff-${roomId}`;
-    const defendantId = `defendant-${roomId}`;
+    const playerId = `player-${roomId}`;
 
     await prisma.room.create({
-      data: {
-        id: roomId,
-        status: RoomStatus.WAITING,
-        maxPlayers: 4,
-      },
+      data: { id: roomId, status: RoomStatus.GAME_PHASE, maxPlayers: 4, currentPhaseRound: 2 },
     });
 
     await prisma.player.create({
       data: {
-        id: plaintiffId,
-        name: 'Plaintiff',
+        id: playerId,
+        name: 'PersistedEnginePlayer',
         roomId: roomId,
-        companyId: `company-${plaintiffId}`,
-        socketId: `socket-${plaintiffId}`,
+        companyId: `company-${playerId}`,
+        socketId: `socket-${playerId}`,
         company: { create: { cash: 100000 } },
       },
     });
 
-    const defendant = await prisma.player.create({
-      data: {
-        id: defendantId,
-        name: 'Defendant',
-        roomId: roomId,
-        companyId: `company-${defendantId}`,
-        socketId: `socket-${defendantId}`,
-        company: { create: { cash: 100000 } },
-      },
+    // Mirrors what GameLoop.resolveTurn() writes back to Company each turn (FORMULAS.md):
+    // per-player financial/production variables in `variables`, and active decisions /
+    // depreciation ledger / legal cases in `engineState`.
+    const variables = { cash: 95000, assets: 1000000, price: 700, outrage: 5 };
+    const engineState = {
+      activeDecisions: [{ id: 'd1', definitionName: 'New Factory', deployedYear: 1, elapsedYears: 0, isMatured: false }],
+      depreciationLedger: [],
+      legalCases: [],
+    };
+
+    await prisma.company.update({
+      where: { playerId },
+      data: { variables, engineState },
     });
 
-    await prisma.lawsuit.create({
-      data: {
-        id: `lawsuit-${roomId}`,
-        plaintiffId: plaintiffId,
-        defendantId: defendant.id,
-        claimAmount: 50000,
-        grounds: 'Breach of contract',
-        resolved: false,
-      },
+    const player = await prisma.player.findUnique({
+      where: { id: playerId },
+      include: { company: true },
     });
 
-    await prisma.player.delete({
-      where: { id: defendantId },
-    });
+    expect(player?.company?.variables).toEqual(variables);
+    expect(player?.company?.engineState).toEqual(engineState);
 
-    const lawsuits = await prisma.lawsuit.findMany({
-      where: { defendantId: defendantId },
-    });
-
-    expect(lawsuits.length).toBe(0);
-
-    await prisma.player.delete({ where: { id: plaintiffId } });
+    await prisma.player.delete({ where: { id: playerId } });
     await prisma.room.delete({ where: { id: roomId } });
   });
 });

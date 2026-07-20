@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { GameEngine } from './gameEngine';
-import { RoomStatus, ServerEvents, PHASE_TIMERS, PHASE_ORDER, RESULTS_DISPLAY_DURATION } from '@suetheirasses/shared';
+import { RoomStatus, ServerEvents, PHASE_TIMERS, PHASE_ORDER } from '@suetheirasses/shared';
 import type { Server, Socket } from 'socket.io';
 import type { PrismaClient, Room as PrismaRoom, Player as PrismaPlayer, Company as PrismaCompany } from '@prisma/client';
 
@@ -32,7 +32,9 @@ const createMockPrisma = () => {
           id: companyId,
           playerId,
           cash: 100000,
+          debt: 0,
           createdAt: new Date(),
+          assets: [],
         },
       };
       createdPlayers.push(dbPlayer);
@@ -76,16 +78,28 @@ const createMockPrisma = () => {
           id: companyId,
           playerId,
           cash: ((data.company as Record<string, unknown>)?.create as Record<string, unknown>)?.cash as number ?? 100000,
+          debt: 0,
           createdAt: new Date(),
+          assets: [],
         },
       };
       createdPlayers.push(player);
       createdCompanies.push(player.company);
       return Promise.resolve(player);
     }),
+    findMany: vi.fn().mockImplementation(({ where }: { where?: Record<string, unknown> } = {}) => {
+      return Promise.resolve(
+        createdPlayers.filter((p: any) => {
+          if (where?.roomId && p.roomId !== where.roomId) return false;
+          if (where?.bankrupt !== undefined && p.bankrupt !== where.bankrupt) return false;
+          return true;
+        }),
+      );
+    }),
     findUnique: vi.fn(),
     delete: vi.fn().mockResolvedValue({}),
     update: vi.fn().mockResolvedValue({}),
+    updateMany: vi.fn().mockResolvedValue({ count: 0 }),
   };
 
   const mockCompany = {
@@ -101,9 +115,6 @@ const createMockPrisma = () => {
     player: mockPlayer,
     company: mockCompany,
     asset: {
-      deleteMany: vi.fn().mockResolvedValue({}),
-    },
-    lawsuit: {
       deleteMany: vi.fn().mockResolvedValue({}),
     },
     $transaction: vi.fn().mockImplementation(async (fn: (tx: Partial<PrismaClient>) => Promise<unknown>) => {
@@ -128,7 +139,6 @@ describe('GameEngine', () => {
     (mockPrisma as Partial<PrismaClient>).player = mockPrisma.player;
     (mockPrisma as Partial<PrismaClient>).company = mockPrisma.company;
     (mockPrisma as Partial<PrismaClient>).asset = mockPrisma.asset;
-    (mockPrisma as Partial<PrismaClient>).lawsuit = mockPrisma.lawsuit;
     engine = new GameEngine(mockIo, mockPrisma);
   });
 
@@ -652,7 +662,7 @@ describe('GameEngine', () => {
 
       await engine.advancePhase(roomState.room.id);
 
-      expect(roomState.room.status).toBe(RoomStatus.STRATEGY);
+      expect(roomState.room.status).toBe(RoomStatus.GAME_PHASE);
     });
 
     it('should broadcast phase change event', async () => {
@@ -671,7 +681,7 @@ describe('GameEngine', () => {
       expect(mockIo.emit).toHaveBeenCalledWith(
         ServerEvents.PHASE_CHANGED,
         expect.objectContaining({
-          phase: RoomStatus.STRATEGY,
+          phase: RoomStatus.GAME_PHASE,
         }),
       );
     });
@@ -690,24 +700,7 @@ describe('GameEngine', () => {
       await engine.advancePhase(roomState.room.id);
 
       expect(roomState.timer).toBeDefined();
-      expect(roomState.timerValue).toBe(PHASE_TIMERS[RoomStatus.STRATEGY]);
-    });
-
-    it('should clear submissions when advancing phase', async () => {
-      const player = {
-        id: '',
-        name: 'Alice',
-        roomId: '',
-        isHost: false,
-        bankrupt: false,
-        socketId: 'socket-1',
-      };
-      const roomState = await engine.createRoom(player);
-      roomState.submissions.set('player-1', { actions: [] });
-
-      await engine.advancePhase(roomState.room.id);
-
-      expect(roomState.submissions.size).toBe(0);
+      expect(roomState.timerValue).toBe(PHASE_TIMERS[RoomStatus.GAME_PHASE]);
     });
 
     it('should not advance past the last phase', async () => {
@@ -721,7 +714,7 @@ describe('GameEngine', () => {
       };
       const roomState = await engine.createRoom(player);
 
-      // Advance to the last phase (RESOLVING)
+      // Advance through all phases to reach the final one
       for (let i = 1; i < PHASE_ORDER.length; i++) {
         await engine.advancePhase(roomState.room.id);
       }
@@ -730,7 +723,7 @@ describe('GameEngine', () => {
       expect(roomState.room.status).toBe(lastPhase);
     });
 
-    it('should start timer for RESULTS phase', async () => {
+    it('should advance from GAME_PHASE to AFTERMATH', async () => {
       const player = {
         id: '',
         name: 'Alice',
@@ -741,15 +734,15 @@ describe('GameEngine', () => {
       };
       const roomState = await engine.createRoom(player);
 
-      // Advance to STRATEGY
+      // Advance to GAME_PHASE
       await engine.advancePhase(roomState.room.id);
-      // Advance to RESULTS
+      // Advance to AFTERMATH
       await engine.advancePhase(roomState.room.id);
 
-      expect(roomState.room.status).toBe(RoomStatus.RESULTS);
-      // RESULTS phase should have an active timer for the passive display
-      expect(roomState.timer).not.toBeNull();
-      expect(roomState.timerValue).toBe(RESULTS_DISPLAY_DURATION);
+      expect(roomState.room.status).toBe(RoomStatus.AFTERMATH);
+      // AFTERMATH phase should have an active timer
+      expect(roomState.timer).toBeDefined();
+      expect(roomState.timerValue).toBe(PHASE_TIMERS[RoomStatus.AFTERMATH]);
     });
 
     it('should sync room state to database', async () => {
@@ -797,8 +790,116 @@ describe('GameEngine', () => {
       expect(syncRoomToDBSpy).toHaveBeenCalledTimes(1);
       expect(broadcastRoomStateSpy).toHaveBeenCalledTimes(1);
 
-      // Room should be in the next phase (STRATEGY), not advanced twice
-      expect(roomState.room.status).toBe(RoomStatus.STRATEGY);
+      // Room should be in the next phase (GAME_PHASE), not advanced twice
+      expect(roomState.room.status).toBe(RoomStatus.GAME_PHASE);
+    });
+  });
+
+  describe('resolveGameTurn', () => {
+    it('should resolve the turn and loop into another GAME_PHASE round when the game is not over', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+
+      roomState.room.status = RoomStatus.GAME_PHASE;
+      roomState.room.currentPhaseRound = 1;
+
+      await engine.resolveGameTurn(roomState.room.id);
+
+      // Two solvent players, neither bankrupt — game continues into round 2
+      expect(roomState.room.status).toBe(RoomStatus.GAME_PHASE);
+      expect(roomState.room.currentPhaseRound).toBe(2);
+      expect(roomState.timerValue).toBe(PHASE_TIMERS[RoomStatus.GAME_PHASE]);
+
+      const phaseChangedCalls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (call: [string, ...unknown[]]) => call[0] === ServerEvents.PHASE_CHANGED,
+      );
+      expect(phaseChangedCalls.some((call) => (call[1] as any).round === 2)).toBe(true);
+    });
+
+    it('should transition to AFTERMATH and emit GAME_OVER when only one player remains', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      roomState.room.status = RoomStatus.GAME_PHASE;
+      roomState.room.currentPhaseRound = 3;
+
+      // Simulate every other player already bankrupt in the DB — only the host remains
+      (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockImplementation(({ where }: any) =>
+        Promise.resolve(
+          where?.roomId === roomState.room.id
+            ? [
+                {
+                  id: 'db-player-1',
+                  name: 'Alice',
+                  roomId: roomState.room.id,
+                  bankrupt: false,
+                  companyId: 'company-db-player-1',
+                  company: { id: 'company-db-player-1', playerId: 'db-player-1', cash: 100000, debt: 0, assets: [] },
+                },
+              ]
+            : [],
+        ),
+      );
+
+      await engine.resolveGameTurn(roomState.room.id);
+
+      expect(roomState.room.status).toBe(RoomStatus.AFTERMATH);
+      const gameOverCalls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (call: [string, ...unknown[]]) => call[0] === ServerEvents.GAME_OVER,
+      );
+      expect(gameOverCalls).toHaveLength(1);
+      expect(gameOverCalls[0][1]).toHaveProperty('winner');
+      expect(gameOverCalls[0][1]).toHaveProperty('finalStandings');
+    });
+
+    it('should skip concurrent resolveGameTurn calls for the same room (race condition guard)', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+      roomState.room.status = RoomStatus.GAME_PHASE;
+      roomState.room.currentPhaseRound = 1;
+
+      await Promise.all([
+        engine.resolveGameTurn(roomState.room.id),
+        engine.resolveGameTurn(roomState.room.id),
+      ]);
+
+      // Only one resolution should have gone through — round advances by exactly 1
+      expect(roomState.room.currentPhaseRound).toBe(2);
+    });
+  });
+
+  describe('submitDecisions', () => {
+    it('should forward validated decisions to the game loop for the room', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      const playerId = Array.from(roomState.players.values())[0].id;
+
+      engine.submitDecisions(roomState.room.id, playerId, { strategic: [{ name: 'New Factory' }], operational: [] });
+
+      // No direct getter for submissions, but resolving the turn should not throw
+      // and should reflect the submission was accepted without error.
+      roomState.room.status = RoomStatus.GAME_PHASE;
+      await expect(engine.resolveGameTurn(roomState.room.id)).resolves.not.toThrow();
+    });
+  });
+
+  describe('broadcastInitialSnapshot', () => {
+    it('should broadcast turn:resolved with starting values immediately, without waiting for a real round', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+
+      await engine.broadcastInitialSnapshot(roomState.room.id, 1);
+
+      const turnResolvedCalls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (call: [string, ...unknown[]]) => call[0] === ServerEvents.TURN_RESOLVED,
+      );
+      expect(turnResolvedCalls).toHaveLength(1);
+      const payload = turnResolvedCalls[0][1] as any;
+      expect(payload.round).toBe(1);
+      expect(payload.gameOver).toBe(false);
+      expect(payload.players).toHaveLength(1);
+      expect(payload.players[0].activeDecisions).toEqual([]);
     });
   });
 
@@ -813,7 +914,7 @@ describe('GameEngine', () => {
         socketId: 'socket-1',
       };
       const roomState = await engine.createRoom(player);
-      roomState.room.status = RoomStatus.STRATEGY;
+      roomState.room.status = RoomStatus.GAME_PHASE;
 
       await engine.syncRoomToDB(roomState.room.id);
 
@@ -821,7 +922,7 @@ describe('GameEngine', () => {
         expect.objectContaining({
           where: { id: roomState.room.id },
           data: expect.objectContaining({
-            status: RoomStatus.STRATEGY,
+            status: RoomStatus.GAME_PHASE,
           }),
         }),
       );

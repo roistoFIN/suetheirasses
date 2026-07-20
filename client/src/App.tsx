@@ -3,15 +3,12 @@ import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { useSocketStore } from './stores/socketStore';
 import { useGameStore } from './stores/gameStore';
 import Matchmaking from './pages/Matchmaking';
-import Strategy from './pages/Strategy';
-import Results from './pages/Results';
-import Lawsuits from './pages/Lawsuits';
-import Resolution from './pages/Resolution';
+import GamePhase from './pages/GamePhase';
 import GameOver from './pages/GameOver';
 
 const App: React.FC = () => {
   const { connect, disconnect } = useSocketStore();
-  const { room } = useGameStore();
+  const { currentPhase } = useGameStore();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -20,24 +17,18 @@ const App: React.FC = () => {
   }, [connect, disconnect]);
 
   useEffect(() => {
-    if (!room) return;
+    if (!currentPhase) return;
 
     let target: string;
-    switch (room.status) {
+    switch (currentPhase) {
       case 'WAITING':
         target = '/';
         break;
-      case 'STRATEGY':
-        target = '/strategy';
+      case 'GAME_PHASE':
+        target = '/game';
         break;
-      case 'RESULTS':
-        target = '/results';
-        break;
-      case 'LAWSUITS':
-        target = '/lawsuits';
-        break;
-      case 'RESOLVING':
-        target = '/resolution';
+      case 'AFTERMATH':
+        target = '/gameover';
         break;
       default:
         target = '/';
@@ -46,22 +37,18 @@ const App: React.FC = () => {
     if (window.location.pathname !== target) {
       navigate(target, { replace: true });
     }
-  }, [room?.status, navigate]);
+  }, [currentPhase, navigate]);
 
-  const getPhaseRoute = () => {
-    if (!room) return '/';
+  const getPhaseRoute = (): string => {
+    if (!currentPhase) return '/';
 
-    switch (room.status) {
+    switch (currentPhase) {
       case 'WAITING':
         return '/';
-      case 'STRATEGY':
-        return '/strategy';
-      case 'RESULTS':
-        return '/results';
-      case 'LAWSUITS':
-        return '/lawsuits';
-      case 'RESOLVING':
-        return '/resolution';
+      case 'GAME_PHASE':
+        return '/game';
+      case 'AFTERMATH':
+        return '/gameover';
       default:
         return '/';
     }
@@ -70,10 +57,7 @@ const App: React.FC = () => {
   return (
     <Routes>
       <Route path="/" element={<Matchmaking />} />
-      <Route path="/strategy" element={<Strategy />} />
-      <Route path="/results" element={<Results />} />
-      <Route path="/lawsuits" element={<Lawsuits />} />
-      <Route path="/resolution" element={<Resolution />} />
+      <Route path="/game" element={<GamePhase />} />
       <Route path="/gameover" element={<GameOver />} />
       <Route path="*" element={<Navigate to={getPhaseRoute()} replace />} />
     </Routes>

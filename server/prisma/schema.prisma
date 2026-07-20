@@ -9,16 +9,8 @@ datasource db {
 
 enum RoomStatus {
   WAITING
-  STRATEGY
-  RESULTS
-  LAWSUITS
-  RESOLVING
-}
-
-enum Verdict {
-  WON
-  LOST
-  SETTLED
+  GAME_PHASE
+  AFTERMATH
 }
 
 model Room {
@@ -46,21 +38,33 @@ model Player {
   createdAt    DateTime   @default(now())
   companyId    String?    @unique
   company      Company?
-  lawsuitsFiled    Lawsuit[] @relation("FiledLawsuit")
-  lawsuitsReceived Lawsuit[] @relation("ReceivedLawsuit")
 
   @@index([roomId])
   @@index([roomId, bankrupt])
   @@index([socketId])
 }
 
+// ============================================================
+// Company — financial & production variables (all stored as JSONB
+// for flexibility; the game engine reads/writes them directly).
+// Legacy columns (cash, debt) kept for quick queries.
+// Engine state (active decisions, depreciation ledger, legal cases,
+// share holdings) is stored in the `engineState` JSONB field.
+// ============================================================
 model Company {
-  id       String  @id @default(cuid())
-  playerId String  @unique
-  player   Player  @relation(fields: [playerId], references: [id], onDelete: Cascade)
-  cash     Decimal @default(100000) @db.Decimal(15, 2)
-  debt     Decimal @default(0)      @db.Decimal(15, 2)
-  assets   Asset[]
+  id                    String    @id @default(cuid())
+  playerId              String    @unique
+  player                Player    @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  cash                  Decimal   @default(100000) @db.Decimal(15, 2)
+  debt                  Decimal   @default(0)      @db.Decimal(15, 2)
+  // All per-player variables are stored in a single JSONB column for atomic updates.
+  // The game engine reads this object and writes back modified values each turn.
+  variables             Json      @default("{}")
+  // Snapshot of last-turn computed results for UI display / history
+  lastTurnSnapshot      Json?     @default("{}")
+  // Full engine state: activeDecisions, depreciationLedger, legalCases, shareHoldings
+  engineState           Json      @default("{}")
+  assets                Asset[]
 
   @@index([playerId])
 }
@@ -75,20 +79,10 @@ model Asset {
   @@index([companyId])
 }
 
-model Lawsuit {
-  id          String   @id @default(cuid())
-  plaintiffId String
-  plaintiff   Player   @relation("FiledLawsuit", fields: [plaintiffId], references: [id], onDelete: Cascade)
-  defendantId String
-  defendant   Player   @relation("ReceivedLawsuit", fields: [defendantId], references: [id], onDelete: Cascade)
-  claimAmount Decimal  @db.Decimal(15, 2)
-  grounds     String
-  resolved    Boolean  @default(false)
-  verdict     Verdict?
-  resolution  String?  @default("")
-  createdAt   DateTime @default(now())
-
-  @@index([plaintiffId, resolved])
-  @@index([defendantId, resolved])
-  @@index([resolved])
-}
+// ============================================================
+// NOTE: All engine state (active decisions, depreciation ledger,
+// legal cases, share holdings) is stored as JSONB in the
+// Company.engineState field. Separate tables are not needed
+// because the game engine reads/writes the entire state atomically
+// each turn.
+// ==============================================================

@@ -1,31 +1,27 @@
+import type { DecisionDefinition, GameSettings } from './gameTypes.js';
+
 // ============================================================
 // Room & Phase Types
 // ============================================================
 
 export enum RoomStatus {
   WAITING = 'WAITING',
-  STRATEGY = 'STRATEGY',
-  RESULTS = 'RESULTS',
-  LAWSUITS = 'LAWSUITS',
-  RESOLVING = 'RESOLVING',
+  /** Single interactive phase that loops until only one player remains */
+  GAME_PHASE = 'GAME_PHASE',
+  /** Final standings and winner announcement before game over */
+  AFTERMATH = 'AFTERMATH',
 }
 
 export const PHASE_ORDER: RoomStatus[] = [
   RoomStatus.WAITING,
-  RoomStatus.STRATEGY,
-  RoomStatus.RESULTS,
-  RoomStatus.LAWSUITS,
-  RoomStatus.RESOLVING,
+  RoomStatus.GAME_PHASE,
+  RoomStatus.AFTERMATH,
 ];
-
-export const RESULTS_DISPLAY_DURATION = 15;
 
 export const PHASE_TIMERS: Record<RoomStatus, number> = {
   [RoomStatus.WAITING]: 0,
-  [RoomStatus.STRATEGY]: 120,
-  [RoomStatus.RESULTS]: RESULTS_DISPLAY_DURATION,
-  [RoomStatus.LAWSUITS]: 90,
-  [RoomStatus.RESOLVING]: 90,
+  [RoomStatus.GAME_PHASE]: 120,
+  [RoomStatus.AFTERMATH]: 30,
 };
 
 export interface Room {
@@ -62,8 +58,6 @@ export interface Company {
   cash: number;
   debt: number;
   assets: Asset[];
-  lawsuitsFiled: Lawsuit[];
-  lawsuitsReceived: Lawsuit[];
 }
 
 export interface Asset {
@@ -73,28 +67,7 @@ export interface Asset {
   value: number;
 }
 
-// ============================================================
-// Lawsuit Types
-// ============================================================
-
-export enum Verdict {
-  WON = 'WON',
-  LOST = 'LOST',
-  SETTLED = 'SETTLED',
-}
-
-export interface Lawsuit {
-  id: string;
-  plaintiffId: string;
-  defendantId: string;
-  claimAmount: number;
-  grounds: string;
-  resolved: boolean;
-  verdict?: Verdict;
-  resolution?: string;
-}
-
-// ============================================================
+// ===========================================================
 // Game State (full snapshot)
 // ============================================================
 
@@ -115,11 +88,8 @@ export enum ClientEvents {
   ROOM_KICK = 'room:kick',
   ROOM_START_GAME = 'room:startGame',
   ROOM_LIST = 'room:list',
-  STRATEGY_SUBMIT = 'strategy:submit',
-  LAWSUIT_FILE = 'lawsuit:file',
-  LAWSUIT_RESPOND = 'lawsuit:respond',
-  LAWSUIT_SETTLE = 'lawsuit:settle',
   CHAT_MESSAGE = 'chat:message',
+  GAME_SUBMIT_DECISIONS = 'game:submitDecisions',
 }
 
 // Server → Client events
@@ -133,10 +103,8 @@ export enum ServerEvents {
   PHASE_CHANGED = 'phase:changed',
   TIMER_UPDATE = 'timer:update',
   BOARD_UPDATE = 'board:update',
-  STRATEGY_COLLECT = 'strategy:collect',
-  RESULTS_REVEAL = 'results:reveal',
-  LAWSUITS_OPEN = 'lawsuits:open',
-  LAWSUITS_RESOLVE = 'lawsuits:resolve',
+  GAME_DECK = 'game:deck',
+  TURN_RESOLVED = 'turn:resolved',
   PLAYER_BANKRUPT = 'player:bankrupt',
   GAME_OVER = 'game:over',
   ERROR = 'error',
@@ -152,41 +120,7 @@ export interface RoomJoinPayload {
   roomName?: string;
 }
 
-export interface StrategySubmitPayload {
-  actions: GameAction[];
-}
-
-export interface GameAction {
-  type: StrategyActionType;
-  target?: string;
-  amount?: number;
-  details?: string;
-}
-
-export enum StrategyActionType {
-  INVEST = 'INVEST',
-  EXPAND = 'EXPAND',
-  LAYOFF = 'LAYOFF',
-  MERGER = 'MERGER',
-  AD_CAMPAIGN = 'AD_CAMPAIGN',
-  RESEARCH_AND_DEVELOPMENT = 'RD',
-  OUTSOURCE = 'OUTSOURCE',
-  ACQUISITION = 'ACQUISITION',
-}
-
-export interface LawsuitFilePayload {
-  defendantId: string;
-  claimAmount: number;
-  grounds: string;
-}
-
-export interface LawsuitRespondPayload {
-  lawsuitId: string;
-  defense: string;
-  settlementOffer?: number;
-}
-
-// ============================================================
+// ===========================================================
 // Response Types
 // ============================================================
 
@@ -202,6 +136,12 @@ export interface PhaseChangedResponse {
   timeLimit: number;
 }
 
+/** The 45-decision library + per-turn limits, sent once when GAME_PHASE starts. */
+export interface GameDeckResponse {
+  decisions: DecisionDefinition[];
+  gameSettings: GameSettings;
+}
+
 export interface RoomInfo {
   id: string;
   status: RoomStatus;
@@ -214,22 +154,7 @@ export interface RoomsListedResponse {
   rooms: RoomInfo[];
 }
 
-export interface ResultsRevealResponse {
-  outcomes: PhaseOutcome[];
-}
 
-export interface PhaseOutcome {
-  playerId: string;
-  playerName: string;
-  changes: PhaseChange[];
-}
-
-export interface PhaseChange {
-  type: string;
-  description: string;
-  cashDelta: number;
-  assetDelta?: number;
-}
 
 export interface GameOverResponse {
   winner: Player;
@@ -266,19 +191,31 @@ export const MAX_PLAYERS = 4;
 export type SocketId = string;
 
 // ============================================================
+// Game Engine Types (calculation engine, decision system, etc.)
+// ============================================================
+
+export * from './gameTypes.js';
+
+// ============================================================
+// Turn Result Types — re-exported for convenience
+// ============================================================
+
+export type { PlayerTurnResult, TurnResolutionResult } from './gameTypes.js';
+
+// ============================================================
 // Room State (in-memory, for game engine)
 // ============================================================
 
 export interface RoomState {
   room: Room;
   players: Map<string, Player>;
-  submissions: Map<string, StrategySubmitPayload>;
   timer: ReturnType<typeof setInterval> | null;
   timerValue: number;
 }
+
 
 export type Nullable<T> = T | null;
 
 export type DeepPartial<T> = {
   [P in keyof T]?: T[P] extends object ? DeepPartial<T[P]> : T[P];
-};
+}

@@ -1,0 +1,98 @@
+{
+  "gameSettings": {
+    "minPlayers": 2,
+    "maxPlayers": 4,
+    "turnDurationSeconds": 120,
+    "maxLawsuitsPerPlayerPerTurn": 3,
+    "maxStrategicDecisionsPerTurn": 1,
+    "maxOperationalDecisionsPerTurn": 2,
+    "totalMarketVolumeTonnesPerYear": 10000,
+    "marketFixed": true
+  },
+
+  "playerStartingValues": {
+    "_comment_finance": "Ryhma A - Talous",
+    "cash": 100000,
+    "assets": 1000000,
+    "intangibleAssets": 100000,
+    "debt": 0,
+    "reserves": 0,
+    "operatingExpenses": 20000,
+    "staffCost": 10000,
+    "materialCostPerTon": 500,
+    "otherIncome": 0,
+
+    "_comment_production": "Ryhma B - Tuotanto/operaatiot",
+    "price": 700,
+    "capacityUtilization": 1.0,
+    "processingLevel": 0.5,
+    "energyIntensity": 50,
+    "moistureContent": 0.3,
+    "nutrientConsistency": 0.3,
+    "supplySecurity": 0.5,
+    "logisticsCostPerTon": 50,
+    "processLoss": 0.1,
+    "installedCapacity": 350,
+
+    "_comment_shares": "Ryhma C - Osakkeet",
+    "totalSharesOutstanding": 10000,
+    "shareOwnership": { "self": 1.0 },
+
+    "_comment_reputation_risk": "Ryhma D - pisteskaala, kaikki alkavat nollasta",
+    "outrage": 0,
+    "scrutiny": 0,
+    "breakdowns": 0,
+    "contaminationRisk": 0,
+    "odorComplaints": 0,
+    "tokenLiability": 0,
+    "carbonFootprint": 0,
+    "stockVolume": 0,
+    "demand": 0,
+
+    "_comment_derived": "Nama LASKETAAN, ei syoteta suoraan - ks. formulas-osio",
+    "equity": "derived",
+    "revenue": "derived",
+    "volume": "derived",
+    "receivables": "derived",
+    "financeCost": "derived",
+    "taxCost": "derived",
+    "depreciation": "derived (asset ledger)",
+    "stockValue": "derived"
+  },
+
+  "adminVariables": {
+    "competitiveness": {
+      "competitivenessWeight_quality_wq": 0.3,
+      "competitivenessWeight_supply_ws": 0.2,
+      "competitivenessWeight_loss_wl": 0.2,
+      "competitivenessWeight_demand_wd": 0.3,
+      "outrageDemandWeight": 0.5,
+      "_comment": "demand ja outrage ovat pisteskaalalla (~-60..+60), jaetaan 100:lla kaavassa ennen painotusta"
+    },
+    "legalProcess": {
+      "semaphoreGreenMax": 0.15,
+      "semaphoreYellowMax": 0.40,
+      "scrutinyLegalRiskMultiplier": 0.3,
+      "legalExposureRatioCap": 0.8,
+      "buySharesLegalRiskThresholdPercent": 0.05
+    },
+    "riskGauge": {
+      "riskWeightLegalExposure_w1": 0.5,
+      "riskWeightScrutiny_w2": 0.25,
+      "riskWeightOutrage_w3": 0.25
+    },
+    "ownership": {
+      "takeoverThresholdPercent": 0.5
+    },
+    "finance": {
+      "baseFinanceCost": 5000,
+      "interestRate": 0.05,
+      "taxRate": 0.20,
+      "daysSalesOutstanding_DSO": 45
+    },
+    "depreciation": {
+      "assetUsefulLifeYears": 10,
+      "intangibleUsefulLifeYears": 5
+    }
+  }
+}

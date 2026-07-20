@@ -29,10 +29,13 @@ test.describe('Matchmaking Page', () => {
     await expect(nameInput).toHaveValue('TestPlayer');
   });
 
-  test('should have a room name input field', async ({ page }) => {
-    await page.goto('/');
-    const roomNameInput = page.getByLabel('Room Name (host\'s name)');
-    await expect(roomNameInput).toBeVisible();
+  test('should show a room code input field when opened via an invite link', async ({ page }) => {
+    // The "Join a Room" section (with its "Room Code" field) only renders when the
+    // page is opened via an invite link (?room=<id>) — see Matchmaking.tsx.
+    await page.goto('/?room=test-room-code');
+    const roomCodeInput = page.getByLabel('Room Code');
+    await expect(roomCodeInput).toBeVisible();
+    await expect(roomCodeInput).toHaveValue('test-room-code');
   });
 
   test('should have quick play button', async ({ page }) => {
@@ -45,8 +48,8 @@ test.describe('Matchmaking Page', () => {
     await expect(page.getByRole('button', { name: /Create New Room/i })).toBeVisible();
   });
 
-  test('should have join room button', async ({ page }) => {
-    await page.goto('/');
+  test('should have join room button when opened via an invite link', async ({ page }) => {
+    await page.goto('/?room=test-room-code');
     await expect(page.getByRole('button', { name: /Join Room/i })).toBeVisible();
   });
 
@@ -58,7 +61,7 @@ test.describe('Matchmaking Page', () => {
   });
 
   test('should not join room without name and room name', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/?room=test-room-code');
     const joinButton = page.getByRole('button', { name: /Join Room/i });
     await expect(joinButton).toBeDisabled();
   });
@@ -78,12 +81,13 @@ test.describe('Matchmaking Page', () => {
     await expect(page.getByText('Room Lobby')).toBeVisible();
   });
 
-  test('should show ready button in lobby', async ({ page }) => {
+  test('should show start game button for the host in lobby', async ({ page }) => {
+    // Matchmaking.tsx has no "ready up" step — the host starts the game directly.
     await page.goto('/');
-    await page.getByLabel('Your Name').fill('ReadyPlayer');
+    await page.getByLabel('Your Name').fill('HostPlayer');
     await page.getByRole('button', { name: /Create New Room/i }).click();
 
-    await expect(page.getByRole('button', { name: /Ready Up/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Start Game/i })).toBeVisible();
   });
 
   test('should show player list in lobby', async ({ page }) => {
@@ -105,9 +109,9 @@ test.describe('Matchmaking Page', () => {
     await expect(page.getByText('Create a Room')).toBeVisible();
   });
 
-  test('should show join room section', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.getByText('Join a Room')).toBeVisible();
+  test('should show join room section when opened via an invite link', async ({ page }) => {
+    await page.goto('/?room=test-room-code');
+    await expect(page.getByRole('heading', { name: 'Join a Room' })).toBeVisible();
   });
 
   test('should show loading overlay when searching for room', async ({ page }) => {

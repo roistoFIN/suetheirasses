@@ -11,7 +11,7 @@ const Timer: React.FC = () => {
   }, [timer]);
 
   useEffect(() => {
-    if (currentPhase === null || currentPhase === 'RESULTS' || timeLeft <= 0) return;
+    if (currentPhase === null || timeLeft <= 0) return;
 
     const interval = setInterval(() => {
       setTimeLeft((prev) => {
@@ -24,7 +24,7 @@ const Timer: React.FC = () => {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [currentPhase, timeLeft]);
+  }, [timeLeft]);
 
   if (currentPhase === null || currentPhase === 'WAITING') return null;
 

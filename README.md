@@ -1,46 +1,44 @@
 # ⚖️ Sue Their Asses
 
-A multiplayer web-based business strategy game where players manage companies, make strategic decisions, engage in litigation, and eliminate opponents through bankruptcy.
+A multiplayer web-based business strategy game where players manage companies and eliminate opponents through bankruptcy.
 
 ## 🎮 Game Overview
 
 ### Game Flow
 
-The game progresses through 5 phases in a continuous loop until only one player remains solvent:
+The game progresses through a continuous loop until only one player remains:
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                                                                 │
-│  Phase 1 ──▶ Phase 2 ──▶ Phase 3 ──▶ Phase 4 ──▶ Phase 5     │
-│  Matchmaking   Strategy    Results    Legal Suits   Resolution  │
-│   (Lobby)      Choices              (Offense)     (Defense)     │
-│       ▲                                          │              │
-│       │                                          ▼              │
-│       └──────────────────────── Bankruptcy Check ───────────────┘
-│                                              │
-│                                    ┌─────────┴──────────┐
-│                                    │                    │
-│                              1 player                 >1 players
-│                              remains                   │
-│                                    │                    │
-│                                    ▼                    │
-│                               GAME OVER              Loop to
-│                              (Winner!)              Phase 2
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────┐
+│                                                                     │
+│  Matchmaking ──▶ Game Loop round (120s) ──▶ resolveGameTurn        │
+│   (Lobby)         submit decisions          bankruptcy check runs  │
+│       ▲            (all players at once)    every round, inline    │
+│       │                                              │             │
+│       │                              ┌───────────────┴──────┐      │
+│       │                        >1 player still active  1 player   │
+│       │                              │                left        │
+│       │                              ▼                   │        │
+│       └───────────── loop back into another Game Loop round        │
+│                                                           ▼        │
+│                                                     GAME OVER       │
+│                                                    (Aftermath)      │
+│                                                                     │
+└───────────────────────────────────────────────────────────────────┘
 ```
 
 ### Phase Details
 
 | Phase | Name | Description | Timer |
 |-------|------|-------------|-------|
-| 1 | **Matchmaking** | Players join/create rooms, ready up, or use Quick Play | No timer |
-| 2 | **Strategic Choices** | Players submit business decisions (invest, expand, layoff, etc.) | 120s |
-| 3 | **Results** | Server resolves outcomes, applies financial changes | 15s |
-| 4 | **Legal Suits** | Players file lawsuits against opponents | 90s |
-| 5 | **Resolution** | Defendants respond to lawsuits, verdicts are determined | 90s |
+| 1 | **Matchmaking** | Players join/create rooms, or use Quick Play | No timer |
+| 2 | **Game Loop** | Repeats every round: players submit decisions, server resolves outcomes (P&L, market share, legal risk, bankruptcy check) and broadcasts `turn:resolved` | 120s per round |
+| 3 | **Aftermath** | Terminal state — reached the instant only one player remains. Shows the winner and final standings; the game does not return to the Game Loop from here. | 30s |
 
-After Phase 5, bankrupt players (cash ≤ $0 or debt > $10,000) are eliminated. If only one player remains, the game ends. Otherwise, the loop returns to Phase 2.
+Bankruptcy is checked as part of every single Game Loop round, not in a separate pass: a
+player is eliminated the instant their cash goes below $0 on any turn (FORMULAS §12). The
+loop continues — incrementing the round and resolving again every 120s — until only one
+player remains, at which point the room moves to Aftermath and the game ends.
 
 ### Invite Link Feature
 
@@ -97,8 +95,8 @@ The room list is dynamically updated via the `rooms:list` server event, showing:
               │   PRISMA ORM        │────▶│   PostgreSQL     │
               │                     │     │   (Game State,   │
               │  • Game State       │     │    Players,       │
-              │  • Player Data      │     │    Actions,       │
-              │  • Action Log       │     │    Lawsuits)      │
+              │  • Player Data      │     │    Companies,     │
+              │  • Asset Records    │     │    Actions,       │
               └──────────┬──────────┘     └──────────────────┘
                          │
 ```
@@ -129,15 +127,12 @@ suetheirasses/
 │   │   ├── components/              # Reusable UI components
 │   │   │   ├── Timer.tsx            # Phase countdown timer
 │   │   │   └── ...
-│   │   ├── pages/                   # Phase-specific pages
-│   │   │   ├── Matchmaking.tsx      # Phase 1: Room lobby
-│   │   │   ├── Strategy.tsx         # Phase 2: Submit choices
-│   │   │   ├── Results.tsx          # Phase 3: View outcomes
-│   │   │   ├── Lawsuits.tsx         # Phase 4: File lawsuits
-│   │   │   ├── Resolution.tsx       # Phase 5: Respond to suits
-│   │   │   └── GameOver.tsx         # Winner screen
+│   │   ├── pages/                   # Page components
+│   │   │   ├── Matchmaking.tsx      # Lobby: create/join/quick-play, invite links
+│   │   │   ├── GamePhase.tsx        # The GAME_PHASE loop UI (KPIs, decisions, lawsuits)
+│   │   │   └── GameOver.tsx         # AFTERMATH: winner + final standings
 │   │   ├── stores/                  # Zustand state stores
-│   │   │   ├── gameStore.ts         # Game state (room, phase, timer)
+│   │   │   ├── gameStore.ts         # Game state (room, phase, timer, turn results)
 │   │   │   └── socketStore.ts       # Socket.IO connection & events
 │   │   ├── App.tsx                  # Root component + routing
 │   │   └── main.tsx                 # Entry point
@@ -153,16 +148,15 @@ suetheirasses/
 ├── server/                          # Node.js backend application
 │   ├── src/
 │   │   ├── socket/                  # Socket.IO handlers
-│   │   │   ├── gameEngine.ts        # Main game engine + event routing
-│   │   │   └── phases/              # Phase-specific handlers
-│   │   │       ├── strategyPhase.ts # Phase 2 resolution
-│   │   │       ├── resultsPhase.ts  # Phase 3 display
-│   │   │       ├── lawsuitsPhase.ts # Phase 4 filing
-│   │   │       └── resolutionPhase.ts # Phase 5 resolution
-│   │   ├── services/                # Business logic
-│   │   │   ├── companyService.ts    # Company strategy execution
-│   │   │   ├── lawsuitService.ts    # Lawsuit resolution logic
-│   │   │   └── bankruptcyService.ts # Bankruptcy detection
+│   │   │   └── gameEngine.ts        # Room/phase lifecycle + GameLoop orchestration
+│   │   ├── engine/                  # Turn-resolution engine (FORMULAS.md, see below)
+│   │   │   ├── gameLoop.ts          # Orchestrates one full turn, per-room
+│   │   │   ├── calcEngine.ts        # P&L, balance sheet, market share, risk gauge
+│   │   │   ├── decisionEngine.ts    # Decision deployment, maturity, exclusions
+│   │   │   └── legalEngine.ts       # Deliberate lawsuit filing (see Lawsuits below)
+│   │   ├── data/                    # Runtime copies of the game's source-of-truth data
+│   │   │   ├── game_engine.json     # 45 decisions: impacts, legal risks, exclusions
+│   │   │   └── game_config.json     # Starting values + admin-tunable variables
 │   │   ├── validation/              # Zod schemas
 │   │   │   └── schemas.ts           # All input validation
 │   │   └── index.ts                 # Server entry point
@@ -177,24 +171,29 @@ suetheirasses/
 │
 ├── shared/                          # Shared types between client/server
 │   ├── src/
-│   │   └── index.ts                 # All game types, enums, payloads
+│   │   ├── index.ts                 # Room/player/socket-event types, enums, payloads
+│   │   └── gameTypes.ts             # Engine types: DecisionDefinition, PlayerVariables,
+│   │                                 # LegalCaseData, TurnResolutionResult, GameConfig
 │   ├── tsconfig.json
 │   └── package.json
 │
+├── definitionDocumentation/         # Source of truth for game design — never derive
+│   ├── FORMULAS.md                  # every formula + the per-turn calculation order
+│   ├── game_engine.json             # canonical copy of the 45-decision library
+│   ├── game_config.json             # canonical copy of starting/admin values
+│   └── WarRoomDashboard.jsx         # UI prototype (layout/interaction reference only)
+│
 ├── tests/                           # Integration & E2E Tests
-│   ├── api/                         # Supertest API tests
+│   ├── api/                         # Vitest interface tests (DB via testcontainers)
 │   │   ├── health.test.ts
-│   │   ├── room.test.ts
-│   │   ├── socket.test.ts
-│   │   └── validation.test.ts
+│   │   ├── room.test.ts             # Room/Player/Company CRUD, incl. engineState/variables
+│   │   ├── socket.test.ts           # Socket.IO event contracts (incl. game:submitDecisions,
+│   │   │                            # turn:resolved, game:over)
+│   │   └── validation.test.ts       # Zod schema contracts
 │   ├── e2e/                         # Playwright E2E tests
-│   │   ├── matchmaking.spec.ts
-│   │   ├── strategyPhase.spec.ts
-│   │   ├── resultsPhase.spec.ts
-│   │   ├── lawsuitsPhase.spec.ts
-│   │   ├── resolutionPhase.spec.ts
-│   │   ├── gameOver.spec.ts
-│   │   └── navigation.spec.ts
+│   │   ├── matchmaking.spec.ts      # Lobby: create/join/quick-play/invite-link flows
+│   │   ├── gamePhase.spec.ts        # Starting a game reaches GAME_PHASE cleanly
+│   │   └── gameOver.spec.ts         # AFTERMATH page's no-data behavior
 │   ├── playwright.config.ts
 │   ├── vitest.config.ts
 │   └── test-setup.ts
@@ -225,22 +224,9 @@ suetheirasses/
 │ createdAt│       │ socketId │       └────┬─────┘
 └──────────┘       │ bankrupt │            │
                    │ createdAt│            │
-                   │          │            │
                    │          │ 1    *  ┌──▼────┐
                    │          │       │  │ Asset │
                    │          │       │  └───────┘
-                   │          │
-                   │ 1    *  ┌──────────┐ 1  *
-                   └────────▶│  Lawsuit │◀──────┘
-                               ├──────────┤
-                               │ id       │
-                               │ plaintiff│
-                               │ defendant│
-                               │ claim    │
-                               │ grounds  │
-                               │ resolved │
-                               │ verdict  │
-                               │ createdAt│
 ```
 
 ### Database Schema (Prisma)
@@ -269,20 +255,27 @@ model Player {
   createdAt    DateTime   @default(now())
   companyId    String?    @unique
   company      Company?
-  lawsuitsFiled    Lawsuit[] @relation("FiledLawsuit")
-  lawsuitsReceived Lawsuit[] @relation("ReceivedLawsuit")
 
   @@index([roomId])
   @@index([roomId, bankrupt])
 }
 
+// All per-player game-engine state lives in JSONB columns so GameLoop can read/write
+// it atomically each turn without a schema migration per new field. `cash`/`debt` stay
+// as typed columns too, for quick queries (e.g. bankruptcy checks, standings).
 model Company {
-  id       String  @id @default(cuid())
-  playerId String  @unique
-  player   Player  @relation(fields: [playerId], references: [id], onDelete: Cascade)
-  cash     Decimal @default(100000) @db.Decimal(15, 2)
-  debt     Decimal @default(0)      @db.Decimal(15, 2)
-  assets   Asset[]
+  id                String  @id @default(cuid())
+  playerId          String  @unique
+  player            Player  @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  cash              Decimal @default(100000) @db.Decimal(15, 2)
+  debt              Decimal @default(0)      @db.Decimal(15, 2)
+  // Full PlayerVariables (cash, assets, price, outrage, scrutiny, ...) — FORMULAS.md
+  variables         Json    @default("{}")
+  // Snapshot of last turn's computed results, for UI display/history
+  lastTurnSnapshot  Json?   @default("{}")
+  // activeDecisions, depreciationLedger, legalCases (GameLoop's CompanyEngineState)
+  engineState       Json    @default("{}")
+  assets            Asset[]
 
   @@index([playerId])
 }
@@ -295,24 +288,6 @@ model Asset {
   value     Decimal  @db.Decimal(15, 2)
 
   @@index([companyId])
-}
-
-model Lawsuit {
-  id          String   @id @default(cuid())
-  plaintiffId String
-  plaintiff   Player   @relation("FiledLawsuit", fields: [plaintiffId], references: [id], onDelete: Cascade)
-  defendantId String
-  defendant   Player   @relation("ReceivedLawsuit", fields: [defendantId], references: [id], onDelete: Cascade)
-  claimAmount Decimal  @db.Decimal(15, 2)
-  grounds     String
-  resolved    Boolean  @default(false)
-  verdict     Verdict?
-  resolution  String?  @default("")
-  createdAt   DateTime @default(now())
-
-  @@index([plaintiffId, resolved])
-  @@index([defendantId, resolved])
-  @@index([resolved])
 }
 ```
 
@@ -328,9 +303,10 @@ model Lawsuit {
 |-------|---------|-------------|
 | `room:join` | `{ playerName, roomName?, searchForRoom? }` | Join a specific room by ID (`roomName`), create one (no params), or search for an available room (`searchForRoom: true`). When joining via invite link, `roomName` contains the UUID v4 room code from the URL query param. |
 | `room:list` | — | Request list of available rooms |
-| `strategy:submit` | `{ actions: GameAction[] }` | Submit strategic choices |
-| `lawsuit:file` | `{ defendantId, claimAmount, grounds }` | File a lawsuit |
-| `lawsuit:respond` | `{ lawsuitId, defense, settlementOffer? }` | Respond to a lawsuit |
+| `room:kick` | `{ playerId }` | Host removes a player from the room |
+| `room:startGame` | — | Host starts the game (WAITING → GAME_PHASE, round 1) |
+| `game:submitDecisions` | `{ strategic: DecisionEntry[], operational: DecisionEntry[], lawsuits: LawsuitEntry[] }` | Full replacement of this turn's pending decisions (`{ name, targetId? }` each) *and* deliberate lawsuit filings (`{ targetId, decisionName, groundName }` each — see *Lawsuits* below). Structural validation only — per-turn limits (max 1 strategic / 2 operational / 3 lawsuits) come from `game_config.json` and are enforced by `DecisionEngine.canDeploy` / `GameLoop`'s lawsuit-filing step. |
+| `chat:message` | `{ message }` | Send a chat message to the room |
 
 #### Server → Client
 
@@ -340,14 +316,13 @@ model Lawsuit {
 | `room:playerJoined` | `{ playerId, playerName, isHost, roomId }` | New player joined the room |
 | `room:playerKicked` | `{ kickedPlayerId, kickedPlayerName }` | Player was kicked from room |
 | `rooms:list` | `{ rooms: RoomInfo[] }` | List of available rooms (Quick Play) |
-| `phase:changed` | `{ phase, round, timeLimit }` | Game advanced to new phase |
+| `phase:changed` | `{ phase, round, timeLimit }` | Room advanced phase, or looped into another GAME_PHASE round |
 | `timer:update` | `{ timeLeft }` | Countdown tick |
-| `results:reveal` | `{ outcomes }` | Phase 3 outcomes |
-| `lawsuits:open` | — | Phase 4: filing window open |
-| `lawsuits:resolve` | — | Phase 5: resolution window open |
-| `player:bankrupt` | `{ playerId, playerName }` | Player eliminated |
-| `game:over` | `{ winner, standings }` | Game ended |
-| `error` | `{ code, message }` | Error occurred |
+| `game:deck` | `{ decisions: DecisionDefinition[], gameSettings: GameSettings }` | Sent once, right when GAME_PHASE starts — the full 45-decision library and per-turn limits, static for the whole game |
+| `turn:resolved` | `TurnResolutionResult` (`{ round, players: PlayerTurnResult[], gameOver, winnerId? }`) | Sent twice per round-1: once immediately when the game starts (starting-position preview, `GameLoop.getInitialSnapshot`), and again whenever a GAME_PHASE turn actually finishes resolving (`GameLoop.resolveTurn`) — full per-player state either way |
+| `player:bankrupt` | `{ playerId, playerName }` | Player's cash went below $0 this turn — eliminated immediately (FORMULAS §12) |
+| `game:over` | `{ winner, finalStandings }` | Only one player remains; room moved to AFTERMATH |
+| `error` | `{ code, message }` | Error occurred (e.g. `NOT_HOST`, `INVALID_DECISIONS`) |
 
 ### API Type Definitions
 
@@ -381,14 +356,17 @@ Manages all game-related state including room state, player data, phase tracking
 
 | Method | Description |
 |--------|-------------|
+| `updateRoom(room)` | Replace the current room state |
 | `updatePlayer(player)` | Replace the current player object with updated DB-generated ID |
-| `updatePlayerReady(data)` | Update a player's ready state from server event |
+| `kickPlayer(playerId)` | Remove a player from the room |
 | `addPlayer(player)` | Add a new player to the room when they join dynamically |
 | `markPlayerBankrupt(playerId)` | Mark a player as bankrupt and remove them from active play |
 | `updatePhase(data)` | Update the current game phase, round, and timer |
-| `updateBoard(data)` | Apply full board state update from server |
-| `submitStrategy(actions)` | Store submitted strategy actions locally |
-| `clearGame()` | Reset all game state (used on disconnect/reconnect) |
+| `updateTimer(timeLeft)` | Update the countdown timer value |
+| `setGameOver(data)` | Set game over state with winner and standings |
+| `setError(error)` | Set error state |
+| `setNotification(message)` | Set UI notification message |
+| `setCompanies(companies)` | Update company data for all players |
 
 #### `socketStore.ts`
 
@@ -402,9 +380,10 @@ Manages the Socket.IO connection and event routing:
 
 **Key event handlers:**
 - `room:playerJoined` → Calls `gameStore.addPlayer()` with deduplication guard
-- `room:playerReady` → Calls `gameStore.updatePlayerReady()`
 - `phase:changed` → Calls `gameStore.updatePhase()`
-- `board:update` → Calls `gameStore.updateBoard()`
+- `timer:update` → Calls `gameStore.updateTimer()`
+- `game:over` → Calls `gameStore.setGameOver()`
+- `error` → Calls `gameStore.setError()`
 
 ---
 
@@ -533,42 +512,90 @@ VITE_SERVER_URL=http://localhost:3001
 
 ## 🎯 Game Mechanics
 
-### Strategic Actions (Phase 2)
+Full detail lives in `definitionDocumentation/FORMULAS.md` (every formula and the exact
+per-turn calculation order) and `definitionDocumentation/game_engine.json` (the 45
+decisions). This section is a summary of what the server's `engine/` actually does.
 
-| Action | Cost | Effect |
-|--------|------|--------|
-| 💰 Invest | Variable | Deploy capital into new ventures |
-| 🏗️ Expand | Variable | Grow operations, increase overhead |
-| 👥 Layoffs | Savings | Reduce costs, risk reputation |
-| 🤝 Merger | Variable | Combine with another company |
-| 📢 Ad Campaign | Variable | Boost revenue potential |
-| 🔬 R&D | Variable | Invest in innovation |
-| 🌍 Outsource | Savings | Cut costs, risk quality |
-| 🏢 Acquisition | Variable | Buy out a competitor |
+### Business Decisions (Game Loop)
 
-### Lawsuit System (Phases 4-5)
+The instant the host starts the game, every player lands straight in the game room
+showing their real starting position (cash, equity, revenue, stock value) — `GameLoop`
+computes this via `getInitialSnapshot`, the same formula pipeline as a real turn but with
+zero decisions applied and nothing persisted, so there's no blank "waiting" screen for
+the first round's timer.
 
-1. **Filing (Phase 4)**: Players file lawsuits against opponents
-   - Filing fee: $1,000
-   - Claim amount: $1,000 - $1,000,000
-   - Grounds: Minimum 10 characters required
+The client renders the actual Decision Deck from `game:deck` — filterable by level
+(Strategic/Operational) and nature (Traditional/Grey Area/Dirty), one card per decision
+with its description, an **EFFECTS** panel, and a DEPLOY button. The effects panel
+answers "what does this do, when does it start, how long does it last": a maturity
+badge (`INSTANT` or `MATURES IN Nt`, from the max explicit year key across the
+decision's impact schedules, FORMULAS §9) plus a per-field timeline like
+`Yr 1: -$100,000 → Yr 2: -$100,000 → Ongoing: +40%`, built client-side from the raw
+`impacts` schedules (no server round-trip). `target.*` fields are labeled `Target's …`
+to make clear they hit the chosen opponent, not the decision-maker. Clicking DEPLOY
+(target picker first, for `requiresTarget` decisions like Buy Shares) queues it locally
+and re-sends the player's full pending selection via `game:submitDecisions` on every
+change — the server treats each submission as a full replacement, not an increment. The
+deck mirrors `DecisionEngine.canDeploy`'s exclusion rules client-side (same decision
+maturing, forward/reverse `excludes`) so a card is visibly greyed out with a reason
+rather than letting a player queue a move the server would reject.
 
-2. **Resolution (Phase 5)**: Defendants respond
-   - Defense statement: Minimum 10 characters
-   - Settlement offer: Optional, reduces penalty if accepted
+Each 120s GAME_PHASE round, every player submits up to 1 strategic + 2 operational
+decision from a shared library of 45 decisions — spanning `Traditional`, `Grey Area`,
+and `Dirty` in nature. When the timer expires, `GameLoop` resolves the turn for all
+players simultaneously:
 
-3. **Verdicts**:
-   - **WON**: Defendant pays claim amount to plaintiff
-   - **LOST**: Case dismissed, plaintiff loses filing fee
-   - **SETTLED**: Parties agree on reduced amount
+1. Apply active decisions' impacts (additive relative stacking across matured instances)
+2. Depreciation ledger (genuine asset purchases only)
+3. Competitiveness & market share (zero-sum across all players)
+4. Volume, capped by installed capacity
+5. P&L (revenue, COGS, EBITDA, tax, net profit)
+6. Lawsuits filed this turn resolve (or await trial) — see *Lawsuits* below
+7. Balance sheet & cash flow (one unified formula, FORMULAS §5)
+8. Bankruptcy check
+9. Global Risk Gauge
 
-### Bankruptcy (After Phase 5)
+Results broadcast via `turn:resolved`. `legalExposure` from open cases lowers a player's
+own stock value and increases how likely every case against them is to succeed — a
+deliberate snowball effect that punishes concentrated risk-taking (FORMULAS §6, §13).
 
-A player is declared bankrupt when:
-- Cash balance drops to $0 or below, OR
-- Debt exceeds $10,000
+### Lawsuits — deliberate filing, not automatic
 
-Bankrupt players are eliminated immediately. The game continues until only one player remains.
+> **Deviation from FORMULAS.md by explicit product decision:** the spec's literal design
+> (§6/§13) has *every* decision with `legalRisks` automatically generate a case against
+> the decision-maker from *every other player* the instant it's deployed. That's been
+> replaced with deliberate filing — a case only exists if a player actively chooses to
+> sue over it. If you want to restore the spec-literal automatic behavior, see
+> `GameLoop`'s Step 8 and `LegalEngine.fileLawsuit`.
+
+There is no fixed catalog of lawsuit grounds. `SueModal` derives the grounds you can sue
+a given target over live, from that target's *actual* `activeDecisions` cross-referenced
+against `game:deck`'s `legalRisks` — you can only cite something the target really did.
+Filing queues `{ targetId, decisionName, groundName }` into the same pending state as
+deployed decisions (up to `gameSettings.maxLawsuitsPerPlayerPerTurn`, 3 by default) and
+submits it via `game:submitDecisions`. At turn resolution, `LegalEngine.fileLawsuit`
+re-validates that the target still has that decision active, then prices the case using
+`getScheduleValue` against the legal risk's `probability` schedule at the target
+decision's `elapsedYears` — the longer a risky decision has been live, the higher the
+probability tier, exactly like a normal impact schedule (FORMULAS §6, §9).
+
+> **Known gap:** `target.*` impact fields (FORMULAS §0 — the 9 fields like `target.cash`,
+> `target.outrage` that route a decision's effect to the chosen target rather than the
+> decision-maker, used by Buy Shares/Sell Shares and the offensive-sabotage decisions)
+> are extracted and stored (`calcEngine.extractTargetImpacts`/`applyTargetImpacts`,
+> `DecisionEngine.getTargetImpacts`) but never actually applied to the target player in
+> `GameLoop.resolveTurn` — deploying a targeted decision currently only applies its
+> self-effects. The Decision Deck UI lets players pick a target and submits `targetId`
+> correctly; the server-side application is the missing piece.
+
+### Bankruptcy & Game Over (Aftermath)
+
+A player is eliminated the instant their cash goes below $0 on any turn — strictly
+`cash < 0`, no debt-based rule. When a player falls, their still-unresolved lawsuits
+(as both plaintiff and defendant) lapse; cases against them are paid out from a pool of
+that turn's positive income-side cash flow, oldest filing first, until the pool runs out
+(FORMULAS §16). The game continues, looping GAME_PHASE rounds, until only one player
+remains — there is no fixed round limit and no score-based win condition.
 
 ---
 
@@ -581,37 +608,65 @@ All client inputs are validated server-side using Zod schemas before processing:
 | Schema | Field | Constraints |
 |--------|-------|-------------|
 | `roomJoinSchema` | `playerName` | Required, 1-30 characters |
-| | `roomName` | Optional, max 30 characters |
+| | `roomName` | Optional, max 40 characters (covers UUID v4 invite-link codes, 36 chars) |
 | | `searchForRoom` | Optional boolean — triggers Quick Play search |
-| `strategySubmitSchema` | `actions` | Array of 1-5 `GameAction` objects |
-| `gameActionSchema` | `type` | Must be a valid `StrategyActionType` enum |
-| | `amount` | Optional, must be ≥ 0 |
-| `lawsuitFileSchema` | `defendantId` | Required, non-empty string |
-| | `claimAmount` | $1,000 - $1,000,000 |
-| | `grounds` | 10-500 characters |
-| `lawsuitRespondSchema` | `lawsuitId` | Required, non-empty string |
+| `chatMessageSchema` | `message` | Required, 1-500 characters |
+| `submitDecisionsSchema` | `strategic`, `operational` | Arrays of `{ name, targetId? }`, max 20 entries each — structural sanity only; the real per-turn limits come from `game_config.json` via `DecisionEngine.canDeploy` |
+| | `lawsuits` | Array of `{ targetId, decisionName, groundName }`, max 10 entries — structural cap only; the real limit (`maxLawsuitsPerPlayerPerTurn`, 3) and the "target actually deployed this" check happen in `LegalEngine.fileLawsuit` |
 
 ### Game Engine Architecture
 
-The `GameEngine` class (`server/src/socket/gameEngine.ts`) manages all room and phase logic:
+Two layers split room/lobby/persistence/broadcast concerns from turn-resolution math:
+
+**`GameEngine`** (`server/src/socket/gameEngine.ts`) — room and phase lifecycle, and the
+only place that touches Prisma or Socket.IO for turn resolution:
 
 | Method | Description |
 |--------|-------------|
 | `createRoom(player)` | Creates a new room with the player as founder (max 4 players) |
 | `joinRoom(roomId, player)` | Joins an existing room; throws if full |
-| `leaveRoom(socketId)` | Removes player from room; cleans up DB if room becomes empty |
-| `advancePhase(roomId)` | Advances to next phase with race condition guard |
+| `removePlayer(socketId)` | Removes player from room; cleans up DB if room becomes empty |
+| `advancePhase(roomId)` | Linear phase advance (WAITING → GAME_PHASE); race-condition guarded |
+| `resolveGameTurn(roomId)` | Loads active players from the DB, calls `GameLoop.resolveTurn` (pure), then persists the returned `companyUpdates`/`bankruptedPlayers` and broadcasts `player:bankrupt`/`turn:resolved` — then either loops into another GAME_PHASE round or, once one player remains, transitions to AFTERMATH and emits `game:over` |
+| `submitDecisions(roomId, playerId, decisions)` | Forwards a validated `game:submitDecisions` payload to `GameLoop` |
+| `broadcastInitialSnapshot(roomId, round)` | Called once, right when `room:startGame` fires — loads active players, calls `GameLoop.getInitialSnapshot` (pure), and broadcasts the result immediately so the game room renders without delay |
 | `broadcastRoomState(roomId, event, data)` | Broadcasts state to all players in a room |
+| `loadActiveCompanyPlayers(roomId)` *(private)* | Shared DB fetch (`player.findMany` with `company` included, `bankrupt: false`) feeding both `resolveGameTurn` and `broadcastInitialSnapshot` |
+
+**`GameLoop`** (`server/src/engine/gameLoop.ts`) — the authoritative turn-resolution
+engine, loaded with `game_engine.json`/`game_config.json` at startup. It is a **pure
+computation engine**: no Prisma, no Socket.IO, no I/O of any kind — it takes plain player
+data in and returns plain result data out, so it can be unit-tested and reasoned about
+without mocking a database or a socket server:
+
+| Method | Description |
+|--------|-------------|
+| `loadDecisions(definitions)` | Loads the 45-decision library into `DecisionEngine`/`LegalEngine` |
+| `submitDecisions(roomId, playerId, decisions)` | Buffers one player's choices for the in-flight turn |
+| `resolveTurn(roomId, round, players: EngineDataInput[])` | Runs the full per-turn calculation (see *Business Decisions* above) and returns a `TurnResolutionOutcome`: the `turn:resolved` broadcast payload (`result`), the `Company` rows still-active players need persisted (`companyUpdates`), and the players eliminated this turn (`bankruptedPlayers`) — it does not write to the DB or emit anything itself |
+| `getInitialSnapshot(roomId, round, players: EngineDataInput[])` | Same formula pipeline as `resolveTurn`, but with zero decisions and nothing persisted — returns the `TurnResolutionResult` preview directly; the caller broadcasts it |
+
+`GameEngine` owns the full read → compute → persist → broadcast cycle: it loads each
+active player's `Company.variables`/`engineState` from the DB into `EngineDataInput[]`,
+calls the relevant `GameLoop` method, then writes back `companyUpdates` (`Company.update`)
+and `bankruptedPlayers` (`Player.update({ bankrupt: true })`) and emits `player:bankrupt`
+and `turn:resolved` in that order — mirroring exactly the order `GameLoop` used to persist
+and broadcast internally, just performed by the caller instead.
 
 **Room Lifecycle:**
 1. Room created in database with `WAITING` status
 2. Players join via socket; room loaded into in-memory `Map`
-3. When all players ready, phase advances to `STRATEGY`
-4. After Phase 5, bankruptcy check runs; eliminated players removed
+3. Host starts the game: `WAITING` → `GAME_PHASE`, round 1, 120s timer starts, the
+   decision library broadcasts once (`game:deck`), and `broadcastInitialSnapshot`
+   immediately sends everyone their starting position — players land straight in the
+   game room with a real, deployable Decision Deck, not a blank loading screen
+4. Every time the GAME_PHASE timer expires, `resolveGameTurn` resolves the round and
+   either loops (`currentPhaseRound` + 1, new 120s timer) or ends the game (`AFTERMATH`)
 5. If room empties, both in-memory state and database record are cleaned up
 
 **Concurrency Safety:**
-- Phase advancement uses a `Set<string>` lock (`advancingRooms`) to prevent race conditions
+- Phase advancement and turn resolution share a `Set<string>` lock (`advancingRooms`) to
+  prevent two concurrent resolutions of the same room
 - Room joins handle the "TOCTOU" (time-of-check-time-of-use) gap by catching `Room is full` errors and falling back to room creation
 
 ---
@@ -625,16 +680,20 @@ npm run type-check
 # Lint all packages
 npm run lint
 
-# Run backend unit tests (Vitest)
+# Run backend unit tests (Vitest) — engine, calcEngine, decisionEngine, legalEngine,
+# gameLoop, gameEngine, validation schemas. No DB required (mocked Prisma).
 npm test --workspace=server
 
-# Run API integration tests (Supertest + Vitest)
+# Run frontend unit tests (Vitest) — Zustand stores, GamePhase utilities
+npm --workspace=client exec vitest run
+
+# Run API interface tests (Vitest + real PostgreSQL via testcontainers)
 npm run test:api
 
 # Run API tests in watch mode
 npm run test:api:watch
 
-# Run Playwright E2E tests
+# Run Playwright E2E tests (needs the client dev server + a running backend)
 npm run test:e2e
 
 # Run Playwright E2E tests in UI mode
@@ -646,6 +705,12 @@ npm run test:e2e:headed
 # Run all tests (API + E2E)
 npm run test:all
 ```
+
+> **Note**: `npm run test:api` (`tests/api/`) spins up a real, disposable PostgreSQL
+> database via testcontainers and runs `prisma migrate deploy` against it — it needs
+> Docker. It's the layer that verifies the actual Socket.IO event contracts (including
+> `game:submitDecisions`, `turn:resolved`, `game:over`) and Prisma schema, as opposed to
+> the mocked-Prisma unit tests in `server/src/**/*.test.ts`.
 
 ---
 
