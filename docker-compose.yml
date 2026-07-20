@@ -45,6 +45,9 @@ services:
       - PORT=3001
       - CLIENT_URL=http://localhost:80
       - LLM_URL=http://llm:8080
+      # Admin portal token — set ADMIN_TOKEN in your shell/root .env before deploying;
+      # defaults to unset, which disables the admin API entirely (fails closed).
+      - ADMIN_TOKEN=${ADMIN_TOKEN:-}
     ports:
       - "3001:3001"
     depends_on:

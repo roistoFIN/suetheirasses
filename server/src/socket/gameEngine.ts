@@ -19,6 +19,7 @@ import {
   type GameSettings,
   type TurnResolutionResult,
   type AnnualReportEntry,
+  type AdminRoomSnapshot,
 } from '@suetheirasses/shared';
 import { validateRoomJoin, validateSubmitDecisions, validateDigDeeper, validateRoomRejoin, validateAnnualReportRequest } from '../validation/schemas.js';
 import { GameLoop } from '../engine/gameLoop.js';
@@ -133,6 +134,33 @@ export class GameEngine {
     const snapshot = this.gameLoop.getInitialSnapshot(roomId, round, dbPlayers);
     this.lastTurnResults.set(roomId, snapshot);
     this.io.to(roomId).emit(ServerEvents.TURN_RESOLVED, snapshot);
+  }
+
+  /**
+   * Full monitoring snapshot of every in-memory room — unlike `room:list` (Quick Play
+   * discovery, WAITING-only, non-full rooms only), this is every room in every phase
+   * with every player, for the admin portal (`GET /api/admin/rooms`). Synchronous,
+   * in-memory only — no DB round trip, since `this.rooms` is already the live state.
+   */
+  getAdminRoomsSnapshot(): AdminRoomSnapshot[] {
+    const snapshot: AdminRoomSnapshot[] = [];
+    for (const roomState of this.rooms.values()) {
+      snapshot.push({
+        id: roomState.room.id,
+        status: roomState.room.status,
+        round: roomState.room.currentPhaseRound,
+        maxPlayers: roomState.room.maxPlayers,
+        createdAt: roomState.room.createdAt.toISOString(),
+        players: Array.from(roomState.players.values()).map((p) => ({
+          id: p.id,
+          name: p.name,
+          isHost: p.isHost,
+          bankrupt: p.bankrupt,
+          connected: !!p.socketId,
+        })),
+      });
+    }
+    return snapshot;
   }
 
   /** Load every non-bankrupt player + company row GameLoop needs to resolve/preview a turn. */

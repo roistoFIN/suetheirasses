@@ -13,7 +13,6 @@ test.describe('Game Phase', () => {
     // Server broadcasts phase:changed → GAME_PHASE, then immediately broadcasts an
     // initial snapshot (starting position, no decisions applied) via turn:resolved —
     // no blank "waiting for game data" screen for the whole first round's timer.
-    await expect(page).toHaveURL(/\/game$/);
     await expect(page.getByText('GamePhasePlayer')).toBeVisible();
     await expect(page.getByText('CASH', { exact: true })).toBeVisible();
     await expect(page.getByText('EQUITY', { exact: true })).toBeVisible();

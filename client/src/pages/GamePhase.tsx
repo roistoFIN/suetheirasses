@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import type { Socket } from 'socket.io-client';
 import {
   Modal, Stack, Text, Badge, Button, Flex, TextInput,
@@ -284,8 +283,7 @@ const gpStyles = {
 
 export default function GamePhase() {
   const { socket } = useSocketStore();
-  const { player, turnResults, timer, currentPhase, updateTimer, decisions, gameSettings, isRejoining } = useGameStore();
-  const navigate = useNavigate();
+  const { player, turnResults, timer, currentPhase, updateTimer, decisions, gameSettings } = useGameStore();
   const [myData, setMyData] = useState<PlayerTurnResult | null>(null);
   const [competitors, setCompetitors] = useState<PlayerTurnResult[]>([]);
   // Previous turn's snapshot — kept only to compute the "since last turn" trend arrows
@@ -310,16 +308,6 @@ export default function GamePhase() {
     setPending(next);
     socket?.emit(ClientEvents.GAME_SUBMIT_DECISIONS, next);
   };
-
-  // Dead-end guard: landing here with a genuinely empty store (no player, and no
-  // session-resume attempt in flight) means there's nothing to render and nothing
-  // to wait for — send them back to matchmaking instead of hanging on the "Waiting
-  // for game data..." spinner below forever.
-  useEffect(() => {
-    if (!player && !isRejoining) {
-      navigate('/', { replace: true });
-    }
-  }, [player, isRejoining, navigate]);
 
   // Sync from store on turn resolution. Capture the outgoing values as "previous"
   // before overwriting, so KPI/intel trend arrows have something to compare against.

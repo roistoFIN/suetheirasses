@@ -4,6 +4,8 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
 import { setupSocketHandlers } from './socket/gameEngine.js';
+import { requireAdminToken } from './middleware/adminAuth.js';
+import gameConfigData from './data/game_config.json' with { type: 'json' };
 
 const app = express();
 const httpServer = createServer(app);
@@ -66,6 +68,16 @@ app.get('/api/room/:roomId', async (req, res) => {
 
 // Socket.IO setup
 const engine = setupSocketHandlers(io, prisma);
+
+// Admin portal REST endpoints — gated by ADMIN_TOKEN (see middleware/adminAuth.ts).
+// Read-only for now: room monitoring + the game config the server loaded at startup.
+app.get('/api/admin/rooms', requireAdminToken, (_req, res) => {
+  res.json({ rooms: engine.getAdminRoomsSnapshot() });
+});
+
+app.get('/api/admin/config', requireAdminToken, (_req, res) => {
+  res.json(gameConfigData);
+});
 
 // Graceful shutdown
 process.on('SIGINT', async () => {

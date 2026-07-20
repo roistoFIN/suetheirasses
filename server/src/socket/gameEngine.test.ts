@@ -1381,4 +1381,38 @@ describe('GameEngine', () => {
       expect(entries).toEqual([]);
     });
   });
+
+  describe('getAdminRoomsSnapshot', () => {
+    it('returns an empty array when there are no in-memory rooms', () => {
+      expect(engine.getAdminRoomsSnapshot()).toEqual([]);
+    });
+
+    it('reflects every room, in every phase, with every player — including disconnected and bankrupt ones', async () => {
+      const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(creator);
+      const joiner = { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' };
+      await engine.joinRoom(roomState.room.id, joiner);
+
+      const [aliceId, bobId] = Array.from(roomState.players.keys());
+      // Bob disconnects (kept in the room during the grace period, not removed)...
+      await engine.markPlayerDisconnected('socket-2');
+      // ...and Alice goes bankrupt (flagged in-memory the same way resolveGameTurn does).
+      roomState.players.get(aliceId)!.bankrupt = true;
+
+      const snapshot = engine.getAdminRoomsSnapshot();
+
+      expect(snapshot).toHaveLength(1);
+      const room = snapshot[0];
+      expect(room.id).toBe(roomState.room.id);
+      expect(room.status).toBe(RoomStatus.WAITING);
+      expect(room.maxPlayers).toBe(4);
+      expect(room.players).toHaveLength(2);
+
+      const alice = room.players.find((p) => p.id === aliceId)!;
+      expect(alice).toMatchObject({ name: 'Alice', isHost: true, bankrupt: true, connected: true });
+
+      const bob = room.players.find((p) => p.id === bobId)!;
+      expect(bob).toMatchObject({ name: 'Bob', isHost: false, bankrupt: false, connected: false });
+    });
+  });
 });

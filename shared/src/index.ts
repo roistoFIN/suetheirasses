@@ -180,6 +180,33 @@ export interface RoomsListedResponse {
   rooms: RoomInfo[];
 }
 
+// ============================================================
+// Admin Portal Types — REST-only (not socket events), gated by ADMIN_TOKEN
+// ============================================================
+
+export interface AdminRoomPlayerSnapshot {
+  id: string;
+  name: string;
+  isHost: boolean;
+  bankrupt: boolean;
+  /** Whether this player currently has a live socket, or is mid reconnect-grace-period. */
+  connected: boolean;
+}
+
+/** One in-memory room's full monitoring snapshot — every player, not just the requesting one. */
+export interface AdminRoomSnapshot {
+  id: string;
+  status: RoomStatus;
+  round: number;
+  maxPlayers: number;
+  createdAt: string;
+  players: AdminRoomPlayerSnapshot[];
+}
+
+export interface AdminRoomsResponse {
+  rooms: AdminRoomSnapshot[];
+}
+
 /** Response for `game:digDeeperResult` — sent only to the socket that paid for the dig. */
 export interface DigDeeperResultPayload {
   attackId: string;

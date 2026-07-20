@@ -178,6 +178,49 @@ game is fully playable with the `llm` container never started. Don't add a hard
 dependency on this service being up anywhere; if you need to gate something on it, use
 the same fallback-on-failure shape this module already has.
 
+### Client: no path-based routing for game phases — `/admin` is the one real URL
+
+`App.tsx` does **not** use react-router `<Routes>`/`<Route>` to switch between
+Matchmaking/GamePhase/GameOver. WAITING/GAME_PHASE/AFTERMATH are server-authoritative
+`currentPhase` values with no deep-link value (no room id in the path, nothing
+bookmarkable), so `App.tsx` renders the matching component directly off `currentPhase`
+in a plain `switch`, with no URL change at all — the address bar stays wherever the
+player landed (`/`, or `/?room=<id>` from an invite link) for the entire game. This
+used to be routed (`navigate('/game', {replace:true})` etc.) with the URL kept in sync
+via an effect; that layer was removed because it added indirection (a sync effect, a
+dead-end redirect in `GamePhase.tsx` for a case that can't happen without routes, a
+catch-all `Navigate`) without buying anything routing normally would — no bookmarking,
+no independent back/forward semantics, no code-splitting by route. Don't reintroduce
+phase-driven `navigate()` calls; if a phase needs to react to entering/leaving, do it
+with a plain `useEffect` on `currentPhase`, not a route change.
+
+`/admin` (`AdminPortal.tsx`) is the one genuine URL in the client — checked first in
+`App.tsx` via `window.location.pathname.startsWith('/admin')`, ahead of both the
+`isRejoining` gate and the phase switch, since it's a completely independent surface
+that has no relationship to game state at all. `react-router`'s `BrowserRouter` still
+wraps the app (kept in `main.tsx`) purely for `Matchmaking.tsx`'s `useSearchParams`
+(reads the `?room=` invite-link query param) — not for its routing.
+
+### Admin portal — env-var token, REST-only, read-only
+
+`/admin` is gated by a single shared secret (`ADMIN_TOKEN`), checked by
+`server/src/middleware/adminAuth.ts` on every `/api/admin/*` request via the
+`x-admin-token` header (constant-time compare). There's no broader auth system in this
+app (see the *Reconnection & Session Resume* trust model — player identity is just an
+unauthenticated id pair), so this is deliberately the simplest thing that works: one
+token, no users, no expiry, and it **fails closed** — if `ADMIN_TOKEN` isn't set, the
+admin API returns 503 rather than silently accepting any request. The token is never
+baked into the client bundle; `AdminPortal.tsx` prompts for it at runtime and keeps it
+in `sessionStorage`, sending it as a header on each request — don't add an
+`ADMIN_TOKEN`-shaped `VITE_*` env var, since anything under `VITE_*` ships in the public
+client bundle. `GameEngine.getAdminRoomsSnapshot()` is a synchronous, in-memory-only
+read (no Prisma) — it's a monitoring snapshot of every room in every phase, distinct
+from the `room:list` Quick Play handler (WAITING-only, non-full rooms only). The
+endpoints are read-only today (rooms + the startup `GameConfig`); there's no live
+config-editing or room-management (kick/delete) yet — if you add either, keep it behind
+the same `requireAdminToken` middleware and treat it as a genuinely destructive action
+if it touches Prisma or a live room.
+
 ### JSONB game state, typed columns only for what needs querying
 
 `Company.variables`, `Company.engineState`, and `Company.lastTurnSnapshot` are JSON

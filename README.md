@@ -130,11 +130,13 @@ suetheirasses/
 │   │   ├── pages/                   # Page components
 │   │   │   ├── Matchmaking.tsx      # Lobby: create/join/quick-play, invite links
 │   │   │   ├── GamePhase.tsx        # The GAME_PHASE loop UI (KPIs, decisions, lawsuits)
-│   │   │   └── GameOver.tsx         # AFTERMATH: winner + final standings
+│   │   │   ├── GameOver.tsx         # AFTERMATH: winner + final standings
+│   │   │   └── AdminPortal.tsx      # /admin — token-gated room monitoring + config view
 │   │   ├── stores/                  # Zustand state stores
 │   │   │   ├── gameStore.ts         # Game state (room, phase, timer, turn results)
 │   │   │   └── socketStore.ts       # Socket.IO connection & events
-│   │   ├── App.tsx                  # Root component + routing
+│   │   ├── App.tsx                  # Root component — renders phase/`/admin` directly,
+│   │   │                            # no path-based routing for game phases (see CLAUDE.md)
 │   │   └── main.tsx                 # Entry point
 │   ├── index.html
 │   ├── vite.config.ts
@@ -161,7 +163,10 @@ suetheirasses/
 │   │   │   └── schemas.ts           # All input validation
 │   │   ├── services/                # External service clients (real network I/O, no game math)
 │   │   │   └── llmService.ts        # Local llama.cpp client — AI-narrated annual report text
-│   │   └── index.ts                 # Server entry point
+│   │   ├── middleware/
+│   │   │   └── adminAuth.ts         # ADMIN_TOKEN gate for /api/admin/* (see Admin Portal below)
+│   │   └── index.ts                 # Server entry point + REST endpoints (/health, /api/room,
+│   │                                 # /api/admin/*)
 │   ├── prisma/
 │   │   ├── schema.prisma            # Database schema
 │   │   └── migrations/              # Database migrations
@@ -194,8 +199,7 @@ suetheirasses/
 │   │   └── validation.test.ts       # Zod schema contracts
 │   ├── e2e/                         # Playwright E2E tests
 │   │   ├── matchmaking.spec.ts      # Lobby: create/join/quick-play/invite-link flows
-│   │   ├── gamePhase.spec.ts        # Starting a game reaches GAME_PHASE cleanly
-│   │   └── gameOver.spec.ts         # AFTERMATH page's no-data behavior
+│   │   └── gamePhase.spec.ts        # Starting a game reaches GAME_PHASE cleanly
 │   ├── playwright.config.ts
 │   ├── vitest.config.ts
 │   └── test-setup.ts
@@ -497,6 +501,13 @@ docker-compose up -d llm
 # in the full Docker stack it resolves to the `llm` service automatically.
 ```
 
+### Admin Portal (optional — room monitoring)
+
+`/admin` (see *Admin Portal* below) is disabled by default — set `ADMIN_TOKEN` in
+`server/.env` (local dev) or in your shell/root `.env` before `docker-compose up`
+(it's read via `${ADMIN_TOKEN}` in `docker-compose.yml`). Unset = the admin API
+returns 503 for every request; this never affects the game itself.
+
 ### Rebuilding and Restarting
 
 ```bash
@@ -563,6 +574,7 @@ PORT=3001
 NODE_ENV=development
 CLIENT_URL=http://localhost:5173
 LLM_URL=http://localhost:8080   # optional — see "Local LLM" below; falls back to static text if unset/unreachable
+ADMIN_TOKEN=                    # optional — enables /admin (see "Admin Portal"); unset disables the admin API
 ```
 
 **Client** (`client/.env` — copy from `client/.env.example`):
@@ -736,6 +748,26 @@ feature is fully optional — the game plays identically whether or not the `llm
 container is running. See CLAUDE.md's *"Local LLM for narrated annual report text"*
 for the architectural rationale.
 
+### Admin Portal
+
+`/admin` is a real, independent URL — the only one in this app that isn't rendered off
+`currentPhase` state (see CLAUDE.md's *"Client: no path-based routing for game phases"*).
+It's a read-only monitoring dashboard: every in-memory room in every phase (not just
+WAITING/joinable ones, unlike Quick Play's `room:list`), each with its players' host/
+bankrupt/connected status, plus the `GameConfig` the server loaded at startup
+(`gameSettings`/`playerStartingValues`/`adminVariables`). Polls both every 5 seconds
+while open.
+
+Access is gated by a single shared-secret token — set `ADMIN_TOKEN` in `server/.env` (no
+default; unset disables the admin API entirely, returning 503 rather than accepting any
+request). `AdminPortal.tsx` prompts for the token at runtime and keeps it in
+`sessionStorage`, sending it as the `x-admin-token` header on every request — it is
+**never** embedded in the client bundle as a `VITE_*` env var, since those are public in
+the built JS. There's no broader auth system in this app (see *Reconnection & Session
+Resume* above for the same unauthenticated-id-pair trust model elsewhere), so this is
+deliberately the simplest thing that works: one token, no users, no expiry, no
+config-editing or room-management actions yet.
+
 ### Bankruptcy & Game Over (Aftermath)
 
 A player is eliminated the instant their cash goes below $0 on any turn — strictly
@@ -787,6 +819,7 @@ only place that touches Prisma or Socket.IO for turn resolution:
 | `submitDecisions(roomId, playerId, decisions)` | Forwards a validated `game:submitDecisions` payload to `GameLoop` |
 | `broadcastInitialSnapshot(roomId, round)` | Called once, right when `room:startGame` fires — loads active players, calls `GameLoop.getInitialSnapshot` (pure), and broadcasts the result immediately so the game room renders without delay. Also caches it for `rejoinRoom`. |
 | `broadcastRoomState(roomId, event, data)` | Broadcasts state to all players in a room |
+| `getAdminRoomsSnapshot()` | Synchronous, in-memory-only monitoring snapshot of every room in every phase (unlike `room:list`'s WAITING-only, non-full-only Quick Play view), with every player's host/bankrupt/connected status. Backs `GET /api/admin/rooms`. |
 | `loadActiveCompanyPlayers(roomId)` *(private)* | Shared DB fetch (`player.findMany` with `company` included, `bankrupt: false`) feeding `resolveGameTurn`, `broadcastInitialSnapshot`, and `digDeeper` |
 | `startHeartbeatCleanup()` *(private)* | One 10s `setInterval` sweeping two things: rooms empty for over `STALE_ROOM_THRESHOLD` (60s), and disconnected players past `RECONNECT_GRACE_PERIOD_MS` (60s) → `finalizePlayerRemoval`. Extend this interval for new periodic sweeps rather than adding a second one. |
 
@@ -843,8 +876,9 @@ npm run type-check
 npm run lint
 
 # Run backend unit tests (Vitest) — engine, calcEngine, decisionEngine, legalEngine,
-# gameLoop, gameEngine, validation schemas, llmService. No DB or live LLM required
-# (mocked Prisma; llmService's own network calls are mocked via global.fetch).
+# gameLoop, gameEngine, validation schemas, llmService, adminAuth middleware. No DB
+# or live LLM required (mocked Prisma; llmService's own network calls are mocked
+# via global.fetch).
 npm test --workspace=server
 
 # Run frontend unit tests (Vitest) — Zustand stores, GamePhase utilities
@@ -934,6 +968,8 @@ docker-compose up -d --build
 |--------|----------|-------------|
 | GET | `/health` | Health check |
 | GET | `/api/room/:roomId` | Get room details |
+| GET | `/api/admin/rooms` | Every in-memory room (any phase), with per-player status. Requires `x-admin-token`. See *Admin Portal* below. |
+| GET | `/api/admin/config` | The `GameConfig` (`gameSettings`/`playerStartingValues`/`adminVariables`) loaded at startup, read-only. Requires `x-admin-token`. |
 
 ### WebSocket API
 

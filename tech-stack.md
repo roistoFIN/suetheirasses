@@ -9,7 +9,7 @@
 | **Socket.IO Client** | 4.7+ | Real-time WebSocket communication |
 | **Mantine** | 7.3+ | UI component library with theming |
 | **Framer Motion** | 12.23+ | Animations and transitions |
-| **React Router** | 6.21+ | Client-side routing |
+| **React Router** | 6.21+ | `BrowserRouter`/`useSearchParams` for invite-link query params; game phases render conditionally off store state, not path-based routes (see CLAUDE.md) |
 
 # Backend
 
