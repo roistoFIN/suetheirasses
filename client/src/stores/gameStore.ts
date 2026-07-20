@@ -12,6 +12,7 @@ import {
   type GameSettings,
   type GameDeckResponse,
   type DigDeeperResultPayload,
+  type AnnualReportEntry,
 } from '@suetheirasses/shared';
 
 interface GameState {
@@ -43,6 +44,12 @@ interface GameState {
   clearTurnResults: () => void;
   /** Instant, out-of-band "Dig Deeper" response — patches just the requesting player's cash + incomingAttacks. */
   applyDigDeeperResult: (playerId: string, data: DigDeeperResultPayload) => void;
+
+  /** AI-narrated "annual report" text per rival, keyed by rivalPlayerId — requested on demand from the Full Filing modal. */
+  annualReports: Map<string, AnnualReportEntry[]>;
+  annualReportLoading: Set<string>;
+  setAnnualReportLoading: (rivalPlayerId: string) => void;
+  applyAnnualReportResult: (rivalPlayerId: string, entries: AnnualReportEntry[]) => void;
 
   // Decision deck — the 45-decision library + per-turn limits, sent once per game
   decisions: DecisionDefinition[];
@@ -81,6 +88,8 @@ export const useGameStore = create<GameState>((set) => ({
   error: null,
   notification: null,
   isRejoining: false,
+  annualReports: new Map(),
+  annualReportLoading: new Set(),
 
   updateRoom: (room) => set({ room, currentPhase: room.status }),
   updatePlayer: (player) => set({ player }),
@@ -140,6 +149,16 @@ export const useGameStore = create<GameState>((set) => ({
         };
       });
       return { turnResults: { ...state.turnResults, players } };
+    }),
+  setAnnualReportLoading: (rivalPlayerId) =>
+    set((state) => ({ annualReportLoading: new Set(state.annualReportLoading).add(rivalPlayerId) })),
+  applyAnnualReportResult: (rivalPlayerId, entries) =>
+    set((state) => {
+      const annualReportLoading = new Set(state.annualReportLoading);
+      annualReportLoading.delete(rivalPlayerId);
+      const annualReports = new Map(state.annualReports);
+      annualReports.set(rivalPlayerId, entries);
+      return { annualReports, annualReportLoading };
     }),
   setGameDeck: (data) => set({ decisions: data.decisions, gameSettings: data.gameSettings }),
   setGameOver: (data) => set({ gameOver: data, notification: `Game Over! ${data.winner?.name || 'Unknown'} wins!` }),

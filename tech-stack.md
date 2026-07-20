@@ -28,3 +28,5 @@
 |-----------|---------|---------|
 | **PostgreSQL** | 16+ | Primary database (ACID compliance) |
 | **Docker** | Latest | Container orchestration |
+| **llama.cpp server** (`ghcr.io/ggml-org/llama.cpp:server`) | Latest | Local LLM inference — AI-narrated annual report text (optional, falls back to static text) |
+| **Qwen3-1.7B-Q4_K_M** (GGUF) | — | Model run by the llama.cpp server |

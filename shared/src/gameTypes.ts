@@ -277,6 +277,15 @@ export interface IncomingAttackInfo {
   successProbability?: number;
 }
 
+/** One rival's active decision, narrated for their "annual report" — see `game:getAnnualReport`. */
+export interface AnnualReportEntry {
+  decisionName: string;
+  /** AI-generated (or, if the LLM is unavailable, static fallback) flavor text — never the real numbers. */
+  text: string;
+  /** Calendar year this filing covers (`deployedYear + 1`), matching the client's existing display. */
+  year: number;
+}
+
 // ============================================================
 // Turn Result — what gets broadcast after each turn resolves
 // ============================================================

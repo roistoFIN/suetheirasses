@@ -18,9 +18,11 @@ import {
   type GameConfig,
   type GameSettings,
   type TurnResolutionResult,
+  type AnnualReportEntry,
 } from '@suetheirasses/shared';
-import { validateRoomJoin, validateSubmitDecisions, validateDigDeeper, validateRoomRejoin } from '../validation/schemas.js';
+import { validateRoomJoin, validateSubmitDecisions, validateDigDeeper, validateRoomRejoin, validateAnnualReportRequest } from '../validation/schemas.js';
 import { GameLoop } from '../engine/gameLoop.js';
+import { generateAnnualReportBlurb } from '../services/llmService.js';
 import gameEngineData from '../data/game_engine.json' with { type: 'json' };
 import gameConfigData from '../data/game_config.json' with { type: 'json' };
 
@@ -47,12 +49,17 @@ export class GameEngine {
   private lastTurnResults: Map<string, TurnResolutionResult> = new Map();
   // Core turn-resolution engine — authoritative source of all GAME_PHASE calculations (FORMULAS.md)
   private gameLoop: GameLoop;
+  // Static competitorsView fallback text per decision, for getAnnualReport when the LLM is unreachable.
+  private decisionsByName: Map<string, DecisionDefinition>;
 
   constructor(io: Server, prisma: PrismaClient) {
     this.io = io;
     this.prisma = prisma;
     this.gameLoop = new GameLoop(gameConfigData as unknown as GameConfig);
     this.gameLoop.loadDecisions(gameEngineData as unknown as DecisionDefinition[]);
+    this.decisionsByName = new Map(
+      (gameEngineData as unknown as DecisionDefinition[]).map((d) => [d.decision, d]),
+    );
     this.startHeartbeatCleanup();
   }
 
@@ -84,6 +91,36 @@ export class GameEngine {
       });
     }
     return outcome;
+  }
+
+  /**
+   * AI-narrated "annual report" text for one rival's active decisions — on demand
+   * (opened from the Full Filing modal), never part of turn resolution. Re-derives the
+   * rival's active decisions server-side from their Company row rather than trusting
+   * anything the requesting client sent, same as `digDeeper`. Returns `null` if the
+   * rival isn't found (unknown id, or bankrupted since the requester last saw them).
+   */
+  async getAnnualReport(roomId: string, rivalPlayerId: string): Promise<AnnualReportEntry[] | null> {
+    const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
+    const summaries = this.gameLoop.getActiveDecisionSummaries(rivalPlayerId, dbPlayers);
+    if (!summaries) return null;
+
+    const entries = await Promise.all(
+      summaries
+        .map((s) => ({ summary: s, def: this.decisionsByName.get(s.decisionName) }))
+        .filter((x): x is { summary: typeof x.summary; def: DecisionDefinition } => !!x.def?.competitorsView?.length)
+        .map(async ({ summary, def }) => {
+          const fallback = def.competitorsView![summary.elapsedYears % def.competitorsView!.length];
+          const text = await generateAnnualReportBlurb({
+            decisionName: summary.decisionName,
+            description: summary.description,
+            elapsedYears: summary.elapsedYears,
+            fallback,
+          });
+          return { decisionName: summary.decisionName, text, year: summary.deployedYear + 1 };
+        }),
+    );
+    return entries;
   }
 
   /**
@@ -1074,6 +1111,40 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
         socket.emit(ServerEvents.ERROR, {
           code: 'INVALID_DIG_DEEPER',
           message: error.message || 'Invalid dig deeper request',
+        });
+      }
+    });
+
+    // Request AI-narrated "annual report" text for one rival — on demand (opened from
+    // the Full Filing modal), outside the turn-resolution cycle, result goes only to
+    // this socket. Never blocks/broadcasts anything else in the room.
+    socket.on(ClientEvents.GAME_GET_ANNUAL_REPORT, async (payload: unknown) => {
+      const roomId = engine.getPlayerRoom(socket.id);
+      if (!roomId) return;
+
+      const roomState = engine.rooms.get(roomId);
+      if (!roomState || roomState.room.status !== RoomStatus.GAME_PHASE) return;
+
+      const player = Array.from(roomState.players.values()).find(
+        (p: Player) => p.socketId === socket.id,
+      );
+      if (!player) return;
+
+      try {
+        const { rivalPlayerId } = validateAnnualReportRequest(payload);
+        const entries = await engine.getAnnualReport(roomId, rivalPlayerId);
+        if (!entries) {
+          socket.emit(ServerEvents.ERROR, {
+            code: 'ANNUAL_REPORT_FAILED',
+            message: 'Rival not found',
+          });
+          return;
+        }
+        socket.emit(ServerEvents.GAME_ANNUAL_REPORT_RESULT, { rivalPlayerId, entries });
+      } catch (error: any) {
+        socket.emit(ServerEvents.ERROR, {
+          code: 'INVALID_ANNUAL_REPORT_REQUEST',
+          message: error.message || 'Invalid annual report request',
         });
       }
     });

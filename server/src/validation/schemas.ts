@@ -146,3 +146,25 @@ export type DigDeeperPayload = z.infer<typeof digDeeperSchema>;
 export function validateDigDeeper(data: unknown): DigDeeperPayload {
   return digDeeperSchema.parse(data);
 }
+
+/**
+ * Zod schema for the `game:getAnnualReport` Socket.IO event payload — request narrated
+ * flavor text for one rival's active decisions, identified by their player id.
+ */
+export const annualReportRequestSchema = z.object({
+  rivalPlayerId: z.string().min(1).max(100),
+});
+
+/** Inferred TypeScript type for validated annual-report request payloads. */
+export type AnnualReportRequestPayload = z.infer<typeof annualReportRequestSchema>;
+
+/**
+ * Validates and parses raw data against the annual-report-request schema.
+ *
+ * @param data - Raw payload from the `game:getAnnualReport` Socket.IO event.
+ * @returns Validated `AnnualReportRequestPayload` object.
+ * @throws ZodValidationError if the payload fails any constraint.
+ */
+export function validateAnnualReportRequest(data: unknown): AnnualReportRequestPayload {
+  return annualReportRequestSchema.parse(data);
+}

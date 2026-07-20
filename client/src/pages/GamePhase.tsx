@@ -1555,6 +1555,8 @@ function buildAnnualReport(
 
 function RivalFullReportView({ rival, decisions }: RivalFullReportViewProps) {
   const { variables: v, derived: d } = rival;
+  const { socket } = useSocketStore();
+  const { annualReports, annualReportLoading, setAnnualReportLoading } = useGameStore();
 
   const rows = [
     ['Cash', fmt(v.cash)], ['Revenue', fmt(d.revenue)], ['Equity', fmt(d.equity)], ['Stock value', fmt(d.stockValue)], ['Debt', fmt(v.debt)],
@@ -1564,7 +1566,25 @@ function RivalFullReportView({ rival, decisions }: RivalFullReportViewProps) {
     ['Finance cost', fmt(d.financeCost)], ['Tax cost', fmt(d.taxCost)], ['Other income', fmt(v.otherIncome)],
   ];
 
-  const annualReport = buildAnnualReport(rival, decisions);
+  // Static text renders instantly; the AI-narrated version (server round trip to the
+  // local LLM, see GameEngine.getAnnualReport) replaces it in place once it arrives.
+  // If the LLM is down/unreachable, this stays on the static fallback forever — never
+  // a blank or stuck-loading report.
+  const staticReport = buildAnnualReport(rival, decisions);
+  const aiEntries = annualReports.get(rival.playerId);
+  const isLoadingAi = annualReportLoading.has(rival.playerId);
+  const annualReport = aiEntries
+    ? aiEntries.map((e) => ({ text: e.text, year: e.year }))
+    : staticReport;
+
+  useEffect(() => {
+    if (!socket || aiEntries || isLoadingAi || staticReport.length === 0) return;
+    setAnnualReportLoading(rival.playerId);
+    socket.emit(ClientEvents.GAME_GET_ANNUAL_REPORT, { rivalPlayerId: rival.playerId });
+    // Only re-request when switching to a different rival — the store's cached
+    // result (or in-flight loading flag) covers repeat opens of the same one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [socket, rival.playerId]);
 
   return (
     <Stack gap="lg" style={gpStyles.modalContent}>
@@ -1577,7 +1597,10 @@ function RivalFullReportView({ rival, decisions }: RivalFullReportViewProps) {
         ))}
       </Stack>
       <Stack gap={0}>
-        <Text style={{ ...boldStyle, fontSize: '0.75rem', color: '#6b7280', marginBottom: 8 }}>ANNUAL REPORT</Text>
+        <Flex justify="space-between" align="center" style={{ marginBottom: 8 }}>
+          <Text style={{ ...boldStyle, fontSize: '0.75rem', color: '#6b7280' }}>ANNUAL REPORT</Text>
+          {aiEntries && <Text size="xs" c="dimmed" style={{ fontStyle: 'italic' }}>✨ AI-generated</Text>}
+        </Flex>
         {annualReport.length === 0 ? (
           <Text size="xs" c="dimmed" style={{ fontStyle: 'italic' }}>No filings yet — {rival.playerName} hasn't deployed any strategies.</Text>
         ) : (

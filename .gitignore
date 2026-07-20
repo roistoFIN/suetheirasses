@@ -64,3 +64,6 @@ dump.rdb
 
 # Cache
 .cache/
+
+# Local LLM model weights (fetch separately, see README — not committed, too large)
+/models/

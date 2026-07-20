@@ -825,6 +825,46 @@ describe('GameLoop', () => {
     });
   });
 
+  describe('getActiveDecisionSummaries', () => {
+    it('returns each active decision with its definition description, deployed year, and elapsed years', () => {
+      const players = makePlayers([
+        {
+          id: 'player-1',
+          name: 'Alice',
+          engineState: {
+            activeDecisions: [
+              { id: 'inst-1', definitionName: 'New Factory', deployedYear: 1, elapsedYears: 2, isMatured: true },
+              { id: 'inst-2', definitionName: 'Bot Attack', deployedYear: 3, elapsedYears: 0, isMatured: false, targetId: 'player-2' },
+            ],
+          },
+        },
+      ]);
+
+      const summaries = gameLoop.getActiveDecisionSummaries('player-1', players);
+
+      expect(summaries).toEqual([
+        { instanceId: 'inst-1', decisionName: 'New Factory', description: 'Build a new factory', deployedYear: 1, elapsedYears: 2 },
+        { instanceId: 'inst-2', decisionName: 'Bot Attack', description: 'Launch a coordinated cyberattack against a competitor', deployedYear: 3, elapsedYears: 0 },
+      ]);
+    });
+
+    it('returns an empty array for a player with no active decisions', () => {
+      const players = makePlayers([{ id: 'player-1', name: 'Alice' }]);
+
+      expect(gameLoop.getActiveDecisionSummaries('player-1', players)).toEqual([]);
+    });
+
+    it('returns null for an unknown player id', () => {
+      expect(gameLoop.getActiveDecisionSummaries('nobody', twoPlayers())).toBeNull();
+    });
+
+    it('returns null for a player with no company row (e.g. already bankrupted)', () => {
+      const players: EngineDataInput[] = [{ id: 'player-1', name: 'Alice', company: null }];
+
+      expect(gameLoop.getActiveDecisionSummaries('player-1', players)).toBeNull();
+    });
+  });
+
   describe('getInitialSnapshot', () => {
     it('should return empty result when no players exist', () => {
       const result = gameLoop.getInitialSnapshot('room-1', 1, []);

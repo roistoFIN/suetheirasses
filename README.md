@@ -159,6 +159,8 @@ suetheirasses/
 │   │   │   └── game_config.json     # Starting values + admin-tunable variables
 │   │   ├── validation/              # Zod schemas
 │   │   │   └── schemas.ts           # All input validation
+│   │   ├── services/                # External service clients (real network I/O, no game math)
+│   │   │   └── llmService.ts        # Local llama.cpp client — AI-narrated annual report text
 │   │   └── index.ts                 # Server entry point
 │   ├── prisma/
 │   │   ├── schema.prisma            # Database schema
@@ -198,10 +200,11 @@ suetheirasses/
 │   ├── vitest.config.ts
 │   └── test-setup.ts
 │
+├── models/                          # Local LLM weights (gitignored — see "Local LLM" below)
 ├── .github/                         # GitHub Actions CI/CD
 ├── .dockerignore
 ├── Dockerfile                       # Full-stack multi-stage build
-├── docker-compose.yml               # Docker orchestration (PostgreSQL, server, client)
+├── docker-compose.yml               # Docker orchestration (PostgreSQL, server, client, llm)
 ├── package.json                     # Monorepo root (workspaces)
 ├── .gitignore
 └── README.md                        # This file
@@ -308,6 +311,7 @@ model Asset {
 | `room:startGame` | — | Host starts the game (WAITING → GAME_PHASE, round 1) |
 | `game:submitDecisions` | `{ strategic: DecisionEntry[], operational: DecisionEntry[], lawsuits: LawsuitEntry[] }` | Full replacement of this turn's pending decisions (`{ name, targetId? }` each) *and* deliberate lawsuit filings (`{ targetId, decisionName, groundName }` each — see *Lawsuits* below). Structural validation only — per-turn limits (max 1 strategic / 2 operational / 3 lawsuits) come from `game_config.json` and are enforced by `DecisionEngine.canDeploy` / `GameLoop`'s lawsuit-filing step. |
 | `game:digDeeper` | `{ attackId }` | Pay `gameSettings.digDeeperCost` ($10,000 by default) to reveal the next tier of intel on one incoming attack — instant, outside the turn-resolution cycle. See *Attack Awareness & Dig Deeper* below. |
+| `game:getAnnualReport` | `{ rivalPlayerId }` | Request AI-narrated "annual report" text for one rival's active decisions — on demand, outside the turn-resolution cycle. See *AI-Narrated Annual Reports* below. |
 | `chat:message` | `{ message }` | Send a chat message to the room |
 
 #### Server → Client
@@ -326,7 +330,8 @@ model Asset {
 | `player:bankrupt` | `{ playerId, playerName }` | Player's cash went below $0 this turn — eliminated immediately (FORMULAS §12) |
 | `game:over` | `{ winner, finalStandings }` | Only one player remains; room moved to AFTERMATH. Also re-sent on a successful `room:rejoin` during AFTERMATH. |
 | `game:digDeeperResult` | `{ attackId, cost, newCash, attack: IncomingAttackInfo }` | Sent only to the requesting socket, never broadcast — the newly-unlocked intel tier for one attack |
-| `error` | `{ code, message }` | Error occurred (e.g. `NOT_HOST`, `INVALID_DECISIONS`, `REJOIN_FAILED`) |
+| `game:annualReportResult` | `{ rivalPlayerId, entries: AnnualReportEntry[] }` | Sent only to the requesting socket, never broadcast — AI-narrated (or static-fallback) flavor text for the rival's active decisions |
+| `error` | `{ code, message }` | Error occurred (e.g. `NOT_HOST`, `INVALID_DECISIONS`, `REJOIN_FAILED`, `ANNUAL_REPORT_FAILED`) |
 
 ### API Type Definitions
 
@@ -353,6 +358,13 @@ export interface RoomRejoinPayload {
   roomId: string;
   playerId: string;
 }
+
+/** One rival's active decision, narrated for their "annual report" — see `game:getAnnualReport`. */
+export interface AnnualReportEntry {
+  decisionName: string;
+  text: string;   // AI-generated (or static-fallback) flavor text — never the real numbers
+  year: number;   // deployedYear + 1
+}
 ```
 
 ### Zustand State Stores
@@ -375,6 +387,8 @@ Manages all game-related state including room state, player data, phase tracking
 | `handleTurnResolved(data)` | Replace `turnResults` with the latest `turn:resolved` payload |
 | `clearTurnResults()` | Clear `turnResults` |
 | `applyDigDeeperResult(playerId, data)` | Immutably patches just the requesting player's cash + the matching `incomingAttacks` entry inside `turnResults` — the instant, out-of-band response to `game:digDeeper`, applied without waiting for the next turn |
+| `setAnnualReportLoading(rivalPlayerId)` | Marks one rival's AI annual report as in-flight, so `RivalFullReportView` doesn't fire a duplicate `game:getAnnualReport` while waiting |
+| `applyAnnualReportResult(rivalPlayerId, entries)` | Caches the AI-narrated entries for one rival, keyed by id — the response to `game:getAnnualReport` |
 | `setGameDeck(data)` | Store the decision library + per-turn limits |
 | `setGameOver(data)` | Set game over state with winner and standings |
 | `clearGameOver()` | Clear game over state |
@@ -412,6 +426,7 @@ reconnection (see *Reconnection & Session Resume* below):
 - `game:over` → Calls `gameStore.setGameOver()`; clears the saved session (nothing left
   to reconnect to)
 - `game:digDeeperResult` → Calls `gameStore.applyDigDeeperResult()`
+- `game:annualReportResult` → Calls `gameStore.applyAnnualReportResult()`
 - `error` → Calls `gameStore.setError()`; a `REJOIN_FAILED` code additionally clears the
   saved session and `isRejoining`, so a stale/expired session self-heals into the normal
   landing page
@@ -462,6 +477,24 @@ docker-compose up -d --build
 # The application will be available at:
 # - Frontend: http://localhost:80
 # - Backend API: http://localhost:3001
+```
+
+### Local LLM (optional — AI-narrated annual report text)
+
+The rival "Full Filing" annual report uses a local LLM (see *AI-Narrated Annual
+Reports* below) instead of the old fixed flavor text. This is fully optional — the
+game works identically without it, falling back to the original static text.
+
+```bash
+# 1. Download the model (not committed to the repo — ~1.1GB)
+mkdir -p models
+# Place Qwen3-1.7B-Q4_K_M.gguf in ./models/ — e.g. from https://huggingface.co/Qwen/Qwen3-1.7B-GGUF
+
+# 2. Start the llama.cpp server
+docker-compose up -d llm
+
+# The server (LLM_URL) checks http://localhost:8080 by default in local dev;
+# in the full Docker stack it resolves to the `llm` service automatically.
 ```
 
 ### Rebuilding and Restarting
@@ -529,6 +562,7 @@ DATABASE_URL="postgresql://stita:stita_password@localhost:5432/stita_db"
 PORT=3001
 NODE_ENV=development
 CLIENT_URL=http://localhost:5173
+LLM_URL=http://localhost:8080   # optional — see "Local LLM" below; falls back to static text if unset/unreachable
 ```
 
 **Client** (`client/.env` — copy from `client/.env.example`):
@@ -673,6 +707,35 @@ was previously an infinite "Waiting for game data…" spinner on a raw refresh w
 session). A failed rejoin (`REJOIN_FAILED` — expired grace period, ended game, bogus
 session) self-heals into the normal matchmaking flow by clearing the stale saved session.
 
+### AI-Narrated Annual Reports
+
+A rival's "Full Filing" report used to show one of 3-4 fixed, hand-written
+`competitorsView` flavor sentences per decision (cycled by `elapsedYears % length`),
+sourced straight from `game_engine.json`. That text is now generated by a local LLM —
+a `llama.cpp` server (the `llm` service in `docker-compose.yml`, running Qwen3-1.7B,
+model weights mounted read-only from `./models/`, not committed to the repo) — so the
+narration varies year to year instead of repeating the same handful of lines forever.
+
+Opening a rival's Full Filing modal emits `game:getAnnualReport` with just their player
+id; `GameEngine.getAnnualReport` re-derives what to narrate server-side from that
+player's own `Company.engineState` (`GameLoop.getActiveDecisionSummaries` — a pure,
+read-only lookup, never trusting anything about the rival the requesting client sent),
+then asks `services/llmService.ts` to narrate each active decision via the local
+model's OpenAI-compatible `/v1/chat/completions` endpoint. Responses are cached
+in-process per `decisionName#elapsedYears` (not per-player — the same decision at the
+same age gets the same blurb for every viewer), so opening the same rival's report
+twice, or a second player opening it, doesn't re-hit the model.
+
+This is entirely best-effort: the client renders the static `competitorsView` text
+immediately and unconditionally (so the modal is never blank or stuck loading), then
+swaps in the AI-generated version — tagged **✨ AI-generated** — if and when
+`game:annualReportResult` arrives. `llmService` itself catches every failure mode
+(unreachable host, non-2xx, request timeout, empty/unparseable response) and falls
+back to that same static text before it ever reaches the socket layer, so the whole
+feature is fully optional — the game plays identically whether or not the `llm`
+container is running. See CLAUDE.md's *"Local LLM for narrated annual report text"*
+for the architectural rationale.
+
 ### Bankruptcy & Game Over (Aftermath)
 
 A player is eliminated the instant their cash goes below $0 on any turn — strictly
@@ -700,6 +763,7 @@ All client inputs are validated server-side using Zod schemas before processing:
 | | `lawsuits` | Array of `{ targetId, decisionName, groundName }`, max 10 entries — structural cap only; the real limit (`maxLawsuitsPerPlayerPerTurn`, 3) and the "target actually deployed this" check happen in `LegalEngine.fileLawsuit` |
 | `digDeeperSchema` | `attackId` | Required, 1-100 characters |
 | `roomRejoinSchema` | `roomId`, `playerId` | Both required, 1-50 characters — no separate auth token; the id pair itself is the bearer credential, same trust model as every other player id already used throughout the app (no passwords anywhere) |
+| `annualReportRequestSchema` | `rivalPlayerId` | Required, 1-100 characters |
 
 ### Game Engine Architecture
 
@@ -717,6 +781,7 @@ only place that touches Prisma or Socket.IO for turn resolution:
 | `rejoinRoom(roomId, playerId, socketId)` | Re-associates an existing (still-within-grace-period) player with a new socket; returns data for the caller to emit (`room:joined` always, plus `game:deck`/cached `turn:resolved` or `game:over` depending on room phase) rather than doing the emitting itself, mirroring `digDeeper`'s pattern |
 | `buildRoomJoinedPayload(roomState, player)` | Builds the `room:joined` payload shape — shared by the fresh-join and rejoin paths |
 | `digDeeper(roomId, playerId, attackId)` | "Dig Deeper" — pay to reveal the next tier of intel on one incoming attack, instantly, outside the turn-resolution cycle. Loads active players, calls `GameLoop.digDeeper` (pure), and on success does the one Prisma write (`cash` *and* `variables`, since `GameLoop` reads cash from the `variables` JSONB, not the column) |
+| `getAnnualReport(roomId, rivalPlayerId)` | AI-narrated "annual report" text for one rival, on demand — loads active players, calls `GameLoop.getActiveDecisionSummaries` (pure, re-derives from the rival's own `Company.engineState`), then asks `services/llmService.ts` to narrate each active decision (network I/O, cached, falls back to static `competitorsView` text on any failure). Read-only — no Prisma write |
 | `advancePhase(roomId)` | Linear phase advance (WAITING → GAME_PHASE); race-condition guarded |
 | `resolveGameTurn(roomId)` | Loads active players from the DB, calls `GameLoop.resolveTurn` (pure), then persists the returned `companyUpdates`/`bankruptedPlayers` and broadcasts `player:bankrupt`/`turn:resolved` — then either loops into another GAME_PHASE round or, once one player remains, transitions to AFTERMATH and emits `game:over`. Also caches the broadcast result (`lastTurnResults`) for `rejoinRoom` to re-send. |
 | `submitDecisions(roomId, playerId, decisions)` | Forwards a validated `game:submitDecisions` payload to `GameLoop` |
@@ -738,6 +803,7 @@ without mocking a database or a socket server:
 | `resolveTurn(roomId, round, players: EngineDataInput[])` | Runs the full per-turn calculation (see *Business Decisions* above) and returns a `TurnResolutionOutcome`: the `turn:resolved` broadcast payload (`result`), the `Company` rows still-active players need persisted (`companyUpdates`), and the players eliminated this turn (`bankruptedPlayers`) — it does not write to the DB or emit anything itself |
 | `getInitialSnapshot(roomId, round, players: EngineDataInput[])` | Same formula pipeline as `resolveTurn`, but with zero decisions and nothing persisted — returns the `TurnResolutionResult` preview directly; the caller broadcasts it |
 | `digDeeper(playerId, attackId, players: EngineDataInput[])` | A lighter-weight sibling to `resolveTurn` — no market/P&L pipeline, just cash + engine state. Validates funds and investigation level, bumps the target attack's tier, and returns a `DigDeeperOutcome` (new cash, the revealed `IncomingAttackInfo`, and the engine state to persist) for the caller to write and emit; never runs on the turn timer |
+| `getActiveDecisionSummaries(playerId, players: EngineDataInput[])` | Read-only lookup of one player's active decisions (name, description, deployed/elapsed years) for `GameEngine.getAnnualReport` to narrate — mutates nothing, returns `null` if the player isn't found |
 
 `GameEngine` owns the full read → compute → persist → broadcast cycle: it loads each
 active player's `Company.variables`/`engineState` from the DB into `EngineDataInput[]`,
@@ -777,7 +843,8 @@ npm run type-check
 npm run lint
 
 # Run backend unit tests (Vitest) — engine, calcEngine, decisionEngine, legalEngine,
-# gameLoop, gameEngine, validation schemas. No DB required (mocked Prisma).
+# gameLoop, gameEngine, validation schemas, llmService. No DB or live LLM required
+# (mocked Prisma; llmService's own network calls are mocked via global.fetch).
 npm test --workspace=server
 
 # Run frontend unit tests (Vitest) — Zustand stores, GamePhase utilities

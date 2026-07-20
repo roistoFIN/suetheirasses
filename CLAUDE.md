@@ -73,6 +73,8 @@ npx prisma migrate reset   # drop and recreate all tables
 
 # Docker
 docker-compose up -d postgres     # just the DB, for local dev
+docker-compose up -d llm          # local LLM (llama.cpp) for AI-generated annual report text —
+                                   # optional, requires ./models/Qwen3-1.7B-Q4_K_M.gguf (not committed)
 docker-compose up -d --build      # full stack
 docker-compose down               # stop
 docker-compose down -v            # stop + wipe DB volume
@@ -151,6 +153,31 @@ disconnect-grace-period sweep (`GameEngine`'s heartbeat interval, `RECONNECT_GRA
 mirrors the pre-existing stale-room cleanup (`STALE_ROOM_THRESHOLD`) pattern rather than
 using a per-player `setTimeout` — extend that same interval, don't add a second one.
 
+### Local LLM for narrated "annual report" text — best-effort, never load-bearing
+
+`GameEngine.getAnnualReport` (triggered by `game:getAnnualReport`, opened from a rival's
+Full Filing modal in `GamePhase.tsx`) is a third out-of-band, on-demand path alongside
+Dig Deeper and reconnection above — but unlike those two, it's read-only (no `Company`
+row is ever written) and it does real network I/O, so it's the one place in the server
+that talks to something other than Postgres/Socket.IO: `server/src/services/llmService.ts`
+calls a local `llama.cpp` server (the `llm` service in `docker-compose.yml`, model
+mounted read-only from `./models/`) via its OpenAI-compatible `/v1/chat/completions`
+endpoint, asking it to narrate one sentence of corporate-PR flavor text per active
+decision on the target player, in place of the old fixed 3-4 pre-written
+`competitorsView` strings from `game_engine.json`. `GameLoop.getActiveDecisionSummaries`
+is the pure lookup that supplies what to narrate (decision name, description, elapsed
+years) — re-derived server-side from the rival's own `Company.engineState`, the same
+distrust-the-client pattern `digDeeper` uses for attack data, never from anything the
+requesting client sent about the rival. Responses are cached in-process, keyed by
+`decisionName#elapsedYears` (not per-player — the flavor text doesn't depend on who's
+asking, so one generation serves every viewer for that decision/age combo). The whole
+feature must degrade invisibly: `llmService` catches every failure (unreachable host,
+non-200, timeout, empty/unparseable response) and returns the caller-supplied
+`competitorsView` fallback text instead — nothing upstream ever sees an error, and the
+game is fully playable with the `llm` container never started. Don't add a hard
+dependency on this service being up anywhere; if you need to gate something on it, use
+the same fallback-on-failure shape this module already has.
+
 ### JSONB game state, typed columns only for what needs querying
 
 `Company.variables`, `Company.engineState`, and `Company.lastTurnSnapshot` are JSON
@@ -175,8 +202,11 @@ build step is needed to see changes during dev, only for production builds.
 - `server/src/**/*.test.ts` — Vitest, fast, no Docker. `engine/*.test.ts` (GameLoop,
   calcEngine, decisionEngine, legalEngine) needs no mocking at all — pure input/output.
   `socket/gameEngine.test.ts` mocks Prisma + `Server` since that's where the actual DB
-  writes and socket emits happen. Use this layer for engine math, decision/legal rules,
-  validation schema logic, and room/phase lifecycle.
+  writes and socket emits happen; it also mocks `services/llmService.js` (via `vi.mock`)
+  so `getAnnualReport` tests don't hit a real network — `services/llmService.test.ts`
+  covers the actual fetch/fallback/caching logic separately, with `global.fetch` mocked
+  (no live `llm` container needed to run the suite). Use this layer for engine math,
+  decision/legal rules, validation schema logic, and room/phase lifecycle.
 - `client/src/**/*.test.ts` — Vitest, Zustand stores and pure UI utilities.
 - `tests/api/*.test.ts` — Vitest + real Postgres via testcontainers (needs Docker).
   The only layer that actually verifies socket event contracts end-to-end

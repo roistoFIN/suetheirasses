@@ -1,4 +1,4 @@
-import type { DecisionDefinition, GameSettings, IncomingAttackInfo } from './gameTypes.js';
+import type { DecisionDefinition, GameSettings, IncomingAttackInfo, AnnualReportEntry } from './gameTypes.js';
 
 // ============================================================
 // Room & Phase Types
@@ -94,6 +94,8 @@ export enum ClientEvents {
   GAME_DIG_DEEPER = 'game:digDeeper',
   /** Re-associate an existing player (by id) with a new socket after a disconnect, within the server's grace period. */
   ROOM_REJOIN = 'room:rejoin',
+  /** Request AI-narrated "annual report" text for one rival's active decisions — on demand, outside turn resolution. */
+  GAME_GET_ANNUAL_REPORT = 'game:getAnnualReport',
 }
 
 // Server → Client events
@@ -115,6 +117,8 @@ export enum ServerEvents {
   CHAT_MESSAGE = 'chat:message',
   /** Sent only to the requesting socket — never broadcast — with the newly-unlocked intel tier. */
   GAME_DIG_DEEPER_RESULT = 'game:digDeeperResult',
+  /** Sent only to the requesting socket, in response to `game:getAnnualReport`. */
+  GAME_ANNUAL_REPORT_RESULT = 'game:annualReportResult',
 }
 
 // ============================================================
@@ -135,6 +139,11 @@ export interface RoomRejoinPayload {
 /** Payload for `game:digDeeper` — spend `gameSettings.digDeeperCost` to reveal the next tier of intel on one attack. */
 export interface DigDeeperPayload {
   attackId: string;
+}
+
+/** Payload for `game:getAnnualReport` — request narrated flavor text for one rival's active decisions. */
+export interface AnnualReportRequestPayload {
+  rivalPlayerId: string;
 }
 
 // ===========================================================
@@ -177,6 +186,12 @@ export interface DigDeeperResultPayload {
   cost: number;
   newCash: number;
   attack: IncomingAttackInfo;
+}
+
+/** Response for `game:annualReportResult` — sent only to the requesting socket. */
+export interface AnnualReportResultPayload {
+  rivalPlayerId: string;
+  entries: AnnualReportEntry[];
 }
 
 

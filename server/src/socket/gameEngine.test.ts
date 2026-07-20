@@ -4,6 +4,14 @@ import { RoomStatus, ServerEvents, PHASE_TIMERS, PHASE_ORDER } from '@suetheiras
 import type { Server, Socket } from 'socket.io';
 import type { PrismaClient, Room as PrismaRoom, Player as PrismaPlayer, Company as PrismaCompany } from '@prisma/client';
 
+// Real network I/O (llama.cpp) is out of scope for this layer per CLAUDE.md's test-layer
+// guidance — mocked deterministically here; llmService's own fallback/caching/sanitizing
+// behavior is covered separately in llmService.test.ts.
+vi.mock('../services/llmService.js', () => ({
+  generateAnnualReportBlurb: vi.fn(async ({ decisionName }: { decisionName: string }) => `blurb: ${decisionName}`),
+}));
+import { generateAnnualReportBlurb } from '../services/llmService.js';
+
 const createMockIo = () => ({
   on: vi.fn(),
   to: vi.fn().mockReturnThis(),
@@ -1313,6 +1321,64 @@ describe('GameEngine', () => {
       const players = Array.from(roomState.players.values());
       expect(players[0].isHost).toBe(true); // Creator is host
       expect(players[1].isHost).toBe(false); // Joiner is not host
+    });
+  });
+
+  describe('getAnnualReport', () => {
+    it('returns AI-narrated text per active decision, requesting the correct static fallback and elapsed years', async () => {
+      (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
+        {
+          id: 'player-2',
+          name: 'Bob',
+          company: {
+            variables: {},
+            engineState: {
+              activeDecisions: [
+                { id: 'inst-1', definitionName: 'Bot Attack', deployedYear: 2, elapsedYears: 1, isMatured: true, targetId: 'player-1' },
+              ],
+            },
+          },
+        },
+      ]);
+
+      const entries = await engine.getAnnualReport('room-1', 'player-2');
+
+      expect(entries).toEqual([{ decisionName: 'Bot Attack', text: 'blurb: Bot Attack', year: 3 }]);
+      expect(generateAnnualReportBlurb).toHaveBeenCalledWith({
+        decisionName: 'Bot Attack',
+        description: "Launch a coordinated cyberattack against a competitor's digital infrastructure to disrupt their logistics and operations.",
+        elapsedYears: 1,
+        fallback: 'Proactive digital capacity-loading evaluations of external logistical networks.',
+      });
+    });
+
+    it('returns null for a rival not found among active players', async () => {
+      (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+
+      const entries = await engine.getAnnualReport('room-1', 'nobody');
+
+      expect(entries).toBeNull();
+    });
+
+    it('silently skips a decision instance whose definitionName no longer exists in the loaded library', async () => {
+      (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
+        {
+          id: 'player-2',
+          name: 'Bob',
+          company: {
+            variables: {},
+            engineState: {
+              activeDecisions: [
+                { id: 'inst-1', definitionName: 'Some Retired Decision', deployedYear: 1, elapsedYears: 0, isMatured: true },
+              ],
+            },
+          },
+        },
+      ]);
+
+      const entries = await engine.getAnnualReport('room-1', 'player-2');
+
+      expect(entries).toEqual([]);
     });
   });
 });

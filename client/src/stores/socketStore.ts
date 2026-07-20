@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { io, Socket } from 'socket.io-client';
-import { ClientEvents, ServerEvents, type RoomJoinedResponse, type RoomRejoinPayload, type PhaseChangedResponse, type GameOverResponse, type ErrorResponse, type TurnResolutionResult, type GameDeckResponse, type DigDeeperResultPayload } from '@suetheirasses/shared';
+import { ClientEvents, ServerEvents, type RoomJoinedResponse, type RoomRejoinPayload, type PhaseChangedResponse, type GameOverResponse, type ErrorResponse, type TurnResolutionResult, type GameDeckResponse, type DigDeeperResultPayload, type AnnualReportResultPayload } from '@suetheirasses/shared';
 import { useGameStore } from './gameStore';
 
 interface SocketState {
@@ -185,6 +185,12 @@ export const useSocketStore = create<SocketState>((set, get) => ({
       console.log('Dig deeper result:', data);
       const { player, applyDigDeeperResult } = useGameStore.getState();
       if (player) applyDigDeeperResult(player.id, data);
+    });
+
+    socket.on(ServerEvents.GAME_ANNUAL_REPORT_RESULT, (data: AnnualReportResultPayload) => {
+      console.log('Annual report result:', data.rivalPlayerId, data.entries.length, 'entries');
+      const { applyAnnualReportResult } = useGameStore.getState();
+      applyAnnualReportResult(data.rivalPlayerId, data.entries);
     });
 
     set({ socket, isConnected: true });

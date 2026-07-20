@@ -144,6 +144,15 @@ export type DigDeeperOutcome =
       engineStateUpdate: CompanyPersistUpdate['engineState'];
     };
 
+/** One active decision instance, read-only summary for narrating a rival's "annual report" (`GameEngine.getAnnualReport`). */
+export interface ActiveDecisionSummary {
+  instanceId: string;
+  decisionName: string;
+  description: string;
+  deployedYear: number;
+  elapsedYears: number;
+}
+
 // ============================================================
 // Internal types — not exported, used only within this module
 // ============================================================
@@ -771,6 +780,29 @@ export class GameLoop {
         investigations: newInvestigations,
       },
     };
+  }
+
+  /**
+   * Read-only summary of one player's active decisions, for narrating their "annual
+   * report" to a rival (`GameEngine.getAnnualReport`) — like `digDeeper`, a single-
+   * player, out-of-band lookup that bypasses the turn cycle entirely and never
+   * mutates anything. Returns `null` if the player isn't found (unknown id, or
+   * bankrupted and no longer in the active-players list the caller loaded).
+   */
+  getActiveDecisionSummaries(playerId: string, players: EngineDataInput[]): ActiveDecisionSummary[] | null {
+    const target = players.find((p) => p.id === playerId);
+    if (!target?.company) return null;
+
+    const engineState = this.readEngineState(target.company);
+    return engineState.activeDecisions
+      .filter((d) => !!d.definition)
+      .map((d) => ({
+        instanceId: d.id,
+        decisionName: d.definition.decision,
+        description: d.definition.description,
+        deployedYear: d.deployedYear,
+        elapsedYears: d.elapsedYears,
+      }));
   }
 
   // ============================================================
