@@ -378,15 +378,23 @@ export class GameLoop {
     }
 
     // ── Step 7 — Balance sheet (FORMULAS §5) ──────────────────
-    // First, load existing legal cases from engineState (before calculating legal exposure)
-    const allCases: LegalCaseData[] = [];
+    // First, load existing legal cases from engineState (before calculating legal exposure).
+    // Every case gets persisted into BOTH the plaintiff's and the defendant's own
+    // engineState.legalCases at the end of the turn it's active in (Step 12) — each side
+    // needs it in their own persisted state — so it's present in two different players'
+    // engineState by the time it's loaded back here. Dedupe by id (last write wins, though
+    // both copies are always identical) or this list — and, since Step 12 persists whatever
+    // it finds back into every party's engineState again, the duplication too — doubles
+    // every subsequent turn.
+    const allCasesById = new Map<string, LegalCaseData>();
     for (const [, ctx] of ctxs) {
       for (const c of ctx.engineState.legalCases) {
         if (c.status !== 'resolved') {
-          allCases.push(c);
+          allCasesById.set(c.id, c);
         }
       }
     }
+    const allCases: LegalCaseData[] = Array.from(allCasesById.values());
 
     // Calculate legal exposure for each player from their open cases
     const legalExposureMap = new Map<string, number>();

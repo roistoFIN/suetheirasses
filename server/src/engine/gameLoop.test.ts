@@ -563,6 +563,52 @@ describe('GameLoop', () => {
       expect(aliceCases![0].plaintiffId).toBe('player-2');
     });
 
+    it('should not duplicate a case across turns just because it is persisted into both the plaintiff and defendant\'s own engineState (regression)', () => {
+      // A case is persisted into BOTH parties' own engineState.legalCases at the end
+      // of the turn it's filed in — each side needs it in their own persisted state.
+      // Reconstructing allCases naively by concatenating every player's persisted
+      // list would therefore double-count it (and double it again every subsequent
+      // turn, since the duplicate gets re-persisted into both copies again).
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+      });
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [], operational: [],
+        lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
+      });
+
+      const outcome1 = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+      const aliceUpdate = outcome1.companyUpdates.find(u => u.playerId === 'player-1')!;
+      const bobUpdate = outcome1.companyUpdates.find(u => u.playerId === 'player-2')!;
+
+      // Sanity check: both parties' own persisted state carries a copy of the same case.
+      expect(aliceUpdate.engineState.legalCases).toHaveLength(1);
+      expect(bobUpdate.engineState.legalCases).toHaveLength(1);
+      expect(aliceUpdate.engineState.legalCases[0].id).toBe(bobUpdate.engineState.legalCases[0].id);
+
+      const players = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: aliceUpdate.variables, engineState: aliceUpdate.engineState },
+        { id: 'player-2', name: 'Bob', variables: bobUpdate.variables, engineState: bobUpdate.engineState },
+      ]);
+      const outcome2 = gameLoop.resolveTurn('room-1', 2, players);
+
+      const aliceCasesTurn2 = outcome2.result.players.find((p) => p.playerId === 'player-1')?.legalCases;
+      const bobCasesTurn2 = outcome2.result.players.find((p) => p.playerId === 'player-2')?.legalCases;
+      expect(aliceCasesTurn2).toHaveLength(1);
+      expect(bobCasesTurn2).toHaveLength(1);
+
+      // And it must stay deduplicated on yet another turn, not just the first reload.
+      const aliceUpdate2 = outcome2.companyUpdates.find(u => u.playerId === 'player-1')!;
+      const bobUpdate2 = outcome2.companyUpdates.find(u => u.playerId === 'player-2')!;
+      const players3 = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: aliceUpdate2.variables, engineState: aliceUpdate2.engineState },
+        { id: 'player-2', name: 'Bob', variables: bobUpdate2.variables, engineState: bobUpdate2.engineState },
+      ]);
+      const outcome3 = gameLoop.resolveTurn('room-1', 3, players3);
+      expect(outcome3.result.players.find((p) => p.playerId === 'player-1')?.legalCases).toHaveLength(1);
+      expect(outcome3.result.players.find((p) => p.playerId === 'player-2')?.legalCases).toHaveLength(1);
+    });
+
     it('should not create a case when the cited decision was never deployed by the target', () => {
       // Alice deploys nothing risky; Bob tries to sue her over a decision she never made
       gameLoop.submitDecisions('room-1', 'player-2', {

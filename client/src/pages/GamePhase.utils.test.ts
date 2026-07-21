@@ -181,6 +181,24 @@ function calculateLegalExposureRatio(legalExposure: number, cash: number, cap = 
   return Math.min(cap, legalExposure / cash);
 }
 
+// ── "YOU'VE BEEN SUED" modal trigger — newly-filed cases against me this turn ──
+
+interface MinimalLegalCaseForSued {
+  id: string;
+  defendantId: string;
+}
+
+function detectNewlySuedCases<T extends MinimalLegalCaseForSued>(
+  previousCases: T[],
+  currentCases: T[],
+  myPlayerId: string,
+): T[] {
+  const previouslySuedCaseIds = new Set(
+    previousCases.filter((c) => c.defendantId === myPlayerId).map((c) => c.id),
+  );
+  return currentCases.filter((c) => c.defendantId === myPlayerId && !previouslySuedCaseIds.has(c.id));
+}
+
 describe('GamePhase utilities', () => {
   describe('fmt', () => {
     it('should format positive numbers correctly', () => {
@@ -563,6 +581,50 @@ describe('GamePhase utilities', () => {
       expect(grounds.map((g) => g.groundName)).toEqual(
         expect.arrayContaining(['Environmental Violation', 'Securities Violation']),
       );
+    });
+  });
+
+  describe('detectNewlySuedCases', () => {
+    const me = 'player-1';
+    const rival = 'player-2';
+
+    it('should return nothing when there are no cases at all', () => {
+      expect(detectNewlySuedCases([], [], me)).toEqual([]);
+    });
+
+    it('should detect a case that appears against me for the first time', () => {
+      const newCase = { id: 'case-1', defendantId: me };
+      expect(detectNewlySuedCases([], [newCase], me)).toEqual([newCase]);
+    });
+
+    it('should not re-report a case that was already present last turn', () => {
+      const existingCase = { id: 'case-1', defendantId: me };
+      expect(detectNewlySuedCases([existingCase], [existingCase], me)).toEqual([]);
+    });
+
+    it('should ignore cases where I am the plaintiff, not the defendant', () => {
+      const iAmSuingThem = { id: 'case-1', defendantId: rival };
+      expect(detectNewlySuedCases([], [iAmSuingThem], me)).toEqual([]);
+    });
+
+    it('should only report the genuinely new case when mixed with an existing one', () => {
+      const existingCase = { id: 'case-1', defendantId: me };
+      const newCase = { id: 'case-2', defendantId: me };
+      expect(detectNewlySuedCases([existingCase], [existingCase, newCase], me)).toEqual([newCase]);
+    });
+
+    it('should detect multiple new cases filed in the same turn', () => {
+      const newCase1 = { id: 'case-1', defendantId: me };
+      const newCase2 = { id: 'case-2', defendantId: me };
+      const result = detectNewlySuedCases([], [newCase1, newCase2], me);
+      expect(result).toEqual(expect.arrayContaining([newCase1, newCase2]));
+      expect(result).toHaveLength(2);
+    });
+
+    it('should not report a case that has since resolved and disappeared as "new"', () => {
+      const resolvedCase = { id: 'case-1', defendantId: me };
+      // Case existed last turn, isn't present this turn — should never appear as "new".
+      expect(detectNewlySuedCases([resolvedCase], [], me)).toEqual([]);
     });
   });
 });

@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { Socket } from 'socket.io-client';
 import {
   Modal, Stack, Text, Badge, Button, Flex, TextInput,
-  Slider, Divider, Box,
+  Slider, Divider, Box, Image,
 } from '@mantine/core';
 import { useGameStore } from '../stores/gameStore';
 import { useSocketStore } from '../stores/socketStore';
@@ -10,13 +10,13 @@ import {
   ServerEvents, ClientEvents,
   type PlayerTurnResult, type LegalCaseData,
   type DecisionDefinition, type GameSettings, type SubmittedDecisions,
-  type IncomingAttackInfo,
+  type IncomingAttackInfo, type TurnResolutionResult,
 } from '@suetheirasses/shared';
 import {
   IconClock, IconFileText,
   IconTrendingUp, IconTrendingDown, IconSearch, IconGavel,
   IconHelpCircle, IconLock, IconCheck, IconSwords, IconChevronDown,
-  IconShield,
+  IconShield, IconDoorExit,
 } from '@tabler/icons-react';
 
 // ============================================================
@@ -78,6 +78,23 @@ function getCaseRole(caseData: LegalCaseData, myPlayerId: string): 'plaintiff' |
 function getOpponentName(caseData: LegalCaseData, myPlayerId: string, playerNames: Map<string, string>): string {
   const opponentId = caseData.defendantId === myPlayerId ? caseData.plaintiffId : caseData.defendantId;
   return playerNames.get(opponentId) ?? 'Unknown';
+}
+
+/**
+ * Lawsuits filed against `myPlayerId` in `currentCases` that weren't already present
+ * (by id) in `previousCases` — drives the "YOU'VE BEEN SUED" modal. Pure/exported so
+ * it's unit-testable without a live turn cycle; the component only wires it into
+ * state on each newly-resolved turn (see the turnResults sync effect below).
+ */
+export function detectNewlySuedCases(
+  previousCases: LegalCaseData[],
+  currentCases: LegalCaseData[],
+  myPlayerId: string,
+): LegalCaseData[] {
+  const previouslySuedCaseIds = new Set(
+    previousCases.filter((c) => c.defendantId === myPlayerId).map((c) => c.id),
+  );
+  return currentCases.filter((c) => c.defendantId === myPlayerId && !previouslySuedCaseIds.has(c.id));
 }
 
 // ============================================================
@@ -283,7 +300,7 @@ const gpStyles = {
 
 export default function GamePhase() {
   const { socket } = useSocketStore();
-  const { player, turnResults, timer, currentPhase, updateTimer, decisions, gameSettings } = useGameStore();
+  const { player, turnResults, timer, round, currentPhase, updateTimer, decisions, gameSettings } = useGameStore();
   const [myData, setMyData] = useState<PlayerTurnResult | null>(null);
   const [competitors, setCompetitors] = useState<PlayerTurnResult[]>([]);
   // Previous turn's snapshot — kept only to compute the "since last turn" trend arrows
@@ -299,6 +316,19 @@ export default function GamePhase() {
   const [sueSuggestion, setSueSuggestion] = useState<{ targetId: string; groundName: string } | null>(null);
   const [riskInfoCase, setRiskInfoCase] = useState<LegalCaseData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
+  // Lawsuits newly filed against this player, detected this turn (see the sync
+  // effect below) — drives the "YOU'VE BEEN SUED" modal. Cleared on dismiss.
+  const [suedCases, setSuedCases] = useState<LegalCaseData[]>([]);
+  // Ready state for the in-flight turn — authoritative from the server (game:readyUpdate),
+  // not optimistic local state, so it can never drift from what every other player sees.
+  const [readyPlayerIds, setReadyPlayerIds] = useState<string[]>([]);
+  const [activePlayerCount, setActivePlayerCount] = useState(0);
+  // Guards the turn-sync effect below against React 18 StrictMode's dev-only double
+  // invocation of effects with no cleanup — without this, the same `turnResults` object
+  // gets processed twice, and setSuedCases' append (non-idempotent by nature) ends up
+  // adding the same lawsuit twice, producing a duplicate React key.
+  const processedTurnResultsRef = useRef<TurnResolutionResult | null>(null);
 
   // Pending decisions + lawsuits for this turn — shared between the Decision Deck and
   // the Sue modal, since both contribute to the same game:submitDecisions payload
@@ -309,23 +339,70 @@ export default function GamePhase() {
     socket?.emit(ClientEvents.GAME_SUBMIT_DECISIONS, next);
   };
 
+  // Instant forfeit — server marks this player bankrupt and, per game:left, the
+  // client resets straight back to the landing page (see socketStore.ts).
+  const handleLeaveGame = () => {
+    socket?.emit(ClientEvents.GAME_LEAVE, null);
+    setLeaveConfirmOpen(false);
+  };
+
+  const isReady = !!player && readyPlayerIds.includes(player.id);
+  const handleToggleReady = () => {
+    socket?.emit(ClientEvents.GAME_READY, { ready: !isReady });
+  };
+
+  // Ready state is server-authoritative and per-round — it resets to an empty list
+  // itself (game:readyUpdate) the moment a new round starts, so there's no local
+  // reset-on-round-change effect needed here, just the listener.
+  useEffect(() => {
+    if (!socket) return;
+    const handler = (data: { readyPlayerIds: string[]; activePlayerCount: number }) => {
+      setReadyPlayerIds(data.readyPlayerIds);
+      setActivePlayerCount(data.activePlayerCount);
+    };
+    socket.on(ServerEvents.GAME_READY_UPDATE, handler);
+    return () => {
+      socket.off(ServerEvents.GAME_READY_UPDATE, handler);
+    };
+  }, [socket]);
+
   // Sync from store on turn resolution. Capture the outgoing values as "previous"
   // before overwriting, so KPI/intel trend arrows have something to compare against.
   useEffect(() => {
     if (!turnResults || !player) return;
+    // See processedTurnResultsRef's declaration — skips StrictMode's dev-only replay
+    // of this same turnResults object so non-idempotent updates below (setSuedCases'
+    // append) don't double-fire.
+    if (processedTurnResultsRef.current === turnResults) return;
+    processedTurnResultsRef.current = turnResults;
     const myPlayer = turnResults.players.find((p) => p.playerId === player.id);
     if (myPlayer) {
-      setMyData((current) => {
-        setPrevData(current);
-        return myPlayer;
-      });
+      // Read myData/competitors directly rather than via setState's functional-updater
+      // form — the ref-guard above already guarantees this effect body runs at most
+      // once per genuinely new turnResults, and updater callbacks are explicitly *not*
+      // guaranteed single-invocation by React (StrictMode intentionally double-invokes
+      // them in dev to catch impure updaters) — setSuedCases' append below is exactly
+      // the kind of non-idempotent side effect that bit us when it lived in one.
+      setPrevData(myData);
+      // Detect lawsuits filed against me since the last turn — myData is null on the
+      // very first snapshot (nothing to have been sued over yet), so this only ever
+      // fires for a genuinely new case appearing in a resolved turn.
+      if (myData) {
+        const newlySued = detectNewlySuedCases(myData.legalCases, myPlayer.legalCases, player.id);
+        if (newlySued.length > 0) {
+          setSuedCases((prev) => [...prev, ...newlySued]);
+        }
+      }
+      setMyData(myPlayer);
+
       const newCompetitors = turnResults.players.filter((p) => p.playerId !== player.id);
-      setCompetitors((current) => {
-        setPrevCompetitors(new Map(current.map((c) => [c.playerId, c])));
-        return newCompetitors;
-      });
+      setPrevCompetitors(new Map(competitors.map((c) => [c.playerId, c])));
+      setCompetitors(newCompetitors);
       setLoading(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- myData/competitors are
+    // intentionally read as "previous value" via closure, not tracked as deps; the
+    // ref-guard above (not this dependency array) is what gates re-execution.
   }, [turnResults, player]);
 
   // A new round means the server already cleared last turn's submissions — reset
@@ -380,7 +457,27 @@ export default function GamePhase() {
       {/* ── Header ─────────────────────────────────────── */}
       <Flex justify="space-between" align="center" wrap="wrap" gap="sm" style={gpStyles.header}>
         <Text style={gpStyles.title}>{myData.playerName}</Text>
-        <RiskGaugeBar value={riskGauge} seconds={localTimer} urgent={isUrgent} onClick={() => setDrillDown({ type: 'threat' })} />
+        <Flex align="center" gap="sm">
+          <RiskGaugeBar value={riskGauge} onClick={() => setDrillDown({ type: 'threat' })} />
+          <TurnBox
+            round={round}
+            seconds={localTimer}
+            urgent={isUrgent}
+            isReady={isReady}
+            readyCount={readyPlayerIds.length}
+            activePlayerCount={activePlayerCount}
+            onToggleReady={handleToggleReady}
+          />
+          <Button
+            size="xs"
+            color="red"
+            variant="outline"
+            leftSection={<IconDoorExit size={14} />}
+            onClick={() => setLeaveConfirmOpen(true)}
+          >
+            Leave Game
+          </Button>
+        </Flex>
       </Flex>
 
       {/* ── KPI Cards ──────────────────────────────────── */}
@@ -489,6 +586,44 @@ export default function GamePhase() {
       <Modal opened={riskInfoCase !== null} onClose={() => setRiskInfoCase(null)} size="md" centered title={<Text style={{ ...boldStyle, fontSize: '0.85rem' }}>⚠️ RISK BREAKDOWN</Text>}>
         {riskInfoCase && <RiskBreakdownView caseData={riskInfoCase} vars={vars} />}
       </Modal>
+
+      <Modal opened={leaveConfirmOpen} onClose={() => setLeaveConfirmOpen(false)} size="sm" centered title={<Text style={{ ...boldStyle, fontSize: '0.9rem' }}>🚪 LEAVE GAME</Text>}>
+        <Stack gap="md">
+          <Text size="sm">
+            Leaving now instantly forfeits the game — you're marked bankrupt and there's
+            no way back in. The rest of the game continues without you.
+          </Text>
+          <Flex justify="flex-end" gap="sm">
+            <Button variant="default" onClick={() => setLeaveConfirmOpen(false)}>
+              Cancel
+            </Button>
+            <Button color="red" onClick={handleLeaveGame}>
+              Leave &amp; Forfeit
+            </Button>
+          </Flex>
+        </Stack>
+      </Modal>
+
+      <Modal opened={suedCases.length > 0} onClose={() => setSuedCases([])} size="md" centered title={<Text style={{ ...boldStyle, fontSize: '0.9rem' }}>⚖️ YOU'VE BEEN SUED</Text>}>
+        <Stack gap="md">
+          <Image src="/images/sued.png" alt="Served with a lawsuit" radius="md" />
+          <Stack gap="xs">
+            {suedCases.map((c) => (
+              <Box key={c.id} style={{ borderLeft: '3px solid var(--mantine-color-red-6)', paddingLeft: 8 }}>
+                <Text size="sm" fw={600}>
+                  {playerNames.get(c.plaintiffId) ?? 'Unknown'} sued you over "{c.decisionName}"
+                </Text>
+                <Text size="sm" c="dimmed">
+                  Ground: {c.groundName} — Stakes: {fmt(c.stakes)}
+                </Text>
+              </Box>
+            ))}
+          </Stack>
+          <Button fullWidth onClick={() => setSuedCases([])}>
+            Got it
+          </Button>
+        </Stack>
+      </Modal>
     </div>
   );
 }
@@ -527,34 +662,69 @@ function KpiCard({ label, value, trend, negative, onClick }: KpiCardProps) {
 
 interface RiskGaugeBarProps {
   value: number;
-  seconds: number;
-  urgent?: boolean;
   onClick: () => void;
 }
 
-function RiskGaugeBar({ value, seconds, urgent, onClick }: RiskGaugeBarProps) {
+function RiskGaugeBar({ value, onClick }: RiskGaugeBarProps) {
   const pctVal = Math.max(0, Math.min(100, value));
   const critical = pctVal >= 70;
   const color = pctVal < 35 ? '#22c55e' : pctVal < 70 ? '#fbbf24' : '#ef4444';
 
   return (
-    <Box style={{ ...gpStyles.sectionCard, cursor: 'pointer', maxWidth: 480 }} onClick={onClick}>
-      <Flex justify="space-between" align="center">
-        <Flex align="center" gap="sm">
-          <IconShield size={20} style={{ color: '#333' }} />
-          <Stack gap={0}>
-            <Text style={{ ...boldStyle, fontSize: '0.65rem', letterSpacing: '0.03em', color: '#444' }}>
-              {critical ? 'THREAT — ALERT' : 'THREAT LEVEL'}
-            </Text>
-            <Box h={12} style={{ background: '#fff', border: '3px solid #333', borderRadius: 9999, overflow: 'hidden', width: 200 }}>
-              <Box h="100%" style={{ background: color, width: `${pctVal}%`, transition: 'width 0.5s ease' }} />
-            </Box>
-          </Stack>
-        </Flex>
+    <Box style={{ ...gpStyles.sectionCard, cursor: 'pointer', maxWidth: 280 }} onClick={onClick}>
+      <Flex align="center" gap="sm">
+        <IconShield size={20} style={{ color: '#333' }} />
+        <Stack gap={0}>
+          <Text style={{ ...boldStyle, fontSize: '0.65rem', letterSpacing: '0.03em', color: '#444' }}>
+            {critical ? 'THREAT — ALERT' : 'THREAT LEVEL'}
+          </Text>
+          <Box h={12} style={{ background: '#fff', border: '3px solid #333', borderRadius: 9999, overflow: 'hidden', width: 200 }}>
+            <Box h="100%" style={{ background: color, width: `${pctVal}%`, transition: 'width 0.5s ease' }} />
+          </Box>
+        </Stack>
+      </Flex>
+    </Box>
+  );
+}
+
+// ============================================================
+// Sub-components — Turn Box (countdown + round number + Ready)
+// ============================================================
+
+interface TurnBoxProps {
+  round: number;
+  seconds: number;
+  urgent?: boolean;
+  isReady: boolean;
+  readyCount: number;
+  activePlayerCount: number;
+  onToggleReady: () => void;
+}
+
+function TurnBox({ round, seconds, urgent, isReady, readyCount, activePlayerCount, onToggleReady }: TurnBoxProps) {
+  return (
+    <Box style={{ ...gpStyles.sectionCard, maxWidth: 220 }}>
+      <Flex justify="space-between" align="center" gap="sm">
+        <Text style={{ ...boldStyle, fontSize: '0.65rem', letterSpacing: '0.03em', color: '#444' }}>
+          TURN {round}
+        </Text>
         <Badge variant="light" color={urgent ? 'red' : 'dark'} style={{ ...boldStyle, ...(urgent && { animation: 'pulse 1s infinite' }) }}>
-          <Flex align="center" gap={4}><IconClock size={14} />{String(Math.floor(seconds / 60)).padStart(2, '0')}:{String(seconds % 60).padStart(2, '0')}</Flex>
+          <Flex align="center" gap={4}>
+            <IconClock size={14} />
+            {String(Math.floor(seconds / 60)).padStart(2, '0')}:{String(seconds % 60).padStart(2, '0')}
+          </Flex>
         </Badge>
       </Flex>
+      <Button
+        fullWidth
+        size="xs"
+        mt={6}
+        color={isReady ? 'green' : 'dark'}
+        variant={isReady ? 'filled' : 'outline'}
+        onClick={onToggleReady}
+      >
+        {isReady ? '✓ READY' : 'READY'} ({readyCount}/{activePlayerCount})
+      </Button>
     </Box>
   );
 }

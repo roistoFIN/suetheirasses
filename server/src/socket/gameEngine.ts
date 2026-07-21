@@ -21,8 +21,9 @@ import {
   type AnnualReportEntry,
   type AdminRoomSnapshot,
   type FormulaInfo,
+  type GameReadyUpdateResponse,
 } from '@suetheirasses/shared';
-import { validateRoomJoin, validateSubmitDecisions, validateDigDeeper, validateRoomRejoin, validateAnnualReportRequest } from '../validation/schemas.js';
+import { validateRoomJoin, validateSubmitDecisions, validateDigDeeper, validateRoomRejoin, validateAnnualReportRequest, validateChatMessage, validateGameReady } from '../validation/schemas.js';
 import { GameLoop } from '../engine/gameLoop.js';
 import { generateAnnualReportBlurb } from '../services/llmService.js';
 
@@ -412,6 +413,7 @@ export class GameEngine {
       players: new Map([[dbPlayer.id, syncedPlayer]]),
       timer: null,
       timerValue: 0,
+      readyPlayerIds: new Set(),
     };
 
     this.rooms.set(room.id, roomState);
@@ -669,9 +671,16 @@ export class GameEngine {
         return;
       }
 
-      // Not over — loop into the next GAME_PHASE round.
+      // Not over — loop into the next GAME_PHASE round. Ready status is per-round —
+      // whoever was ready for the turn that just resolved doesn't stay "ready" for
+      // the next one.
       roomState.room.currentPhaseRound = round + 1;
       await this.syncRoomToDB(roomId);
+      roomState.readyPlayerIds.clear();
+      this.io.to(roomId).emit(ServerEvents.GAME_READY_UPDATE, {
+        readyPlayerIds: [],
+        activePlayerCount: Array.from(roomState.players.values()).filter((p) => !p.bankrupt).length,
+      });
 
       this.broadcastRoomState(roomId, ServerEvents.PHASE_CHANGED, {
         phase: RoomStatus.GAME_PHASE,
@@ -684,6 +693,103 @@ export class GameEngine {
     } finally {
       this.advancingRooms.delete(roomId);
     }
+  }
+
+  /**
+   * Voluntary forfeit — the "Leave Game" button, GAME_PHASE only. Instantly marks the
+   * requesting player bankrupt (same DB write + `player:bankrupt` broadcast shape as a
+   * natural cash<0 elimination in `resolveGameTurn`) and, if that leaves at most one
+   * active player, ends the game exactly like `resolveGameTurn`'s post-turn win check
+   * does. Guarded by the same `advancingRooms` lock `resolveGameTurn` uses — both
+   * mutate room/player state and must not interleave with an in-flight turn resolution.
+   *
+   * If the game continues, this player's ready flag (if any) no longer counts toward
+   * "all active players ready" — `triggerImmediateResolution` tells the caller whether
+   * removing it just satisfied that condition for everyone remaining. It's a flag, not
+   * a direct `resolveGameTurn` call from in here, because this method still holds the
+   * `advancingRooms` lock in its `finally` until it returns — calling back into
+   * `resolveGameTurn` before that lock is released would just no-op.
+   */
+  async forfeitGame(roomId: string, playerId: string): Promise<{ success: boolean; reason?: string; triggerImmediateResolution?: boolean }> {
+    if (this.advancingRooms.has(roomId)) {
+      return { success: false, reason: 'turn_in_progress' };
+    }
+    this.advancingRooms.add(roomId);
+
+    try {
+      const roomState = this.rooms.get(roomId);
+      if (!roomState || roomState.room.status !== RoomStatus.GAME_PHASE) {
+        return { success: false, reason: 'not_in_game' };
+      }
+
+      const player = roomState.players.get(playerId);
+      if (!player || player.bankrupt) {
+        return { success: false, reason: 'not_active' };
+      }
+
+      await this.syncPlayerToDB(playerId, { bankrupt: true });
+      player.bankrupt = true;
+      this.io.to(roomId).emit(ServerEvents.PLAYER_BANKRUPT, {
+        playerId: player.id,
+        playerName: player.name,
+      });
+
+      const stillActive = await this.prisma.player.findMany({ where: { roomId, bankrupt: false } });
+      if (stillActive.length <= 1) {
+        this.clearTimer(roomId);
+        roomState.room.status = RoomStatus.AFTERMATH;
+        await this.syncRoomToDB(roomId);
+
+        const gameOverPayload = await this.buildGameOverPayload(roomId, stillActive[0]?.id);
+        this.io.to(roomId).emit(ServerEvents.GAME_OVER, gameOverPayload);
+        this.broadcastRoomState(roomId, ServerEvents.PHASE_CHANGED, {
+          phase: RoomStatus.AFTERMATH,
+          round: roomState.room.currentPhaseRound,
+          timeLimit: PHASE_TIMERS[RoomStatus.AFTERMATH],
+        });
+        this.startTimer(roomId, PHASE_TIMERS[RoomStatus.AFTERMATH]);
+        return { success: true };
+      }
+
+      roomState.readyPlayerIds.delete(playerId);
+      const readyUpdate: GameReadyUpdateResponse = {
+        readyPlayerIds: Array.from(roomState.readyPlayerIds),
+        activePlayerCount: stillActive.length,
+      };
+      this.io.to(roomId).emit(ServerEvents.GAME_READY_UPDATE, readyUpdate);
+
+      return {
+        success: true,
+        triggerImmediateResolution: readyUpdate.activePlayerCount > 0 && readyUpdate.readyPlayerIds.length >= readyUpdate.activePlayerCount,
+      };
+    } finally {
+      this.advancingRooms.delete(roomId);
+    }
+  }
+
+  /**
+   * Toggle one player's ready status for the in-flight turn. Returns `null` if the
+   * room/player isn't in a state where readiness is meaningful (not GAME_PHASE, unknown
+   * player, already-bankrupt player) — the caller no-ops on `null` rather than erroring,
+   * since a stale ready click racing a phase change isn't really invalid input.
+   */
+  toggleReady(roomId: string, playerId: string, ready: boolean): GameReadyUpdateResponse | null {
+    const roomState = this.rooms.get(roomId);
+    if (!roomState || roomState.room.status !== RoomStatus.GAME_PHASE) return null;
+
+    const player = roomState.players.get(playerId);
+    if (!player || player.bankrupt) return null;
+
+    if (ready) {
+      roomState.readyPlayerIds.add(playerId);
+    } else {
+      roomState.readyPlayerIds.delete(playerId);
+    }
+
+    return {
+      readyPlayerIds: Array.from(roomState.readyPlayerIds),
+      activePlayerCount: Array.from(roomState.players.values()).filter((p) => !p.bankrupt).length,
+    };
   }
 
   /** Build the winner + ranked standings payload once only one player remains (FORMULAS §12). */
@@ -1195,9 +1301,21 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
       // Only start from WAITING phase
       if (roomState.room.status !== RoomStatus.WAITING) return;
 
+      // Need at least 2 players — the host can't sue/compete against themselves.
+      // Client-side the Start Game button is already disabled for this case; this
+      // is the server-authoritative enforcement of the same rule.
+      if (roomState.players.size < 2) {
+        socket.emit(ServerEvents.ERROR, {
+          code: 'NOT_ENOUGH_PLAYERS',
+          message: 'At least 2 players are required to start the game',
+        });
+        return;
+      }
+
       // Start the game — enter GAME_PHASE
       roomState.room.status = RoomStatus.GAME_PHASE;
       roomState.room.currentPhaseRound = 1;
+      roomState.readyPlayerIds.clear();
       await engine.syncRoomToDB(roomId);
       engine.startTimer(roomId, PHASE_TIMERS[RoomStatus.GAME_PHASE]);
 
@@ -1205,6 +1323,10 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
         phase: RoomStatus.GAME_PHASE,
         round: 1,
         timeLimit: PHASE_TIMERS[RoomStatus.GAME_PHASE],
+      });
+      engine.broadcastRoomState(roomId, ServerEvents.GAME_READY_UPDATE, {
+        readyPlayerIds: [],
+        activePlayerCount: Array.from(roomState.players.values()).filter((p) => !p.bankrupt).length,
       });
 
       // Send the decision library + per-turn limits once — it's static for the
@@ -1311,6 +1433,110 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
         socket.emit(ServerEvents.ERROR, {
           code: 'INVALID_ANNUAL_REPORT_REQUEST',
           message: error.message || 'Invalid annual report request',
+        });
+      }
+    });
+
+    // Voluntary forfeit — "Leave Game" button, GAME_PHASE only. Instant bankruptcy
+    // for the requesting player only; acks back to just this socket (GAME_LEFT) so
+    // the client knows to reset and return to the landing page, separately from the
+    // player:bankrupt broadcast every other player in the room also receives.
+    socket.on(ClientEvents.GAME_LEAVE, async () => {
+      const roomId = engine.getPlayerRoom(socket.id);
+      if (!roomId) return;
+
+      const roomState = engine.rooms.get(roomId);
+      if (!roomState || roomState.room.status !== RoomStatus.GAME_PHASE) return;
+
+      const player = Array.from(roomState.players.values()).find(
+        (p: Player) => p.socketId === socket.id,
+      );
+      if (!player) return;
+
+      const result = await engine.forfeitGame(roomId, player.id);
+      if (!result.success) {
+        socket.emit(ServerEvents.ERROR, {
+          code: 'LEAVE_GAME_FAILED',
+          message: result.reason || 'Unable to leave the game right now',
+        });
+        return;
+      }
+      socket.emit(ServerEvents.GAME_LEFT, null);
+
+      // The player who just left might have been the last one anyone was waiting on.
+      if (result.triggerImmediateResolution) {
+        engine.clearTimer(roomId);
+        engine.resolveGameTurn(roomId).catch((error) => {
+          console.error(`Ready-triggered turn resolution failed for room ${roomId}:`, error);
+        });
+      }
+    });
+
+    // Ready toggle for the in-flight turn — once every active player is ready, the
+    // turn resolves immediately instead of waiting out the rest of the timer.
+    socket.on(ClientEvents.GAME_READY, (payload: unknown) => {
+      const roomId = engine.getPlayerRoom(socket.id);
+      if (!roomId) return;
+
+      const roomState = engine.rooms.get(roomId);
+      if (!roomState || roomState.room.status !== RoomStatus.GAME_PHASE) return;
+
+      const player = Array.from(roomState.players.values()).find(
+        (p: Player) => p.socketId === socket.id,
+      );
+      if (!player) return;
+
+      let ready: boolean;
+      try {
+        ({ ready } = validateGameReady(payload));
+      } catch (error: any) {
+        socket.emit(ServerEvents.ERROR, {
+          code: 'INVALID_READY',
+          message: error.message || 'Invalid ready payload',
+        });
+        return;
+      }
+
+      const readyUpdate = engine.toggleReady(roomId, player.id, ready);
+      if (!readyUpdate) return;
+
+      engine.broadcastRoomState(roomId, ServerEvents.GAME_READY_UPDATE, readyUpdate);
+
+      if (readyUpdate.activePlayerCount > 0 && readyUpdate.readyPlayerIds.length >= readyUpdate.activePlayerCount) {
+        engine.clearTimer(roomId);
+        engine.resolveGameTurn(roomId).catch((error) => {
+          console.error(`Ready-triggered turn resolution failed for room ${roomId}:`, error);
+        });
+      }
+    });
+
+    // In-room lobby chat — WAITING phase only (the client only ever renders the chat
+    // UI there). Ephemeral: broadcast-only, nothing persisted, no history replay for
+    // a newly-joined/rejoined player, matching this event's existing doc comment.
+    socket.on(ClientEvents.CHAT_MESSAGE, (payload: unknown) => {
+      const roomId = engine.getPlayerRoom(socket.id);
+      if (!roomId) return;
+
+      const roomState = engine.rooms.get(roomId);
+      if (!roomState || roomState.room.status !== RoomStatus.WAITING) return;
+
+      const sender = Array.from(roomState.players.values()).find(
+        (p: Player) => p.socketId === socket.id,
+      );
+      if (!sender) return;
+
+      try {
+        const { message } = validateChatMessage(payload);
+        engine.broadcastRoomState(roomId, ServerEvents.CHAT_MESSAGE, {
+          playerId: sender.id,
+          playerName: sender.name,
+          message,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (error: any) {
+        socket.emit(ServerEvents.ERROR, {
+          code: 'INVALID_CHAT_MESSAGE',
+          message: error.message || 'Invalid chat message',
         });
       }
     });

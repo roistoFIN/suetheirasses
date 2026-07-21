@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Container,
@@ -16,11 +16,32 @@ import {
   CopyButton,
   ActionIcon,
   LoadingOverlay,
+  ScrollArea,
+  Image,
 } from '@mantine/core';
 import { IconCheck, IconCopy } from '@tabler/icons-react';
 import { useSocketStore } from '../stores/socketStore';
 import { useGameStore } from '../stores/gameStore';
-import { ClientEvents, ServerEvents, type RoomInfo } from '@suetheirasses/shared';
+import { ClientEvents, ServerEvents, type RoomInfo, type ChatMessageBroadcast } from '@suetheirasses/shared';
+
+/** localStorage key for remembering the player's name across visits — see `Matchmaking`'s name-entry section. */
+const NAME_STORAGE_KEY = 'stita_player_name';
+
+function loadSavedName(): string {
+  try {
+    return localStorage.getItem(NAME_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function saveName(name: string): void {
+  try {
+    localStorage.setItem(NAME_STORAGE_KEY, name);
+  } catch {
+    // localStorage unavailable (private browsing, etc.) — the name just won't be remembered.
+  }
+}
 
 /**
  * Matchmaking page — Phase 1 of the game flow.
@@ -37,13 +58,48 @@ import { ClientEvents, ServerEvents, type RoomInfo } from '@suetheirasses/shared
  */
 const Matchmaking: React.FC = () => {
   const [searchParams] = useSearchParams();
-  const [playerName, setPlayerName] = useState('');
+  const [playerName, setPlayerName] = useState(loadSavedName);
+  const [isNameLocked, setIsNameLocked] = useState(() => !!loadSavedName());
   const [roomName, setRoomName] = useState('');
   const [isCreating, setIsCreating] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [availableRooms, setAvailableRooms] = useState<RoomInfo[]>([]);
-  const { send, on } = useSocketStore();
+  const [chatMessages, setChatMessages] = useState<ChatMessageBroadcast[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const chatViewportRef = useRef<HTMLDivElement>(null);
+  const { send, on, socket } = useSocketStore();
   const { room, player } = useGameStore();
+
+  /** Remember the player's name as soon as it's non-empty, so it doesn't need to be re-typed next visit. */
+  useEffect(() => {
+    const trimmed = playerName.trim();
+    if (trimmed) {
+      saveName(trimmed);
+    }
+  }, [playerName]);
+
+  /** Lobby chat (WAITING phase only) — listens while a room is joined, resets on unmount. */
+  useEffect(() => {
+    if (!socket || !room) return;
+    const handler = (data: ChatMessageBroadcast) => {
+      setChatMessages((prev) => [...prev, data]);
+    };
+    socket.on(ServerEvents.CHAT_MESSAGE, handler);
+    return () => {
+      socket.off(ServerEvents.CHAT_MESSAGE, handler);
+    };
+  }, [socket, room]);
+
+  useEffect(() => {
+    chatViewportRef.current?.scrollTo({ top: chatViewportRef.current.scrollHeight });
+  }, [chatMessages]);
+
+  const handleSendChatMessage = () => {
+    const trimmed = chatInput.trim();
+    if (!trimmed) return;
+    send(ClientEvents.CHAT_MESSAGE, { message: trimmed });
+    setChatInput('');
+  };
 
   /** Auto-detect invite link from URL query params and pre-fill the room name field. */
   useEffect(() => {
@@ -124,22 +180,16 @@ const Matchmaking: React.FC = () => {
           <Title order={2} mb="md">
             🏢 Room Lobby
           </Title>
-          {isHost && (
-            <Badge size="lg" color="orange" mb="md">
-              🎮 You are the Host
-            </Badge>
-          )}
-          <Divider my="md" />
           <Stack>
             <Text fw={500}>Players ({room.players.length}/{room.maxPlayers}):</Text>
             {room.players.map((p) => (
               <Flex key={p.id} justify="space-between" align="center">
                 <Text>
-                  {p.name} {p.id === player.id && '(You)'} {p.isHost && '👑'}
+                  {p.name} {p.id === player.id && '(You)'}
                 </Text>
                 {isHost && p.id !== player.id ? (
                   <Button
-                    size="xs"
+                    size="compact-xs"
                     color="red"
                     variant="outline"
                     onClick={() => send(ClientEvents.ROOM_KICK, { playerId: p.id })}
@@ -153,6 +203,42 @@ const Matchmaking: React.FC = () => {
                 )}
               </Flex>
             ))}
+          </Stack>
+          <Divider my="md" />
+          <Stack gap="xs" mb="md">
+            <Text fw={500}>Lobby Chat:</Text>
+            <ScrollArea h={160} viewportRef={chatViewportRef} type="auto">
+              <Stack gap={4} p={4}>
+                {chatMessages.length === 0 && (
+                  <Text c="dimmed" size="sm">
+                    No messages yet — say hi.
+                  </Text>
+                )}
+                {chatMessages.map((m, i) => (
+                  <Text key={i} size="sm">
+                    <Text span fw={600}>
+                      {m.playerId === player.id ? 'You' : m.playerName}:
+                    </Text>{' '}
+                    {m.message}
+                  </Text>
+                ))}
+              </Stack>
+            </ScrollArea>
+            <Group gap="xs">
+              <TextInput
+                placeholder="Type a message..."
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSendChatMessage();
+                }}
+                maxLength={500}
+                style={{ flex: 1 }}
+              />
+              <Button onClick={handleSendChatMessage} disabled={!chatInput.trim()}>
+                Send
+              </Button>
+            </Group>
           </Stack>
           <Divider my="md" />
           {isHost && (
@@ -178,9 +264,10 @@ const Matchmaking: React.FC = () => {
                   size="lg"
                   color="green"
                   onClick={() => send(ClientEvents.ROOM_START_GAME, null)}
-                  disabled={room.players.length < 1}
+                  disabled={room.players.length < 2}
+                  title={room.players.length < 2 ? 'Waiting for at least one more player to join' : undefined}
                 >
-                  🚀 Start Game
+                  Start Game
                 </Button>
               </Group>
             </Stack>
@@ -199,6 +286,12 @@ const Matchmaking: React.FC = () => {
     <Container size="sm" py="xl">
       <Paper withBorder p="xl" shadow="lg" pos="relative">
         <LoadingOverlay visible={isCreating || isSearching} />
+        <Image
+          src="/images/hero.png"
+          alt="Sue Their Asses — rival poultry tycoons face off in court"
+          radius="md"
+          mb="md"
+        />
         <Title order={2} mb="xs" ta="center">
           ⚖️ Sue Their Asses
         </Title>
@@ -207,14 +300,24 @@ const Matchmaking: React.FC = () => {
         </Text>
 
         <Stack>
-          <TextInput
-            label="Your Name"
-            placeholder="Enter your name"
-            value={playerName}
-            onChange={(e) => setPlayerName(e.target.value)}
-            required
-            disabled={isCreating || isSearching}
-          />
+          <Group align="flex-end" gap="xs">
+            <TextInput
+              label="Your Name"
+              placeholder="Enter your name"
+              value={playerName}
+              onChange={(e) => setPlayerName(e.target.value)}
+              required
+              disabled={isCreating || isSearching || isNameLocked}
+              style={{ flex: 1 }}
+            />
+            <Button
+              variant="outline"
+              disabled={isCreating || isSearching || !isNameLocked}
+              onClick={() => setIsNameLocked(false)}
+            >
+              Change Name
+            </Button>
+          </Group>
 
           <Divider my="sm" />
 

@@ -11,6 +11,8 @@ interface SocketState {
   send: (event: string, data: unknown) => void;
   on: (event: string, handler: (data: unknown) => void) => void;
   off: (event: string, handler?: (data: unknown) => void) => void;
+  /** Clears the resumable session and wipes room/player state back to the landing page — the "acknowledge and go back" step after a kick or a self-elimination (bankrupt/forfeit) takeover screen. */
+  returnToLanding: () => void;
 }
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
@@ -100,12 +102,17 @@ export const useSocketStore = create<SocketState>((set, get) => ({
 
     socket.on(ServerEvents.ROOM_PLAYER_KICKED, (data: { kickedPlayerId: string; kickedPlayerName: string }) => {
       console.log('Player kicked:', data);
-      const { kickPlayer, player } = useGameStore.getState();
-      kickPlayer(data.kickedPlayerId);
-      // If I'm the one who got kicked, there's no session left to resume.
+      const { kickPlayer, player, resetSession, setNotification } = useGameStore.getState();
+      // If I'm the one who got kicked, there's no session left to resume — wipe
+      // room/player state back to the landing page instead of just removing my
+      // own roster entry, and let them know why they ended up back there.
       if (player && data.kickedPlayerId === player.id) {
         clearSession();
+        resetSession();
+        setNotification("You've been removed from the room by the host.");
+        return;
       }
+      kickPlayer(data.kickedPlayerId);
     });
 
     socket.on(ServerEvents.ROOM_PLAYER_LEFT, (data: { playerId: string; playerName: string; roomId: string }) => {
@@ -158,8 +165,14 @@ export const useSocketStore = create<SocketState>((set, get) => ({
 
     socket.on(ServerEvents.PLAYER_BANKRUPT, (data: { playerId: string; playerName: string }) => {
       console.log('Player bankrupt:', data);
-      const { markPlayerBankrupt } = useGameStore.getState();
+      const { markPlayerBankrupt, player, setSelfEliminationReason } = useGameStore.getState();
       markPlayerBankrupt(data.playerId);
+      // Mine — flag it so App.tsx's full-screen "lost" takeover replaces whatever
+      // phase would otherwise render (see game:left below for the forfeit case,
+      // which upgrades this to 'forfeit' right after).
+      if (player && data.playerId === player.id) {
+        setSelfEliminationReason('bankrupt');
+      }
     });
 
     socket.on(ServerEvents.GAME_OVER, (data: GameOverResponse) => {
@@ -193,6 +206,16 @@ export const useSocketStore = create<SocketState>((set, get) => ({
       applyAnnualReportResult(data.rivalPlayerId, data.entries);
     });
 
+    socket.on(ServerEvents.GAME_LEFT, () => {
+      console.log('Left the game (forfeited)');
+      // Fires right after player:bankrupt (and, if that forfeit ended the game,
+      // game:over + phase:changed too) — upgrade the reason to 'forfeit' so the
+      // "lost" takeover screen (see App.tsx) shows the right message. The takeover's
+      // own "Return to Start" button — not this handler — is what actually resets
+      // the session; the player gets a moment to see the lost.png screen first.
+      useGameStore.getState().setSelfEliminationReason('forfeit');
+    });
+
     set({ socket, isConnected: true });
   },
 
@@ -219,5 +242,10 @@ export const useSocketStore = create<SocketState>((set, get) => ({
     } else {
       socket?.off(event);
     }
+  },
+
+  returnToLanding: () => {
+    clearSession();
+    useGameStore.getState().resetSession();
   },
 }));

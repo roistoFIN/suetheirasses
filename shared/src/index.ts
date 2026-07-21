@@ -96,6 +96,10 @@ export enum ClientEvents {
   ROOM_REJOIN = 'room:rejoin',
   /** Request AI-narrated "annual report" text for one rival's active decisions — on demand, outside turn resolution. */
   GAME_GET_ANNUAL_REPORT = 'game:getAnnualReport',
+  /** Voluntary forfeit — "Leave Game" during GAME_PHASE. Instant bankruptcy for the requesting player; the game continues for everyone else. */
+  GAME_LEAVE = 'game:leave',
+  /** Toggle ready status for the in-flight turn — once every active (non-bankrupt) player is ready, the turn resolves immediately instead of waiting out the timer. */
+  GAME_READY = 'game:ready',
 }
 
 // Server → Client events
@@ -119,6 +123,10 @@ export enum ServerEvents {
   GAME_DIG_DEEPER_RESULT = 'game:digDeeperResult',
   /** Sent only to the requesting socket, in response to `game:getAnnualReport`. */
   GAME_ANNUAL_REPORT_RESULT = 'game:annualReportResult',
+  /** Sent only to the requesting socket, confirming a successful `game:leave` forfeit — the client's cue to reset to the landing page. */
+  GAME_LEFT = 'game:left',
+  /** Broadcast to the whole room on every `game:ready` toggle, and reset to an empty `readyPlayerIds` at the start of each new round. */
+  GAME_READY_UPDATE = 'game:readyUpdate',
 }
 
 // ============================================================
@@ -144,6 +152,16 @@ export interface DigDeeperPayload {
 /** Payload for `game:getAnnualReport` — request narrated flavor text for one rival's active decisions. */
 export interface AnnualReportRequestPayload {
   rivalPlayerId: string;
+}
+
+/** Payload for `chat:message` (client → server) — in-room chat, currently used in the WAITING-phase lobby. */
+export interface ChatMessagePayload {
+  message: string;
+}
+
+/** Payload for `game:ready` — toggle this player's ready status for the in-flight turn. */
+export interface GameReadyPayload {
+  ready: boolean;
 }
 
 // ===========================================================
@@ -234,6 +252,20 @@ export interface AnnualReportResultPayload {
   entries: AnnualReportEntry[];
 }
 
+/** Broadcast for `chat:message` (server → client) — one chat message, sent to every player in the room. */
+export interface ChatMessageBroadcast {
+  playerId: string;
+  playerName: string;
+  message: string;
+  timestamp: string;
+}
+
+/** Broadcast for `game:readyUpdate` — current ready state for the in-flight turn. `activePlayerCount` excludes bankrupt players, matching the "all active players ready" trigger for early turn resolution. */
+export interface GameReadyUpdateResponse {
+  readyPlayerIds: string[];
+  activePlayerCount: number;
+}
+
 
 
 export interface GameOverResponse {
@@ -291,6 +323,8 @@ export interface RoomState {
   players: Map<string, Player>;
   timer: ReturnType<typeof setInterval> | null;
   timerValue: number;
+  /** Player ids ready for the in-flight turn — cleared at the start of every new GAME_PHASE round. See `GameEngine.toggleReady`. */
+  readyPlayerIds: Set<string>;
 }
 
 

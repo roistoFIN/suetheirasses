@@ -85,6 +85,25 @@ export function validateChatMessage(data: unknown): ChatMessagePayload {
   return chatMessageSchema.parse(data);
 }
 
+/** Zod schema for the `game:ready` Socket.IO event payload — toggles ready status for the in-flight turn. */
+export const gameReadySchema = z.object({
+  ready: z.boolean(),
+});
+
+/** Inferred TypeScript type for validated `game:ready` payloads. */
+export type GameReadyPayload = z.infer<typeof gameReadySchema>;
+
+/**
+ * Validates and parses raw data against the `game:ready` schema.
+ *
+ * @param data - Raw payload from the `game:ready` Socket.IO event.
+ * @returns Validated `GameReadyPayload` object.
+ * @throws ZodValidationError if the payload fails any constraint.
+ */
+export function validateGameReady(data: unknown): GameReadyPayload {
+  return gameReadySchema.parse(data);
+}
+
 /**
  * Zod schema for the `game:submitDecisions` Socket.IO event payload.
  *

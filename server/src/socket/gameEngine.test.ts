@@ -1098,6 +1098,150 @@ describe('GameEngine', () => {
     });
   });
 
+  describe('toggleReady', () => {
+    it('should return null outside GAME_PHASE', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      const playerId = Array.from(roomState.players.values())[0].id;
+
+      expect(engine.toggleReady(roomState.room.id, playerId, true)).toBeNull();
+    });
+
+    it('should return null for an unknown player', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      roomState.room.status = RoomStatus.GAME_PHASE;
+
+      expect(engine.toggleReady(roomState.room.id, 'not-a-real-player', true)).toBeNull();
+    });
+
+    it('should return null for an already-bankrupt player', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      const playerId = Array.from(roomState.players.values())[0].id;
+      roomState.room.status = RoomStatus.GAME_PHASE;
+      roomState.players.get(playerId)!.bankrupt = true;
+
+      expect(engine.toggleReady(roomState.room.id, playerId, true)).toBeNull();
+    });
+
+    it('should add the player to readyPlayerIds and report activePlayerCount', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+      const aliceId = Array.from(roomState.players.values()).find((p) => p.name === 'Alice')!.id;
+      roomState.room.status = RoomStatus.GAME_PHASE;
+
+      const result = engine.toggleReady(roomState.room.id, aliceId, true);
+
+      expect(result).toEqual({ readyPlayerIds: [aliceId], activePlayerCount: 2 });
+    });
+
+    it('should remove the player from readyPlayerIds when un-readying', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      const aliceId = Array.from(roomState.players.values())[0].id;
+      roomState.room.status = RoomStatus.GAME_PHASE;
+
+      engine.toggleReady(roomState.room.id, aliceId, true);
+      const result = engine.toggleReady(roomState.room.id, aliceId, false);
+
+      expect(result).toEqual({ readyPlayerIds: [], activePlayerCount: 1 });
+    });
+
+    it('should exclude bankrupt players from activePlayerCount', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      const bobRoomState = await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+      const aliceId = Array.from(roomState.players.values()).find((p) => p.name === 'Alice')!.id;
+      const bobId = Array.from(bobRoomState.players.values()).find((p) => p.name === 'Bob')!.id;
+      roomState.room.status = RoomStatus.GAME_PHASE;
+      roomState.players.get(bobId)!.bankrupt = true;
+
+      const result = engine.toggleReady(roomState.room.id, aliceId, true);
+
+      expect(result).toEqual({ readyPlayerIds: [aliceId], activePlayerCount: 1 });
+    });
+  });
+
+  describe('resolveGameTurn — ready reset', () => {
+    it('should clear readyPlayerIds and broadcast an empty game:readyUpdate for the next round', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+      const aliceId = Array.from(roomState.players.values()).find((p) => p.name === 'Alice')!.id;
+      roomState.room.status = RoomStatus.GAME_PHASE;
+      roomState.room.currentPhaseRound = 1;
+      roomState.readyPlayerIds.add(aliceId);
+
+      await engine.resolveGameTurn(roomState.room.id);
+
+      expect(roomState.readyPlayerIds.size).toBe(0);
+      const readyUpdateCalls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (call: [string, ...unknown[]]) => call[0] === ServerEvents.GAME_READY_UPDATE,
+      );
+      expect(readyUpdateCalls.length).toBeGreaterThan(0);
+      expect(readyUpdateCalls[readyUpdateCalls.length - 1][1]).toEqual({ readyPlayerIds: [], activePlayerCount: 2 });
+    });
+  });
+
+  describe('forfeitGame — ready interaction', () => {
+    it('should drop the forfeiting player from readyPlayerIds and signal immediate resolution once everyone remaining is ready', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      const bobRoomState = await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Carol', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-3' });
+      const aliceId = Array.from(roomState.players.values()).find((p) => p.name === 'Alice')!.id;
+      const bobId = Array.from(bobRoomState.players.values()).find((p) => p.name === 'Bob')!.id;
+      const carolId = Array.from(roomState.players.values()).find((p) => p.name === 'Carol')!.id;
+      roomState.room.status = RoomStatus.GAME_PHASE;
+
+      // Bob and Carol are both ready; Alice (about to forfeit) never clicked ready.
+      roomState.readyPlayerIds.add(bobId);
+      roomState.readyPlayerIds.add(carolId);
+
+      // Two players remain non-bankrupt after Alice forfeits.
+      (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockImplementation(({ where }: any) =>
+        Promise.resolve(
+          where?.roomId === roomState.room.id && where?.bankrupt === false
+            ? [{ id: bobId }, { id: carolId }]
+            : [],
+        ),
+      );
+
+      const result = await engine.forfeitGame(roomState.room.id, aliceId);
+
+      expect(result).toEqual({ success: true, triggerImmediateResolution: true });
+      expect(roomState.readyPlayerIds.has(aliceId)).toBe(false);
+    });
+
+    it('should not signal immediate resolution while a remaining active player still isn\'t ready', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      const bobRoomState = await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Carol', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-3' });
+      const aliceId = Array.from(roomState.players.values()).find((p) => p.name === 'Alice')!.id;
+      const bobId = Array.from(bobRoomState.players.values()).find((p) => p.name === 'Bob')!.id;
+      const carolId = Array.from(roomState.players.values()).find((p) => p.name === 'Carol')!.id;
+      roomState.room.status = RoomStatus.GAME_PHASE;
+
+      // Only Bob is ready — Carol is not.
+      roomState.readyPlayerIds.add(bobId);
+
+      (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockImplementation(({ where }: any) =>
+        Promise.resolve(
+          where?.roomId === roomState.room.id && where?.bankrupt === false
+            ? [{ id: bobId }, { id: carolId }]
+            : [],
+        ),
+      );
+
+      const result = await engine.forfeitGame(roomState.room.id, aliceId);
+
+      expect(result).toEqual({ success: true, triggerImmediateResolution: false });
+    });
+  });
+
   describe('submitDecisions', () => {
     it('should forward validated decisions to the game loop for the room', async () => {
       const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };

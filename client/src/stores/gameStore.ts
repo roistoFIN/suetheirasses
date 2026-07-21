@@ -70,6 +70,13 @@ interface GameState {
   /** True while attempting to resume a saved session on connect — gates the first paint so the landing page doesn't flash before the attempt resolves. */
   isRejoining: boolean;
   setIsRejoining: (isRejoining: boolean) => void;
+
+  /** Wipes room/player/in-game state back to a fresh landing-page state — used when a player is kicked or otherwise removed from a room they can no longer resume. */
+  resetSession: () => void;
+
+  /** Set once this player's own bankruptcy is detected (natural cash<0 elimination, or a `game:leave` forfeit) — GamePhase shows a full-screen "lost" takeover keyed off this instead of redirecting instantly, so the player has a moment to see it before returning to the landing page. */
+  selfElimination: { reason: 'bankrupt' | 'forfeit' } | null;
+  setSelfEliminationReason: (reason: 'bankrupt' | 'forfeit') => void;
 }
 
 export const useGameStore = create<GameState>((set) => ({
@@ -88,6 +95,7 @@ export const useGameStore = create<GameState>((set) => ({
   error: null,
   notification: null,
   isRejoining: false,
+  selfElimination: null,
   annualReports: new Map(),
   annualReportLoading: new Set(),
 
@@ -166,6 +174,23 @@ export const useGameStore = create<GameState>((set) => ({
   setError: (error) => set({ error }),
   setNotification: (notification) => set({ notification }),
   setIsRejoining: (isRejoining) => set({ isRejoining }),
+  resetSession: () =>
+    set({
+      room: null,
+      player: null,
+      companies: new Map(),
+      currentPhase: null,
+      round: 1,
+      timer: 0,
+      turnResults: null,
+      decisions: [],
+      gameSettings: null,
+      gameOver: null,
+      annualReports: new Map(),
+      annualReportLoading: new Set(),
+      selfElimination: null,
+    }),
+  setSelfEliminationReason: (reason) => set({ selfElimination: { reason } }),
   setCompanies: (companies) => {
     const companyMap = new Map<string, Company>();
     for (const c of companies) {
