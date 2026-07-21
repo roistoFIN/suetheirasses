@@ -199,6 +199,42 @@ function detectNewlySuedCases<T extends MinimalLegalCaseForSued>(
   return currentCases.filter((c) => c.defendantId === myPlayerId && !previouslySuedCaseIds.has(c.id));
 }
 
+// ── "CASE WON"/"CASE LOST" modal trigger — my own cases whose trial verdict just landed ──
+
+interface MinimalLegalCaseForVerdict {
+  id: string;
+  status: 'negotiating' | 'awaiting_trial' | 'resolved';
+  verdict?: 'won' | 'lost' | 'settled' | 'cancelled';
+  plaintiffId: string;
+  defendantId: string;
+}
+
+interface ResolvedCaseForMe<T> {
+  case: T;
+  outcome: 'won' | 'lost';
+}
+
+function detectNewlyResolvedCases<T extends MinimalLegalCaseForVerdict>(
+  previousCases: T[],
+  currentCases: T[],
+  myPlayerId: string,
+): ResolvedCaseForMe<T>[] {
+  const previouslyResolvedIds = new Set(
+    previousCases.filter((c) => c.status === 'resolved').map((c) => c.id),
+  );
+  const results: ResolvedCaseForMe<T>[] = [];
+  for (const c of currentCases) {
+    if (c.status !== 'resolved' || previouslyResolvedIds.has(c.id)) continue;
+    if (c.verdict !== 'won' && c.verdict !== 'lost') continue;
+    const amPlaintiff = c.plaintiffId === myPlayerId;
+    const amDefendant = c.defendantId === myPlayerId;
+    if (!amPlaintiff && !amDefendant) continue;
+    const outcome: 'won' | 'lost' = amPlaintiff === (c.verdict === 'won') ? 'won' : 'lost';
+    results.push({ case: c, outcome });
+  }
+  return results;
+}
+
 describe('GamePhase utilities', () => {
   describe('fmt', () => {
     it('should format positive numbers correctly', () => {
@@ -625,6 +661,85 @@ describe('GamePhase utilities', () => {
       const resolvedCase = { id: 'case-1', defendantId: me };
       // Case existed last turn, isn't present this turn — should never appear as "new".
       expect(detectNewlySuedCases([resolvedCase], [], me)).toEqual([]);
+    });
+  });
+
+  describe('detectNewlyResolvedCases', () => {
+    const me = 'player-1';
+    const rival = 'player-2';
+
+    const negotiating = (overrides: Partial<MinimalLegalCaseForVerdict> = {}): MinimalLegalCaseForVerdict => ({
+      id: 'case-1',
+      status: 'negotiating',
+      plaintiffId: me,
+      defendantId: rival,
+      ...overrides,
+    });
+
+    it('should return nothing when there are no cases at all', () => {
+      expect(detectNewlyResolvedCases([], [], me)).toEqual([]);
+    });
+
+    it('should not report a case that is still negotiating', () => {
+      const stillOpen = negotiating();
+      expect(detectNewlyResolvedCases([stillOpen], [stillOpen], me)).toEqual([]);
+    });
+
+    it('should detect a win as plaintiff when the verdict is "won"', () => {
+      const previous = negotiating({ status: 'awaiting_trial' });
+      const current = { ...previous, status: 'resolved' as const, verdict: 'won' as const };
+      expect(detectNewlyResolvedCases([previous], [current], me)).toEqual([{ case: current, outcome: 'won' }]);
+    });
+
+    it('should detect a loss as plaintiff when the verdict is "lost"', () => {
+      const previous = negotiating({ status: 'awaiting_trial' });
+      const current = { ...previous, status: 'resolved' as const, verdict: 'lost' as const };
+      expect(detectNewlyResolvedCases([previous], [current], me)).toEqual([{ case: current, outcome: 'lost' }]);
+    });
+
+    it('should flip the outcome for the defendant\'s own perspective — verdict "won" (plaintiff wins) is a LOSS for me as defendant', () => {
+      const previous = negotiating({ plaintiffId: rival, defendantId: me, status: 'awaiting_trial' });
+      const current = { ...previous, status: 'resolved' as const, verdict: 'won' as const };
+      expect(detectNewlyResolvedCases([previous], [current], me)).toEqual([{ case: current, outcome: 'lost' }]);
+    });
+
+    it('should flip the outcome for the defendant\'s own perspective — verdict "lost" (plaintiff loses) is a WIN for me as defendant', () => {
+      const previous = negotiating({ plaintiffId: rival, defendantId: me, status: 'awaiting_trial' });
+      const current = { ...previous, status: 'resolved' as const, verdict: 'lost' as const };
+      expect(detectNewlyResolvedCases([previous], [current], me)).toEqual([{ case: current, outcome: 'won' }]);
+    });
+
+    it('should ignore a case I have nothing to do with', () => {
+      const previous = negotiating({ plaintiffId: 'player-3', defendantId: 'player-4', status: 'awaiting_trial' });
+      const current = { ...previous, status: 'resolved' as const, verdict: 'won' as const };
+      expect(detectNewlyResolvedCases([previous], [current], me)).toEqual([]);
+    });
+
+    it('should not re-report a case that was already resolved last turn', () => {
+      const alreadyResolved = negotiating({ status: 'resolved', verdict: 'won' });
+      expect(detectNewlyResolvedCases([alreadyResolved], [alreadyResolved], me)).toEqual([]);
+    });
+
+    it('should ignore settled/cancelled verdicts — not a trial outcome', () => {
+      const previous = negotiating({ status: 'awaiting_trial' });
+      const settled = { ...previous, status: 'resolved' as const, verdict: 'settled' as const };
+      const cancelled = { ...previous, status: 'resolved' as const, verdict: 'cancelled' as const };
+      expect(detectNewlyResolvedCases([previous], [settled], me)).toEqual([]);
+      expect(detectNewlyResolvedCases([previous], [cancelled], me)).toEqual([]);
+    });
+
+    it('should detect multiple cases resolving with mixed outcomes in the same turn', () => {
+      const wonPrev = negotiating({ id: 'case-1', status: 'awaiting_trial' });
+      const wonCurrent = { ...wonPrev, status: 'resolved' as const, verdict: 'won' as const };
+      const lostPrev = negotiating({ id: 'case-2', plaintiffId: rival, defendantId: me, status: 'awaiting_trial' });
+      const lostCurrent = { ...lostPrev, status: 'resolved' as const, verdict: 'won' as const }; // plaintiff (rival) won -> I (defendant) lost
+
+      const result = detectNewlyResolvedCases([wonPrev, lostPrev], [wonCurrent, lostCurrent], me);
+      expect(result).toEqual(expect.arrayContaining([
+        { case: wonCurrent, outcome: 'won' },
+        { case: lostCurrent, outcome: 'lost' },
+      ]));
+      expect(result).toHaveLength(2);
     });
   });
 });

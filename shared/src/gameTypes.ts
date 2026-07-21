@@ -52,6 +52,12 @@ export interface GameSettings {
   marketFixed: boolean;
   /** Cash cost of one "Dig Deeper" investigation click — deducted instantly, outside turn resolution. */
   digDeeperCost: number;
+  /** Turns a case can sit at status 'negotiating' before it's automatically forced to
+   * 'awaiting_trial' (and resolves the turn after that). FORMULAS.md doesn't model a
+   * negotiation phase — this closes a real gap where, absent the (separately tracked,
+   * not-yet-built) offer/settlement UI, a case between two solvent players had no path
+   * out of 'negotiating' at all and would sit unresolved forever. */
+  negotiationPeriodTurns: number;
 }
 
 export interface PlayerStartingValues {
@@ -245,6 +251,8 @@ export interface LegalCaseData {
   status: 'negotiating' | 'awaiting_trial' | 'resolved';
   offers: Array<{ by: 'me' | 'them'; amount: number }>;
   myOffer?: number;
+  /** How many turns this case has spent at status 'negotiating' — see `GameSettings.negotiationPeriodTurns`. */
+  turnsNegotiating: number;
   /** 'won'/'lost' = decided at trial; 'settled'/'cancelled' = resolved via bankruptcy waterfall (FORMULAS §16). */
   verdict?: 'won' | 'lost' | 'settled' | 'cancelled';
   /** Filing time — used to order bankruptcy waterfall payouts oldest-first (FORMULAS §14, §16). */

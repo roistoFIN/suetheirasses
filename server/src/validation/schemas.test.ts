@@ -266,6 +266,7 @@ describe('Validation Schemas', () => {
         totalMarketVolumeTonnesPerYear: 10000,
         marketFixed: true,
         digDeeperCost: 10000,
+        negotiationPeriodTurns: 2,
       },
       playerStartingValues: {
         cash: 100000, assets: 50000, intangibleAssets: 10000, debt: 20000, reserves: 30000,

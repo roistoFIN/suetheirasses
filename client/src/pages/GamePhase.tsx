@@ -97,6 +97,54 @@ export function detectNewlySuedCases(
   return currentCases.filter((c) => c.defendantId === myPlayerId && !previouslySuedCaseIds.has(c.id));
 }
 
+/** One of my own cases (plaintiff or defendant) whose trial verdict just came in this turn. */
+export interface ResolvedCaseForMe {
+  case: LegalCaseData;
+  /** From MY perspective, not the raw `verdict` field — a defendant's 'lost' verdict
+   * (they didn't have to pay) is a WIN for that defendant, and vice versa. */
+  outcome: 'won' | 'lost';
+}
+
+/**
+ * Cases I'm a party to (plaintiff or defendant) that transitioned to a trial verdict
+ * ('won'/'lost' — not 'settled'/'cancelled', which aren't a trial outcome and don't
+ * match the "gavel drop" won/lost imagery) since the last turn. Drives the "CASE
+ * WON"/"CASE LOST" modals. Pure/exported for the same reason as detectNewlySuedCases.
+ */
+export function detectNewlyResolvedCases(
+  previousCases: LegalCaseData[],
+  currentCases: LegalCaseData[],
+  myPlayerId: string,
+): ResolvedCaseForMe[] {
+  const previouslyResolvedIds = new Set(
+    previousCases.filter((c) => c.status === 'resolved').map((c) => c.id),
+  );
+  const results: ResolvedCaseForMe[] = [];
+  for (const c of currentCases) {
+    if (c.status !== 'resolved' || previouslyResolvedIds.has(c.id)) continue;
+    if (c.verdict !== 'won' && c.verdict !== 'lost') continue;
+    const amPlaintiff = c.plaintiffId === myPlayerId;
+    const amDefendant = c.defendantId === myPlayerId;
+    if (!amPlaintiff && !amDefendant) continue;
+    // verdict 'won' = the plaintiff won (defendant pays) — flip it for the defendant's own perspective.
+    const outcome: 'won' | 'lost' = amPlaintiff === (c.verdict === 'won') ? 'won' : 'lost';
+    results.push({ case: c, outcome });
+  }
+  return results;
+}
+
+/**
+ * A dismissible full-image "info window" queued up after a turn resolves — sued,
+ * a lawsuit verdict, or the round simply advancing. Shown one at a time (never
+ * stacked/overlapping) via a single Modal keyed off the front of the queue; "Got it"
+ * pops the front and reveals whatever's next, so a turn that both files a lawsuit
+ * against you and advances the round doesn't show two modals on top of each other.
+ */
+type PostTurnEvent =
+  | { type: 'sued'; cases: LegalCaseData[] }
+  | { type: 'verdict'; outcome: 'won' | 'lost'; cases: LegalCaseData[] }
+  | { type: 'turnChange'; round: number };
+
 // ============================================================
 // Styles — war-room dashboard aesthetic (stamps, thick borders, shadows),
 // plain style objects using Mantine v7 CSS variables (see Timer.tsx for
@@ -317,18 +365,21 @@ export default function GamePhase() {
   const [riskInfoCase, setRiskInfoCase] = useState<LegalCaseData | null>(null);
   const [loading, setLoading] = useState(true);
   const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
-  // Lawsuits newly filed against this player, detected this turn (see the sync
-  // effect below) — drives the "YOU'VE BEEN SUED" modal. Cleared on dismiss.
-  const [suedCases, setSuedCases] = useState<LegalCaseData[]>([]);
+  // Post-turn "info window" queue (sued / lawsuit verdict / turn change) — see
+  // PostTurnEvent's doc comment. Shown one at a time; "Got it" pops the front.
+  const [eventQueue, setEventQueue] = useState<PostTurnEvent[]>([]);
   // Ready state for the in-flight turn — authoritative from the server (game:readyUpdate),
   // not optimistic local state, so it can never drift from what every other player sees.
   const [readyPlayerIds, setReadyPlayerIds] = useState<string[]>([]);
   const [activePlayerCount, setActivePlayerCount] = useState(0);
   // Guards the turn-sync effect below against React 18 StrictMode's dev-only double
   // invocation of effects with no cleanup — without this, the same `turnResults` object
-  // gets processed twice, and setSuedCases' append (non-idempotent by nature) ends up
-  // adding the same lawsuit twice, producing a duplicate React key.
+  // gets processed twice, and setEventQueue's append (non-idempotent by nature) ends up
+  // adding the same event twice, producing a duplicate React key.
   const processedTurnResultsRef = useRef<TurnResolutionResult | null>(null);
+  // The last round an info window was shown for — round 1 (initial game start) never
+  // gets a "turn change" window of its own, since nothing changed FROM anything yet.
+  const lastAnnouncedRoundRef = useRef<number | null>(null);
 
   // Pending decisions + lawsuits for this turn — shared between the Decision Deck and
   // the Sue modal, since both contribute to the same game:submitDecisions payload
@@ -371,7 +422,7 @@ export default function GamePhase() {
   useEffect(() => {
     if (!turnResults || !player) return;
     // See processedTurnResultsRef's declaration — skips StrictMode's dev-only replay
-    // of this same turnResults object so non-idempotent updates below (setSuedCases'
+    // of this same turnResults object so non-idempotent updates below (setEventQueue's
     // append) don't double-fire.
     if (processedTurnResultsRef.current === turnResults) return;
     processedTurnResultsRef.current = turnResults;
@@ -381,16 +432,25 @@ export default function GamePhase() {
       // form — the ref-guard above already guarantees this effect body runs at most
       // once per genuinely new turnResults, and updater callbacks are explicitly *not*
       // guaranteed single-invocation by React (StrictMode intentionally double-invokes
-      // them in dev to catch impure updaters) — setSuedCases' append below is exactly
+      // them in dev to catch impure updaters) — setEventQueue's append below is exactly
       // the kind of non-idempotent side effect that bit us when it lived in one.
       setPrevData(myData);
-      // Detect lawsuits filed against me since the last turn — myData is null on the
-      // very first snapshot (nothing to have been sued over yet), so this only ever
-      // fires for a genuinely new case appearing in a resolved turn.
+      // Detect lawsuits filed against me, and any of my own cases whose verdict just
+      // came in, since the last turn — myData is null on the very first snapshot
+      // (nothing to have happened yet), so this only ever fires for genuinely new
+      // events appearing in a resolved turn.
       if (myData) {
         const newlySued = detectNewlySuedCases(myData.legalCases, myPlayer.legalCases, player.id);
-        if (newlySued.length > 0) {
-          setSuedCases((prev) => [...prev, ...newlySued]);
+        const newlyResolved = detectNewlyResolvedCases(myData.legalCases, myPlayer.legalCases, player.id);
+        const won = newlyResolved.filter((r) => r.outcome === 'won').map((r) => r.case);
+        const lost = newlyResolved.filter((r) => r.outcome === 'lost').map((r) => r.case);
+        const newEvents: PostTurnEvent[] = [
+          ...(newlySued.length > 0 ? [{ type: 'sued', cases: newlySued } as const] : []),
+          ...(won.length > 0 ? [{ type: 'verdict', outcome: 'won', cases: won } as const] : []),
+          ...(lost.length > 0 ? [{ type: 'verdict', outcome: 'lost', cases: lost } as const] : []),
+        ];
+        if (newEvents.length > 0) {
+          setEventQueue((prev) => [...prev, ...newEvents]);
         }
       }
       setMyData(myPlayer);
@@ -404,6 +464,21 @@ export default function GamePhase() {
     // intentionally read as "previous value" via closure, not tracked as deps; the
     // ref-guard above (not this dependency array) is what gates re-execution.
   }, [turnResults, player]);
+
+  // "Turn change" info window — every round after the first (round 1 is the initial
+  // game start, not a change from anything). Queued alongside sued/verdict events
+  // above so a turn that both files a lawsuit and advances the round shows one
+  // modal at a time instead of two stacked on top of each other.
+  useEffect(() => {
+    if (lastAnnouncedRoundRef.current === null) {
+      lastAnnouncedRoundRef.current = round;
+      return;
+    }
+    if (round !== lastAnnouncedRoundRef.current) {
+      lastAnnouncedRoundRef.current = round;
+      setEventQueue((prev) => [...prev, { type: 'turnChange', round }]);
+    }
+  }, [round]);
 
   // A new round means the server already cleared last turn's submissions — reset
   // local pending state so stale QUEUED badges don't linger on the new turn.
@@ -451,6 +526,8 @@ export default function GamePhase() {
   const { variables: vars, derived, riskGauge, legalCases: myLegalCases } = myData;
   const isUrgent = localTimer <= 20;
   const playerNames = new Map<string, string>([myData, ...competitors].map((p) => [p.playerId, p.playerName]));
+  const currentEvent = eventQueue[0];
+  const dismissCurrentEvent = () => setEventQueue((q) => q.slice(1));
 
   return (
     <div style={gpStyles.dashboard}>
@@ -538,6 +615,7 @@ export default function GamePhase() {
                         caseData={c}
                         myPlayerId={myData.playerId}
                         playerNames={playerNames}
+                        negotiationPeriodTurns={gameSettings?.negotiationPeriodTurns}
                         onInspect={(rivalName) => {
                           const rival = competitors.find((rp) => rp.playerName === rivalName);
                           if (rival) setDrillDown({ type: 'rival', data: rival });
@@ -604,25 +682,88 @@ export default function GamePhase() {
         </Stack>
       </Modal>
 
-      <Modal opened={suedCases.length > 0} onClose={() => setSuedCases([])} size="md" centered title={<Text style={{ ...boldStyle, fontSize: '0.9rem' }}>⚖️ YOU'VE BEEN SUED</Text>}>
-        <Stack gap="md">
-          <Image src="/images/sued.png" alt="Served with a lawsuit" radius="md" />
-          <Stack gap="xs">
-            {suedCases.map((c) => (
-              <Box key={c.id} style={{ borderLeft: '3px solid var(--mantine-color-red-6)', paddingLeft: 8 }}>
-                <Text size="sm" fw={600}>
-                  {playerNames.get(c.plaintiffId) ?? 'Unknown'} sued you over "{c.decisionName}"
-                </Text>
-                <Text size="sm" c="dimmed">
-                  Ground: {c.groundName} — Stakes: {fmt(c.stakes)}
-                </Text>
-              </Box>
-            ))}
+      <Modal
+        opened={!!currentEvent}
+        onClose={dismissCurrentEvent}
+        size="md"
+        centered
+        title={
+          <Text style={{ ...boldStyle, fontSize: '0.9rem' }}>
+            {currentEvent?.type === 'sued' && "⚖️ YOU'VE BEEN SUED"}
+            {currentEvent?.type === 'verdict' && (currentEvent.outcome === 'won' ? '🏆 CASE WON' : '💩 CASE LOST')}
+            {currentEvent?.type === 'turnChange' && `🔔 TURN ${currentEvent.round}`}
+          </Text>
+        }
+      >
+        {currentEvent?.type === 'sued' && (
+          <Stack gap="md">
+            <Image src="/images/sued.png" alt="Served with a lawsuit" radius="md" />
+            <Stack gap="xs">
+              {currentEvent.cases.map((c) => (
+                <Box key={c.id} style={{ borderLeft: '3px solid var(--mantine-color-red-6)', paddingLeft: 8 }}>
+                  <Text size="sm" fw={600}>
+                    {playerNames.get(c.plaintiffId) ?? 'Unknown'} sued you over "{c.decisionName}"
+                  </Text>
+                  <Text size="sm" c="dimmed">
+                    Ground: {c.groundName} — Stakes: {fmt(c.stakes)}
+                  </Text>
+                </Box>
+              ))}
+            </Stack>
+            <Button fullWidth onClick={dismissCurrentEvent}>
+              Got it
+            </Button>
           </Stack>
-          <Button fullWidth onClick={() => setSuedCases([])}>
-            Got it
-          </Button>
-        </Stack>
+        )}
+
+        {currentEvent?.type === 'verdict' && (
+          <Stack gap="md">
+            <Image
+              src={currentEvent.outcome === 'won' ? '/images/lawsuit-won.png' : '/images/lawsuit-lost.png'}
+              alt={currentEvent.outcome === 'won' ? 'Case won' : 'Case lost'}
+              radius="md"
+            />
+            <Stack gap="xs">
+              {currentEvent.cases.map((c) => {
+                const iAmPlaintiff = c.plaintiffId === player?.id;
+                const opponentName = playerNames.get(iAmPlaintiff ? c.defendantId : c.plaintiffId) ?? 'Unknown';
+                let outcomeLine: string;
+                if (iAmPlaintiff && c.verdict === 'won') outcomeLine = `You received ${fmt(c.stakes)} from ${opponentName}`;
+                else if (iAmPlaintiff && c.verdict === 'lost') outcomeLine = `You got nothing — the court sided with ${opponentName}`;
+                else if (!iAmPlaintiff && c.verdict === 'won') outcomeLine = `You paid ${fmt(c.stakes)} to ${opponentName}`;
+                else outcomeLine = `The case against you was dismissed — you paid nothing`;
+                return (
+                  <Box
+                    key={c.id}
+                    style={{ borderLeft: `3px solid var(--mantine-color-${currentEvent.outcome === 'won' ? 'green' : 'red'}-6)`, paddingLeft: 8 }}
+                  >
+                    <Text size="sm" fw={600}>
+                      {iAmPlaintiff ? `You sued ${opponentName}` : `${opponentName} sued you`} over "{c.decisionName}"
+                    </Text>
+                    <Text size="sm" c="dimmed">
+                      Ground: {c.groundName} — {outcomeLine}
+                    </Text>
+                  </Box>
+                );
+              })}
+            </Stack>
+            <Button fullWidth onClick={dismissCurrentEvent}>
+              Got it
+            </Button>
+          </Stack>
+        )}
+
+        {currentEvent?.type === 'turnChange' && (
+          <Stack gap="md">
+            <Image src="/images/turn-change.png" alt="Turn change" radius="md" />
+            <Text size="sm" ta="center" c="dimmed">
+              Turn {currentEvent.round} has begun.
+            </Text>
+            <Button fullWidth onClick={dismissCurrentEvent}>
+              Got it
+            </Button>
+          </Stack>
+        )}
       </Modal>
     </div>
   );
@@ -1083,9 +1224,11 @@ interface CaseCardProps {
   playerNames: Map<string, string>;
   onInspect: (rivalName: string) => void;
   onRiskInfo: (caseItem: LegalCaseData) => void;
+  /** For the "auto-resolves in N turns" countdown — undefined game:deck hasn't arrived yet. */
+  negotiationPeriodTurns?: number;
 }
 
-function CaseCard({ caseData, myPlayerId, playerNames, onInspect, onRiskInfo }: CaseCardProps) {
+function CaseCard({ caseData, myPlayerId, playerNames, onInspect, onRiskInfo, negotiationPeriodTurns }: CaseCardProps) {
   const isDefendant = getCaseRole(caseData, myPlayerId) === 'defendant';
   const opponentName = getOpponentName(caseData, myPlayerId, playerNames);
 
@@ -1136,6 +1279,11 @@ function CaseCard({ caseData, myPlayerId, playerNames, onInspect, onRiskInfo }: 
         </Flex>
       ) : caseData.status === 'negotiating' && (
         <Stack gap="sm" mt="sm">
+          {negotiationPeriodTurns !== undefined && (
+            <Text size="xs" c="dimmed" style={{ fontStyle: 'italic' }}>
+              ⏳ Goes to trial automatically in {Math.max(0, negotiationPeriodTurns - caseData.turnsNegotiating)} more turn(s) if not settled
+            </Text>
+          )}
           {/* Offer history */}
           {caseData.offers.length > 0 && (
             <Flex wrap="wrap" gap={4}>

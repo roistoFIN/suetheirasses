@@ -66,6 +66,7 @@ export class LegalEngine {
       status: 'negotiating',
       offers: [],
       myOffer: undefined,
+      turnsNegotiating: 0,
       verdict: undefined,
       createdAt: new Date(),
       resolvedAt: undefined,

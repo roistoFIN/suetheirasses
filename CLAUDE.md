@@ -482,12 +482,20 @@ build step is needed to see changes during dev, only for production builds.
   confirm `roomState.room.players` is still stale at length 1 while the snapshot is
   correct at length 2) — that's the regression guard for the "host shown as a plain
   player" bug; its `promoteNewHostIfNeeded`/`leaveRoom` tests cover host reassignment.
+  `gameLoop.test.ts` also has a regression test threading 3 sequential `resolveTurn`
+  calls to prove a case forced to trial by the negotiation timeout (`turnsNegotiating`
+  reaching `negotiationPeriodTurns`) resolves to a verdict the same turn it crosses the
+  threshold — see *Deliberate deviations from the design spec* above for why this test
+  exists (the trial-resolution loop was dead code before this fix).
 - `client/src/**/*.test.ts` — Vitest, Zustand stores and pure UI utilities.
   `GamePhase.utils.test.ts` deliberately duplicates small pure functions out of
-  `GamePhase.tsx` (`fmt`, `getGroundsAgainst`, `detectNewlySuedCases`, etc.) rather than
-  importing them, to keep this test file lightweight (no Mantine/tabler-icons import
-  chain) — keep any duplicated copy in sync with the real implementation by hand if you
-  change one side.
+  `GamePhase.tsx` (`fmt`, `getGroundsAgainst`, `detectNewlySuedCases`,
+  `detectNewlyResolvedCases`, etc.) rather than importing them, to keep this test file
+  lightweight (no Mantine/tabler-icons import chain) — keep any duplicated copy in sync
+  with the real implementation by hand if you change one side. `detectNewlyResolvedCases`
+  is covered from both plaintiff and defendant perspectives, including the verdict-flip
+  case (a `'lost'` verdict is a *win* for the defendant) — see *Post-turn info windows*
+  above.
 - `tests/api/*.test.ts` — Vitest + real Postgres via testcontainers (needs Docker).
   The only layer that actually verifies socket event contracts end-to-end
   (`game:submitDecisions`, `turn:resolved`, `game:over`) against a real Prisma schema.
@@ -507,6 +515,27 @@ against the ground's probability schedule at the target decision's elapsed time.
 task asks you to "match FORMULAS.md exactly" on this point, flag the conflict rather than
 silently reverting the deliberate-filing design — see README's *Lawsuits* section and
 `GameLoop`'s Step 8 / `LegalEngine.fileLawsuit` for context.
+
+FORMULAS.md doesn't model a negotiation phase at all — a filed case just resolves via a
+probability draw. This codebase's richer `'negotiating'` status (with a not-yet-wired
+offer/accept UI, tracked separately in `REQUIREMENTS.md`) is a further addition beyond
+spec, and until recently had a real gap: nothing ever moved a case out of `'negotiating'`
+between two players who both stayed solvent (the only other exit was the bankruptcy
+waterfall settling/cancelling it), so the pre-existing trial-resolution loop in
+`gameLoop.ts` (`for (const trial of allCases) { if (trial.status !== 'awaiting_trial')
+continue; ... }`) was **entirely unreachable in live play** — a case just sat at
+`'negotiating'` forever. Fixed with a Step 8b "negotiation timeout": each `LegalCaseData`
+tracks `turnsNegotiating` (incremented once per turn it's still negotiating; a case filed
+this same turn starts at 0, not 1 — see `negotiatingBeforeFiling`'s snapshot-before-filing
+ordering in `gameLoop.ts`), and once it reaches `gameSettings.negotiationPeriodTurns` (2 by
+default), the case's `status` is forced to `'awaiting_trial'` *in place*, before the
+existing trial-resolution loop runs later in the same `resolveTurn` call — so a case that
+crosses the threshold resolves to a verdict that same turn, not "starts waiting, resolves
+next turn." The client never observes an intermediate `awaiting_trial` snapshot for a case
+that timed out this way. If you build out the real offer/settlement UI later, this timeout
+should remain as the fallback for cases neither side actively settles — don't remove it
+without also confirming REQUIREMENTS.md's offer/accept flow gives every case some other
+path to resolution.
 
 ### A `LegalCaseData` lives in two players' `engineState` at once — dedupe by id when reconstructing `allCases`
 
@@ -535,7 +564,37 @@ catch impure updaters in development — so the same lawsuit got appended into `
 twice, one becoming a genuine duplicate array entry, not just a wasted re-render. Fixed by
 reading `myData`/`competitors` directly via closure (safe since the effect itself is
 guarded by a `useRef` against StrictMode's dev-only double-invocation of the *effect*) and
-moving `setSuedCases` out of any updater entirely. If you add another effect that
-accumulates into array state based on a diff against the previous value, do the diffing
-and the accumulating `setState` call in the effect body directly — never inside another
-`setState`'s updater callback.
+moving the array-append `setState` call out of any updater entirely. If you add another
+effect that accumulates into array state based on a diff against the previous value, do
+the diffing and the accumulating `setState` call in the effect body directly — never
+inside another `setState`'s updater callback. `suedCases` has since been generalized into
+`eventQueue` (see the next section) but the same rule applies to every push into it.
+
+### Post-turn info windows are one unified, dismiss-gated `PostTurnEvent` queue, not one modal per event type
+
+Being sued, a lawsuit reaching a verdict, and a new round starting can all happen off the
+same `resolveTurn` call, and each has its own art/copy (`sued.png`, `lawsuit-won.png` /
+`lawsuit-lost.png`, `turn-change.png`). Rather than one boolean-gated `Modal` per event
+type (which would either stack overlapping modals or silently clobber one with another in
+the same render), `GamePhase.tsx` models all three as a single discriminated union,
+`PostTurnEvent = { type: 'sued'; cases } | { type: 'verdict'; outcome; cases } | { type:
+'turnChange'; round }`, appended to one `eventQueue` array. Exactly one `Modal` renders
+`eventQueue[0]`; its "Got it" button calls `dismissCurrentEvent` (`setEventQueue((q) =>
+q.slice(1))`) rather than closing anything — the next queued event, if any, is simply
+whatever's now at index 0. Dismissal is manual-only (no auto-timeout, no click-outside-to-
+dismiss) by product decision, uniformly across all three event types. If you add a fourth
+post-turn event type, extend the `PostTurnEvent` union and the queue-population effect(s)
+— don't give it its own separate `Modal`/boolean state, or it can stack on top of this one.
+
+Two detector functions populate the queue, both pure and both unit-tested via duplicated
+copies in `GamePhase.utils.test.ts` (see *Test layers* below): `detectNewlySuedCases`
+(pre-existing) and `detectNewlyResolvedCases`, added alongside the negotiation-timeout fix
+above since a case can now actually reach `'resolved'` in live play. `detectNewlyResolved
+Cases` returns each case already flipped to the *querying player's own* perspective as an
+`outcome: 'won' | 'lost'` — `LegalCaseData.verdict` itself is plaintiff-centric (`'won'`
+means the plaintiff won), so a defendant's own win/loss is the verdict's logical inverse;
+downstream UI (the verdict modal body's `outcomeLine` text) never re-derives this, it just
+reads `outcome` directly. A separate `useEffect` keyed on `round` (from `gameStore`, not
+part of the turn-sync effect above) enqueues `turnChange` events, skipping the very first
+render via a `lastAnnouncedRoundRef` null-check — round 1 is the initial game start, not a
+change from anything.

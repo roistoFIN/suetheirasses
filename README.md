@@ -179,7 +179,10 @@ suetheirasses/
 │   ├── public/
 │   │   └── images/                  # Static assets served as-is (Vite public/ convention)
 │   │       ├── hero.png             # Landing page hero art
-│   │       ├── sued.png             # "YOU'VE BEEN SUED" modal art
+│   │       ├── sued.png             # "sued" post-turn info window art
+│   │       ├── lawsuit-won.png      # "lawsuit verdict: won" post-turn info window art
+│   │       ├── lawsuit-lost.png     # "lawsuit verdict: lost" post-turn info window art
+│   │       ├── turn-change.png      # "turn change" post-turn info window art
 │   │       └── lost.png             # "lost" takeover art (bankrupt/forfeit)
 │   ├── src/
 │   │   ├── components/              # Reusable UI components
@@ -801,6 +804,23 @@ alongside the decision's own self-effects (`calcEngine.extractTargetImpacts`/
 `applyTargetImpacts`, `DecisionEngine.getTargetImpacts`, `GameLoop.buildIncomingAttacks`)
 — see *Attack Awareness & Dig Deeper* below for how a targeted player finds out.
 
+A filed case starts at `status: 'negotiating'` — a richer addition than FORMULAS.md,
+which doesn't model a negotiation phase at all (§6 just resolves a case via a probability
+draw "this turn"). The lawsuit card shows an offer history, a counter-offer slider, and
+ACCEPT/COURT buttons for it, but as of now none of them do anything — there's no server
+action wired up behind any of them yet (tracked separately). Without a way out of
+`'negotiating'`, a case between two solvent players used to sit there forever, never
+reaching a verdict — the *only* other exit was the bankruptcy waterfall (§16) cancelling
+or settling it if a party fell. **Negotiation timeout** closes that gap: each case tracks
+`turnsNegotiating`, incremented once per turn it's still negotiating (a case filed this
+turn doesn't get incremented in the same turn it's created); once that hits
+`gameSettings.negotiationPeriodTurns` (2 by default), the case is forced to
+`awaiting_trial` and resolves via the existing trial logic in that same turn's
+resolution — the client never observes an intermediate `awaiting_trial` snapshot for a
+case that timed out this way, it just jumps from its last negotiating turn straight to a
+verdict. The lawsuit card shows a live countdown ("Goes to trial automatically in N more
+turn(s)") for exactly this reason, so the mechanic isn't invisible to players.
+
 ### Attack Awareness & Dig Deeper
 
 Offensive decisions (Bot Attack, Social Astroturf, and the rest of the `target.*`-bearing
@@ -1025,11 +1045,37 @@ remains — there is no fixed round limit and no score-based win condition. The 
 player themselves sees the "lost" takeover described in *Leave Game* above, regardless of
 whether they left voluntarily or actually ran out of cash.
 
-Being sued is called out the same way — when `GamePhase.tsx`'s turn-sync effect detects a
-new case (by id) filed against the current player since the previous turn
-(`detectNewlySuedCases`, a pure diff function unit-tested independently of any live turn
-cycle), a **"YOU'VE BEEN SUED"** modal pops up showing `sued.png` plus the plaintiff, the
-decision sued over, the ground, and the stakes for every newly-filed case that turn.
+### Post-Turn Info Windows (sued / lawsuit verdict / turn change)
+
+Three events queue up a dismissible full-image modal after a turn resolves: getting
+sued, one of your own lawsuits reaching a verdict, and the round simply advancing.
+They're queued rather than each having an independent modal, specifically so a turn
+that both sues you *and* advances the round doesn't pop two modals on top of each
+other — a single `Modal` renders whatever's at the front of `GamePhase.tsx`'s
+`eventQueue` (`PostTurnEvent[]`), and **Got it** pops the front to reveal whatever's
+next, one at a time.
+
+- **Sued** (`sued.png`) — `detectNewlySuedCases` diffs this turn's legal cases against
+  last turn's to find cases newly filed against the current player (by id, so an
+  existing case is never re-reported). Shows the plaintiff, decision, ground, and
+  stakes for every newly-filed case that turn.
+- **Lawsuit verdict** (`lawsuit-won.png` / `lawsuit-lost.png`) — `detectNewlyResolvedCases`
+  finds cases *I'm a party to* (plaintiff or defendant) that just reached a trial
+  verdict (`status: 'resolved'`, `verdict: 'won' | 'lost'` — not `'settled'`/`'cancelled'`,
+  the bankruptcy-waterfall outcomes, which aren't a trial result and don't match the
+  "gavel drop" imagery). The `won`/`lost` label is from **my own perspective**, not the
+  raw `verdict` field — a defendant's case resolving `'lost'` (the plaintiff lost) is a
+  *win* for that defendant, so the outcome is flipped for whichever role I actually
+  have in the case, with role-aware copy for all four win/lose × plaintiff/defendant
+  combinations ("You received $X from…", "You paid $X to…", etc.).
+- **Turn change** (`turn-change.png`) — every round after the first (round 1 is the
+  initial game start, not a change from anything) queues one of these the moment the
+  round number advances.
+
+Both detection functions are pure and unit-tested independently of any live turn cycle
+(`GamePhase.utils.test.ts`), and the effect that drives them is guarded against React
+18 StrictMode's dev-only double-invocation via a `useRef` — see CLAUDE.md for why that
+guard exists and what broke before it did.
 
 ---
 
@@ -1154,15 +1200,18 @@ npm run lint
 # formulaEngine (parser/evaluator correctness + rejection of dangerous-looking input
 # like __proto__/constructor/arbitrary calls), gameLoop (incl. a regression test that
 # a lawsuit persisted into both the plaintiff's and defendant's own engineState
-# doesn't get double-counted when reconstructed on a later turn), gameEngine (incl.
-# toggleReady, forfeitGame's ready-interaction, promoteNewHostIfNeeded, leaveRoom,
-# buildRoomSnapshot, and joinRoom's kickedNames rejection), validation schemas,
-# llmService, adminAuth middleware. No DB or live LLM required (mocked Prisma, incl.
-# mocked `formula` model; llmService's own network calls are mocked via global.fetch).
+# doesn't get double-counted when reconstructed on a later turn, and a regression test
+# that a case forced to trial by the negotiation timeout resolves in the same turn it
+# crosses the threshold), gameEngine (incl. toggleReady, forfeitGame's ready-interaction,
+# promoteNewHostIfNeeded, leaveRoom, buildRoomSnapshot, and joinRoom's kickedNames
+# rejection), validation schemas, llmService, adminAuth middleware. No DB or live LLM
+# required (mocked Prisma, incl. mocked `formula` model; llmService's own network calls
+# are mocked via global.fetch).
 npm test --workspace=server
 
 # Run frontend unit tests (Vitest) — Zustand stores, GamePhase utilities (incl.
-# detectNewlySuedCases, the pure diff behind the "YOU'VE BEEN SUED" modal)
+# detectNewlySuedCases and detectNewlyResolvedCases, the pure diffs behind the
+# sued/lawsuit-verdict post-turn info windows)
 npm --workspace=client exec vitest run
 
 # Run API interface tests (Vitest + real PostgreSQL via testcontainers)

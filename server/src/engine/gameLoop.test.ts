@@ -53,6 +53,7 @@ function makeConfig(overrides: Partial<GameConfig> = {}): GameConfig {
       totalMarketVolumeTonnesPerYear: 50000,
       marketFixed: true,
       digDeeperCost: 10000,
+      negotiationPeriodTurns: 2,
     },
     playerStartingValues: {
       cash: 100000,
@@ -607,6 +608,46 @@ describe('GameLoop', () => {
       const outcome3 = gameLoop.resolveTurn('room-1', 3, players3);
       expect(outcome3.result.players.find((p) => p.playerId === 'player-1')?.legalCases).toHaveLength(1);
       expect(outcome3.result.players.find((p) => p.playerId === 'player-2')?.legalCases).toHaveLength(1);
+    });
+
+    it('should force a case to trial after negotiationPeriodTurns, resolving it that same turn (regression — a case had no path out of "negotiating" at all before this)', () => {
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+      });
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [], operational: [],
+        lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
+      });
+
+      // Turn 1: freshly filed — never incremented the same turn it's created.
+      const outcome1 = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+      const aliceUpdate1 = outcome1.companyUpdates.find(u => u.playerId === 'player-1')!;
+      const bobUpdate1 = outcome1.companyUpdates.find(u => u.playerId === 'player-2')!;
+      const case1 = aliceUpdate1.engineState.legalCases[0];
+      expect(case1.status).toBe('negotiating');
+      expect(case1.turnsNegotiating).toBe(0);
+
+      // Turn 2: one full turn spent negotiating — makeConfig's negotiationPeriodTurns is 2, not reached yet.
+      const players2 = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: aliceUpdate1.variables, engineState: aliceUpdate1.engineState },
+        { id: 'player-2', name: 'Bob', variables: bobUpdate1.variables, engineState: bobUpdate1.engineState },
+      ]);
+      const outcome2 = gameLoop.resolveTurn('room-1', 2, players2);
+      const aliceUpdate2 = outcome2.companyUpdates.find(u => u.playerId === 'player-1')!;
+      const bobUpdate2 = outcome2.companyUpdates.find(u => u.playerId === 'player-2')!;
+      const case2 = aliceUpdate2.engineState.legalCases[0];
+      expect(case2.status).toBe('negotiating');
+      expect(case2.turnsNegotiating).toBe(1);
+
+      // Turn 3: crosses the threshold and resolves in this same turn.
+      const players3 = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: aliceUpdate2.variables, engineState: aliceUpdate2.engineState },
+        { id: 'player-2', name: 'Bob', variables: bobUpdate2.variables, engineState: bobUpdate2.engineState },
+      ]);
+      const outcome3 = gameLoop.resolveTurn('room-1', 3, players3);
+      const aliceCase3 = outcome3.result.players.find((p) => p.playerId === 'player-1')?.legalCases[0];
+      expect(aliceCase3?.status).toBe('resolved');
+      expect(['won', 'lost']).toContain(aliceCase3?.verdict);
     });
 
     it('should not create a case when the cited decision was never deployed by the target', () => {

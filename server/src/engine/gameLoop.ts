@@ -419,6 +419,11 @@ export class GameLoop {
       ctx.vars.legalExposureRatio = calculateLegalExposureRatio(legalExposure, ctx.vars.cash, this.adminVars, this.formulas);
     }
 
+    // Snapshot cases already negotiating BEFORE this turn's filings, for the
+    // negotiation-timeout step below — a case filed this turn starts at
+    // turnsNegotiating 0 and shouldn't be incremented in the same turn it's created.
+    const negotiatingBeforeFiling = allCases.filter(c => c.status === 'negotiating');
+
     // ── Step 8 — Deliberate lawsuit filings (FORMULAS §6) ─────────────────────
     // Lawsuits are never automatic — a player must choose to sue a specific target
     // over a specific ground drawn from that target's actually-deployed decisions,
@@ -442,6 +447,29 @@ export class GameLoop {
           roomId,
         );
         if (newCase) allCases.push(newCase);
+      }
+    }
+
+    // ── Step 8b — Negotiation timeout (design addition, not in FORMULAS.md) ───
+    // FORMULAS.md doesn't model a negotiation phase at all — a case is just "resolved
+    // this turn" via a probability draw. The 'negotiating' status and its offer/accept
+    // UI (client-side, not yet wired to any server action — see REQUIREMENTS.md) are
+    // a richer addition than spec, but nothing ever moved a case out of 'negotiating'
+    // between two solvent players: the only other exit was the bankruptcy waterfall
+    // (Step 10b) cancelling/settling it if a party fell. A case between two players
+    // who both stayed solvent would sit at 'negotiating' forever, never reaching a
+    // verdict. This forces it to trial after `negotiationPeriodTurns` turns instead —
+    // the existing trial-resolution loop right below reads the very same `allCases`
+    // objects this mutates, so a case crossing the threshold resolves in this SAME
+    // turn (not "starts waiting, resolves next turn") — exactly like a case that was
+    // already `awaiting_trial` coming in gets resolved this turn too. The client never
+    // observes an `awaiting_trial` snapshot for a case that timed out this way; it
+    // just jumps straight from its last `negotiating` turn to a verdict.
+    const negotiationPeriodTurns = this.config.gameSettings.negotiationPeriodTurns;
+    for (const case_ of negotiatingBeforeFiling) {
+      case_.turnsNegotiating += 1;
+      if (case_.turnsNegotiating >= negotiationPeriodTurns) {
+        case_.status = 'awaiting_trial';
       }
     }
 

@@ -269,6 +269,7 @@ const gameSettingsSchema = z.object({
   totalMarketVolumeTonnesPerYear: z.number(),
   marketFixed: z.boolean(),
   digDeeperCost: z.number(),
+  negotiationPeriodTurns: z.number(),
 });
 
 const playerStartingValuesSchema = z.object({
