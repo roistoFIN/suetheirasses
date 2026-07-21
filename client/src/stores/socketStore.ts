@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { io, Socket } from 'socket.io-client';
-import { ClientEvents, ServerEvents, type RoomJoinedResponse, type RoomRejoinPayload, type PhaseChangedResponse, type GameOverResponse, type ErrorResponse, type TurnResolutionResult, type GameDeckResponse, type DigDeeperResultPayload, type AnnualReportResultPayload } from '@suetheirasses/shared';
+import { ClientEvents, ServerEvents, type RoomJoinedResponse, type RoomRejoinPayload, type RoomUpdatedResponse, type PhaseChangedResponse, type GameOverResponse, type ErrorResponse, type TurnResolutionResult, type GameDeckResponse, type DigDeeperResultPayload, type AnnualReportResultPayload } from '@suetheirasses/shared';
 import { useGameStore } from './gameStore';
 
 interface SocketState {
@@ -120,6 +120,34 @@ export const useSocketStore = create<SocketState>((set, get) => ({
       const { kickPlayer, setNotification } = useGameStore.getState();
       kickPlayer(data.playerId); // same "remove from roster" logic as a kick
       setNotification(`${data.playerName}'s connection timed out`);
+    });
+
+    // Roster/room-settings resync (kick, voluntary leave, host reassignment, invite-only
+    // toggle). Unlike room:joined, the payload carries no `player` field — there's no
+    // single "the player" for a whole-room broadcast, and sending one shared value was
+    // the root cause of the "host shown as a plain player to someone else" bug (every
+    // recipient's own identity got overwritten with the SAME other player's data). Each
+    // client instead re-derives its own identity by matching its own id inside the fresh
+    // roster — the only way `isHost` correctly reaches the newly-promoted host's own view
+    // of themselves too, not just how others see them.
+    socket.on(ServerEvents.ROOM_UPDATED, (data: RoomUpdatedResponse) => {
+      console.log('Room updated:', data);
+      const { player, updateRoom, updatePlayer } = useGameStore.getState();
+      updateRoom(data.room);
+      if (player) {
+        const myFreshEntry = data.room.players.find((p) => p.id === player.id);
+        if (myFreshEntry) updatePlayer(myFreshEntry);
+      }
+    });
+
+    // Ack for my own voluntary room:leave — reset straight to the landing page, same
+    // shape as being kicked, just with a different message.
+    socket.on(ServerEvents.ROOM_LEFT, () => {
+      console.log('Left the room');
+      const { resetSession, setNotification } = useGameStore.getState();
+      clearSession();
+      resetSession();
+      setNotification('You left the room.');
     });
 
     socket.on(ServerEvents.ROOM_PLAYER_JOINED, (data: { playerId: string; playerName: string; isHost: boolean; roomId: string }) => {

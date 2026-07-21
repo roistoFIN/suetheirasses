@@ -19,6 +19,9 @@ model Room {
   maxPlayers        Int          @default(4) // See shared/src/index.ts MAX_PLAYERS
   currentPhaseRound Int          @default(1)
   createdAt         DateTime     @default(now())
+  // Host-toggled — excludes the room from Quick Play matching and the Available
+  // Rooms list, but never blocks a direct room-code/invite-link join.
+  inviteOnly        Boolean      @default(false)
 
   players           Player[]
 

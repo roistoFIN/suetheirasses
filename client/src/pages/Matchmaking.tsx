@@ -71,7 +71,15 @@ const Matchmaking: React.FC = () => {
   const [aboutOpen, setAboutOpen] = useState(false);
   const chatViewportRef = useRef<HTMLDivElement>(null);
   const { send, on, socket } = useSocketStore();
-  const { room, player } = useGameStore();
+  const { room, player, error, setError } = useGameStore();
+
+  /** A failed join/create attempt (name taken, room full, kicked, etc.) shouldn't leave
+   * the loading overlay stuck forever — there's nothing else that resets these on error. */
+  useEffect(() => {
+    if (!error) return;
+    setIsCreating(false);
+    setIsSearching(false);
+  }, [error]);
 
   /** Remember the player's name as soon as it's non-empty, so it doesn't need to be re-typed next visit. */
   useEffect(() => {
@@ -129,6 +137,7 @@ const Matchmaking: React.FC = () => {
    */
   const handleCreateRoom = () => {
     if (!playerName.trim()) return;
+    setError(null);
     setIsCreating(true);
     send(ClientEvents.ROOM_JOIN, { playerName: playerName.trim() });
   };
@@ -143,6 +152,7 @@ const Matchmaking: React.FC = () => {
    */
   const handleJoinRoom = () => {
     if (!playerName.trim() || !roomName.trim()) return;
+    setError(null);
     send(ClientEvents.ROOM_JOIN, {
       playerName: playerName.trim(),
       roomName: roomName.trim(),
@@ -157,6 +167,7 @@ const Matchmaking: React.FC = () => {
    */
   const handleSearchForRoom = () => {
     if (!playerName.trim()) return;
+    setError(null);
     setIsSearching(true);
     send(ClientEvents.ROOM_JOIN, { playerName: playerName.trim(), searchForRoom: true });
   };
@@ -168,6 +179,7 @@ const Matchmaking: React.FC = () => {
    */
   const handleJoinListedRoom = (roomId: string) => {
     if (!playerName.trim()) return;
+    setError(null);
     send(ClientEvents.ROOM_JOIN, {
       playerName: playerName.trim(),
       roomName: roomId,
@@ -180,9 +192,12 @@ const Matchmaking: React.FC = () => {
     return (
       <Container size="sm" py="xl">
         <Paper withBorder p="xl" shadow="lg">
-          <Title order={2} mb="md">
-            🏢 Room Lobby
-          </Title>
+          <Flex justify="space-between" align="center" mb="md">
+            <Title order={2}>🏢 Room Lobby</Title>
+            <Badge color={room.inviteOnly ? 'orange' : 'gray'} size="sm">
+              {room.inviteOnly ? '🔒 Invite Only' : '🔓 Public'}
+            </Badge>
+          </Flex>
           <Stack>
             <Text fw={500}>Players ({room.players.length}/{room.maxPlayers}):</Text>
             {room.players.map((p) => (
@@ -262,6 +277,18 @@ const Matchmaking: React.FC = () => {
                   )}
                 </CopyButton>
               </Group>
+              <Group justify="space-between">
+                <Text fw={500}>Room Visibility:</Text>
+                <Button
+                  size="xs"
+                  variant={room.inviteOnly ? 'filled' : 'outline'}
+                  color={room.inviteOnly ? 'orange' : 'gray'}
+                  onClick={() => send(ClientEvents.ROOM_SET_INVITE_ONLY, { inviteOnly: !room.inviteOnly })}
+                  title={room.inviteOnly ? 'Invisible to Quick Play and Available Rooms — code/link still works' : 'Discoverable via Quick Play and Available Rooms'}
+                >
+                  {room.inviteOnly ? '🔒 Invite Only' : '🔓 Public'}
+                </Button>
+              </Group>
               <Group justify="center">
                 <Button
                   size="lg"
@@ -280,6 +307,15 @@ const Matchmaking: React.FC = () => {
               Waiting for the host to start the game...
             </Alert>
           )}
+          <Divider my="md" />
+          <Button
+            fullWidth
+            variant="outline"
+            color="red"
+            onClick={() => send(ClientEvents.ROOM_LEAVE, null)}
+          >
+            Leave Room
+          </Button>
         </Paper>
       </Container>
     );
@@ -325,6 +361,12 @@ const Matchmaking: React.FC = () => {
               Change Name
             </Button>
           </Group>
+
+          {error && (
+            <Alert color="red" variant="light" withCloseButton onClose={() => setError(null)}>
+              {error.message}
+            </Alert>
+          )}
 
           <Divider my="sm" />
 

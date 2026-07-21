@@ -23,7 +23,7 @@ import {
   type FormulaInfo,
   type GameReadyUpdateResponse,
 } from '@suetheirasses/shared';
-import { validateRoomJoin, validateSubmitDecisions, validateDigDeeper, validateRoomRejoin, validateAnnualReportRequest, validateChatMessage, validateGameReady } from '../validation/schemas.js';
+import { validateRoomJoin, validateSubmitDecisions, validateDigDeeper, validateRoomRejoin, validateAnnualReportRequest, validateChatMessage, validateGameReady, validateRoomSetInviteOnly } from '../validation/schemas.js';
 import { GameLoop } from '../engine/gameLoop.js';
 import { generateAnnualReportBlurb } from '../services/llmService.js';
 
@@ -414,6 +414,7 @@ export class GameEngine {
       timer: null,
       timerValue: 0,
       readyPlayerIds: new Set(),
+      kickedNames: new Set(),
     };
 
     this.rooms.set(room.id, roomState);
@@ -431,6 +432,10 @@ export class GameEngine {
 
     if (roomState.players.size >= roomState.room.maxPlayers) {
       throw new Error('Room is full');
+    }
+
+    if (roomState.kickedNames.has(player.name)) {
+      throw new Error('You were removed from this room and cannot rejoin');
     }
 
     const existingPlayer = Array.from(roomState.players.values())
@@ -561,6 +566,10 @@ export class GameEngine {
       } catch (error) {
         console.error(`Failed to clean up room ${roomId} from DB:`, error);
       }
+    } else {
+      // The player whose grace period just expired might have been the host.
+      await this.promoteNewHostIfNeeded(roomState);
+      this.broadcastRoomState(roomId, ServerEvents.ROOM_UPDATED, { room: this.buildRoomSnapshot(roomState) });
     }
   }
 
@@ -900,8 +909,16 @@ export class GameEngine {
     this.io.to(roomId).emit(event, data);
   }
 
-  /** Builds the `room:joined` payload for one player — shared by the fresh-join and rejoin paths. */
-  public buildRoomJoinedPayload(roomState: RoomState, player: Player): { room: Room; player: Player; companies: Company[] } {
+  /**
+   * Rebuilds a `Room` snapshot fresh from `roomState.players` every time — never read
+   * `roomState.room.players` directly for anything sent to a client. It's only ever
+   * populated once, at room creation (from the single founding player Prisma's
+   * `room.create` returns), and nothing keeps it in sync as players join/leave/get
+   * kicked/get promoted to host afterward — broadcasting it as-is was a real bug (the
+   * "host shown as a plain player to someone else" report) fixed by routing every
+   * roster-affecting broadcast through this method instead.
+   */
+  public buildRoomSnapshot(roomState: RoomState): Room {
     const allPlayers: Player[] = Array.from(roomState.players.values()).map((p: Player) => ({
       id: p.id,
       name: p.name,
@@ -912,14 +929,20 @@ export class GameEngine {
       socketId: p.socketId ?? undefined,
     }));
 
-    const fullRoom: Room = {
+    return {
       id: roomState.room.id,
       status: roomState.room.status,
       maxPlayers: roomState.room.maxPlayers,
       currentPhaseRound: roomState.room.currentPhaseRound,
       players: allPlayers,
       createdAt: roomState.room.createdAt,
+      inviteOnly: roomState.room.inviteOnly,
     };
+  }
+
+  /** Builds the `room:joined` payload for one player — shared by the fresh-join and rejoin paths. */
+  public buildRoomJoinedPayload(roomState: RoomState, player: Player): { room: Room; player: Player; companies: Company[] } {
+    const fullRoom = this.buildRoomSnapshot(roomState);
 
     return {
       room: fullRoom,
@@ -932,6 +955,75 @@ export class GameEngine {
       },
       companies: [],
     };
+  }
+
+  /**
+   * Promote the earliest-remaining-joined player to host if the room currently has
+   * none (the previous host was kicked, disconnected past the grace period, or left
+   * voluntarily). No-ops if a host already exists or the room is now empty.
+   * `roomState.players` is a `Map`, which iterates in insertion order, so the first
+   * entry is genuinely the longest-tenured remaining player.
+   */
+  public async promoteNewHostIfNeeded(roomState: RoomState): Promise<void> {
+    if (roomState.players.size === 0) return;
+    const hasHost = Array.from(roomState.players.values()).some((p) => p.isHost);
+    if (hasHost) return;
+
+    const newHost = Array.from(roomState.players.values())[0];
+    newHost.isHost = true;
+    await this.prisma.player.update({ where: { id: newHost.id }, data: { isHost: true } });
+  }
+
+  /**
+   * Voluntary departure from the WAITING-phase lobby — the "Leave Room" button.
+   * Distinct from `forfeitGame` (GAME_PHASE's "Leave Game" forfeit): this actually
+   * removes the player (DB row deleted, same cleanup as a kick) rather than marking
+   * them bankrupt, since there's no game in progress to forfeit. Promotes a new host
+   * if the leaver was one, and deletes the room outright if they were the last player
+   * in it — mirroring `finalizePlayerRemoval`'s empty-room cleanup.
+   */
+  public async leaveRoom(roomId: string, playerId: string): Promise<{ success: boolean; reason?: string }> {
+    const roomState = this.rooms.get(roomId);
+    if (!roomState || roomState.room.status !== RoomStatus.WAITING) {
+      return { success: false, reason: 'not_in_lobby' };
+    }
+
+    const player = roomState.players.get(playerId);
+    if (!player) return { success: false, reason: 'not_found' };
+
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const company = await tx.company.findUnique({ where: { playerId } });
+        if (company) {
+          await tx.asset.deleteMany({ where: { companyId: company.id } });
+          await tx.company.delete({ where: { id: company.id } });
+        }
+        await tx.player.delete({ where: { id: playerId } });
+      });
+    } catch (error) {
+      console.error(`Failed to clean up leaving player ${playerId} from DB:`, error);
+      return { success: false, reason: 'db_error' };
+    }
+
+    roomState.players.delete(playerId);
+    if (player.socketId) this.playerToRoom.delete(player.socketId);
+    this.touchRoomActivity(roomId);
+
+    if (roomState.players.size === 0) {
+      this.rooms.delete(roomId);
+      this.lastTurnResults.delete(roomId);
+      try {
+        await this.prisma.room.delete({ where: { id: roomId } });
+      } catch (error) {
+        console.error(`Failed to clean up room ${roomId} from DB:`, error);
+      }
+      return { success: true };
+    }
+
+    await this.promoteNewHostIfNeeded(roomState);
+    this.broadcastRoomState(roomId, ServerEvents.ROOM_UPDATED, { room: this.buildRoomSnapshot(roomState) });
+
+    return { success: true };
   }
 
   /**
@@ -1010,10 +1102,12 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
         let roomState: RoomState | undefined;
 
         if (validated.searchForRoom) {
-          // Search for an available room with less than MAX_PLAYERS
+          // Search for an available room with less than MAX_PLAYERS — invite-only
+          // rooms are never a Quick Play candidate.
           const availableRooms = await prisma.room.findMany({
             where: {
               status: RoomStatus.WAITING,
+              inviteOnly: false,
             },
             orderBy: {
               players: { _count: 'asc' },
@@ -1106,8 +1200,14 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
         socket.join(roomState.room.id);
       } catch (error: any) {
         console.error(`Room join failed for ${payload.playerName}:`, error.message);
+        const codeByMessage: Record<string, string> = {
+          'Player name already taken': 'NAME_TAKEN',
+          'Room is full': 'ROOM_FULL',
+          'Room not found': 'ROOM_NOT_FOUND',
+          'You were removed from this room and cannot rejoin': 'KICKED_FROM_ROOM',
+        };
         socket.emit(ServerEvents.ERROR, {
-          code: 'JOIN_FAILED',
+          code: codeByMessage[error.message] ?? 'JOIN_FAILED',
           message: error.message || 'Failed to join room',
         });
       }
@@ -1145,9 +1245,14 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
     socket.on(ClientEvents.ROOM_LIST, async () => {
       const availableRooms: RoomInfo[] = [];
 
-      // Collect in-memory active rooms
+      // Collect in-memory active rooms — invite-only rooms never appear here, same
+      // as they're never a Quick Play candidate.
       for (const [_roomId, roomState] of engine.rooms) {
-        if (roomState.room.status === RoomStatus.WAITING && roomState.players.size < roomState.room.maxPlayers) {
+        if (
+          roomState.room.status === RoomStatus.WAITING &&
+          !roomState.room.inviteOnly &&
+          roomState.players.size < roomState.room.maxPlayers
+        ) {
           availableRooms.push({
             id: roomState.room.id,
             status: roomState.room.status,
@@ -1163,6 +1268,7 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
       const dbRooms = await prisma.room.findMany({
         where: {
           status: RoomStatus.WAITING,
+          inviteOnly: false,
         },
         include: {
           _count: {
@@ -1255,6 +1361,9 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
 
       // Remove player from in-memory state ONLY after successful DB cleanup
       roomState.players.delete(playerToKick.id);
+      // Blocks this name from rejoining the room (invite link or Quick Play) — see
+      // RoomState.kickedNames' doc comment for the limits of this without real auth.
+      roomState.kickedNames.add(playerToKick.name);
 
       // Notify all remaining players about the kick
       engine.broadcastRoomState(roomId, ServerEvents.ROOM_PLAYER_KICKED, {
@@ -1270,12 +1379,75 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
         }
       }
 
-      // Update room state for remaining players
-      engine.broadcastRoomState(roomId, ServerEvents.ROOM_JOINED, {
-        room: roomState.room,
-        player: host,
-        companies: [],
-      });
+      // Refresh the roster for remaining players — never broadcast roomState.room
+      // directly, its embedded `players` array is stale from room creation (see
+      // buildRoomSnapshot's doc comment).
+      await engine.promoteNewHostIfNeeded(roomState);
+      engine.broadcastRoomState(roomId, ServerEvents.ROOM_UPDATED, { room: engine.buildRoomSnapshot(roomState) });
+    });
+
+    // Voluntary departure from the WAITING-phase lobby — "Leave Room". Distinct from
+    // game:leave's GAME_PHASE forfeit (that marks the player bankrupt; this actually
+    // removes them, same as a kick, since there's no game in progress).
+    socket.on(ClientEvents.ROOM_LEAVE, async () => {
+      const roomId = engine.getPlayerRoom(socket.id);
+      if (!roomId) return;
+
+      const roomState = engine.rooms.get(roomId);
+      if (!roomState) return;
+
+      const player = Array.from(roomState.players.values()).find(
+        (p: Player) => p.socketId === socket.id,
+      );
+      if (!player) return;
+
+      const result = await engine.leaveRoom(roomId, player.id);
+      if (!result.success) {
+        socket.emit(ServerEvents.ERROR, {
+          code: 'LEAVE_ROOM_FAILED',
+          message: result.reason || 'Unable to leave the room right now',
+        });
+        return;
+      }
+
+      socket.leave(roomId);
+      socket.emit(ServerEvents.ROOM_LEFT, null);
+    });
+
+    // Host toggles Quick Play / Available Rooms discoverability — a direct room-code
+    // or invite-link join is never affected by this, only auto-matching is.
+    socket.on(ClientEvents.ROOM_SET_INVITE_ONLY, async (payload: unknown) => {
+      const roomId = engine.getPlayerRoom(socket.id);
+      if (!roomId) return;
+
+      const roomState = engine.rooms.get(roomId);
+      if (!roomState || roomState.room.status !== RoomStatus.WAITING) return;
+
+      const host = Array.from(roomState.players.values()).find(
+        (p: Player) => p.socketId === socket.id,
+      );
+      if (!host || !host.isHost) {
+        socket.emit(ServerEvents.ERROR, {
+          code: 'NOT_HOST',
+          message: 'Only the host can change room visibility',
+        });
+        return;
+      }
+
+      let inviteOnly: boolean;
+      try {
+        ({ inviteOnly } = validateRoomSetInviteOnly(payload));
+      } catch (error: any) {
+        socket.emit(ServerEvents.ERROR, {
+          code: 'INVALID_INVITE_ONLY',
+          message: error.message || 'Invalid invite-only payload',
+        });
+        return;
+      }
+
+      roomState.room.inviteOnly = inviteOnly;
+      await prisma.room.update({ where: { id: roomId }, data: { inviteOnly } });
+      engine.broadcastRoomState(roomId, ServerEvents.ROOM_UPDATED, { room: engine.buildRoomSnapshot(roomState) });
     });
 
     // Start game (host only)

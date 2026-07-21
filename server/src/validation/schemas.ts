@@ -61,6 +61,25 @@ export function validateRoomRejoin(data: unknown): RoomRejoinPayload {
   return roomRejoinSchema.parse(data);
 }
 
+/** Zod schema for the `room:setInviteOnly` Socket.IO event payload. */
+export const roomSetInviteOnlySchema = z.object({
+  inviteOnly: z.boolean(),
+});
+
+/** Inferred TypeScript type for validated `room:setInviteOnly` payloads. */
+export type RoomSetInviteOnlyPayload = z.infer<typeof roomSetInviteOnlySchema>;
+
+/**
+ * Validates and parses raw data against the `room:setInviteOnly` schema.
+ *
+ * @param data - Raw payload from the `room:setInviteOnly` Socket.IO event.
+ * @returns Validated `RoomSetInviteOnlyPayload` object.
+ * @throws ZodValidationError if the payload fails any constraint.
+ */
+export function validateRoomSetInviteOnly(data: unknown): RoomSetInviteOnlyPayload {
+  return roomSetInviteOnlySchema.parse(data);
+}
+
 /**
  * Zod schema for the `chat:message` Socket.IO event payload.
  *

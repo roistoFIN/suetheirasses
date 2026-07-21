@@ -11,6 +11,7 @@ const createMockRoom = (overrides: Partial<Room> = {}): Room => ({
   currentPhaseRound: 1,
   players: [],
   createdAt: new Date(),
+  inviteOnly: false,
   ...overrides,
 });
 

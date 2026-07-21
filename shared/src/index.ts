@@ -32,6 +32,8 @@ export interface Room {
   players: Player[];
   createdAt: Date;
   timer?: number;
+  /** Host-toggled — excludes the room from Quick Play matching and the Available Rooms list; a direct room-code/invite-link join still works. */
+  inviteOnly: boolean;
 }
 
 // ============================================================
@@ -84,10 +86,13 @@ export interface GameState {
 // Client → Server events
 export enum ClientEvents {
   ROOM_JOIN = 'room:join',
+  /** Voluntarily leave the room lobby — WAITING phase only. Distinct from `game:leave`'s GAME_PHASE forfeit. */
   ROOM_LEAVE = 'room:leave',
   ROOM_KICK = 'room:kick',
   ROOM_START_GAME = 'room:startGame',
   ROOM_LIST = 'room:list',
+  /** Host toggles whether the room can be found via Quick Play / the Available Rooms list — WAITING phase only. A direct room-code/invite-link join is never blocked by this. */
+  ROOM_SET_INVITE_ONLY = 'room:setInviteOnly',
   CHAT_MESSAGE = 'chat:message',
   GAME_SUBMIT_DECISIONS = 'game:submitDecisions',
   /** Pay to reveal the next tier of intel on an incoming attack — instant, outside turn resolution. */
@@ -105,11 +110,14 @@ export enum ClientEvents {
 // Server → Client events
 export enum ServerEvents {
   ROOM_JOINED = 'room:joined',
+  /** Sent only to the requesting socket, confirming a successful `room:leave` — the client's cue to reset to the landing page. */
   ROOM_LEFT = 'room:left',
   ROOM_PLAYER_KICKED = 'room:playerKicked',
   ROOM_PLAYER_JOINED = 'room:playerJoined',
   ROOM_PLAYER_LEFT = 'room:playerLeft',
   ROOMS_LISTED = 'rooms:list',
+  /** Broadcast to the whole room whenever the roster or room-level settings change outside a fresh join (kick, leave, host reassignment, invite-only toggle) — always a freshly-rebuilt `Room` snapshot, never a stale cached one. Deliberately does *not* carry a `player` field like `room:joined` does, so it can never overwrite a recipient's own identity with someone else's. */
+  ROOM_UPDATED = 'room:updated',
   PHASE_CHANGED = 'phase:changed',
   TIMER_UPDATE = 'timer:update',
   BOARD_UPDATE = 'board:update',
@@ -144,6 +152,11 @@ export interface RoomRejoinPayload {
   playerId: string;
 }
 
+/** Payload for `room:setInviteOnly` — host toggles Quick Play / Available Rooms discoverability. */
+export interface RoomSetInviteOnlyPayload {
+  inviteOnly: boolean;
+}
+
 /** Payload for `game:digDeeper` — spend `gameSettings.digDeeperCost` to reveal the next tier of intel on one attack. */
 export interface DigDeeperPayload {
   attackId: string;
@@ -172,6 +185,11 @@ export interface RoomJoinedResponse {
   room: Room;
   player: Player;
   companies: Company[];
+}
+
+/** Broadcast for `room:updated` — see the enum entry for why this never carries a `player` field. */
+export interface RoomUpdatedResponse {
+  room: Room;
 }
 
 export interface PhaseChangedResponse {
@@ -325,6 +343,8 @@ export interface RoomState {
   timerValue: number;
   /** Player ids ready for the in-flight turn — cleared at the start of every new GAME_PHASE round. See `GameEngine.toggleReady`. */
   readyPlayerIds: Set<string>;
+  /** Names kicked from this room — blocks a fresh `room:join` (invite-link or Quick Play) reusing that name, for the lifetime of the room. Not a real ban system (no auth in this app — see README's trust model); a determined player could still rejoin under a different name. */
+  kickedNames: Set<string>;
 }
 
 

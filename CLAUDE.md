@@ -139,6 +139,43 @@ attacked you" hint + progressive "Dig Deeper" reveal (see README's *Attack Aware
 Dig Deeper* section) — never derive one of these without the other; they read the same
 `targetId`.
 
+### Never broadcast `roomState.room` directly — its embedded `players` array goes stale the moment a second player joins
+
+`RoomState.room` (`Room`, the shared type) carries its own embedded `players: Player[]`
+array — but that array is only ever populated once, from the single founding player
+Prisma's `room.create` returns in `GameEngine.createRoom`. Nothing keeps it in sync
+afterward: `joinRoom`, kicks, `leaveRoom`, host reassignment all mutate the *separate*
+live roster (`roomState.players`, a `Map`), never `roomState.room.players`. Any code that
+broadcasts `{ room: roomState.room, ... }` straight from a `RoomState` is therefore
+sending a snapshot frozen at room-creation time — this was a real, shipped bug (the kick
+handler's "sync the roster for remaining players" step did exactly this, via a reused
+`room:joined` broadcast) that surfaced as "the host is shown as a plain player to someone
+else." `GameEngine.buildRoomSnapshot(roomState)` exists specifically to rebuild `players`
+fresh from `roomState.players` every time — use it (or `buildRoomJoinedPayload`, which
+calls it) for every outbound `Room`, never read `roomState.room.players` for anything a
+client will see.
+
+The `room:updated` broadcast (kick, `room:leave`, host reassignment, `room:setInviteOnly`)
+compounds this: the old code also sent one shared `player: host` field to the *entire*
+room via `room:joined`, silently overwriting every other recipient's own identity with
+the kicking host's. `room:updated`'s payload deliberately carries no `player` field at
+all — there's no single "the player" for a whole-room broadcast. Each client instead
+matches its own id inside the fresh `room.players` array (see `socketStore.ts`'s
+`room:updated` handler) to refresh its own `isHost`/etc. — the only way a newly-promoted
+host's own view of themselves updates too, not just how others see them.
+
+### Kicked-player rejoin blocking is name-based, not a real ban — same trust model gap as everywhere else in this app
+
+`RoomState.kickedNames` (a `Set<string>`, checked in `joinRoom`) blocks a fresh
+`room:join` reusing a just-kicked name, whether via invite link or Quick Play. This is
+deliberately simple and imperfect: since this app has no auth (see README's *Reconnection
+& Session Resume* trust model — a player id pair is the only "credential" anywhere), a
+kicked player's DB row is fully deleted, so there's no persistent identity left to ban
+against — a name is the only signal available without adding real accounts. A determined
+player can still rejoin under a different name; don't try to "fix" this with
+fingerprinting/IP tracking/etc. without an explicit product decision to add real auth
+first, since that would be a much bigger scope change than this mechanism is meant to be.
+
 ### Everything per-round is client-full-replacement, not incremental
 
 `game:submitDecisions` sends the player's *entire* pending selection every time
@@ -396,7 +433,11 @@ build step is needed to see changes during dev, only for production builds.
   interaction tests are the regression coverage for the two gotchas documented above
   (`allCases` dedup, and the `advancingRooms`-lock-safe "return a flag" pattern for
   early turn resolution) — extend those, don't just re-verify the happy path, if you
-  touch either area again.
+  touch either area again. `gameEngine.test.ts`'s `buildRoomSnapshot` tests assert the
+  rebuilt-fresh-every-time behavior directly (create a room, join a second player,
+  confirm `roomState.room.players` is still stale at length 1 while the snapshot is
+  correct at length 2) — that's the regression guard for the "host shown as a plain
+  player" bug; its `promoteNewHostIfNeeded`/`leaveRoom` tests cover host reassignment.
 - `client/src/**/*.test.ts` — Vitest, Zustand stores and pure UI utilities.
   `GamePhase.utils.test.ts` deliberately duplicates small pure functions out of
   `GamePhase.tsx` (`fmt`, `getGroundsAgainst`, `detectNewlySuedCases`, etc.) rather than

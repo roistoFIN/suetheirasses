@@ -55,7 +55,7 @@ Players can join existing rooms without knowing the room ID through the Quick Pl
 
 1. **Search**: Player clicks "Search for Available Room" → sends `room:list` event
 2. **Room Discovery**: Server merges in-memory active rooms with database rooms for consistency
-3. **Auto-Join**: Server finds the room with the fewest players (< 4) and joins the player
+3. **Auto-Join**: Server finds the room with the fewest players (< 4) and joins the player — invite-only rooms (see *Lobby Features* below) are never a candidate
 4. **Fallback**: If no rooms available, a new room is created automatically
 5. **Live Updates**: Other players receive `room:playerJoined` events when someone joins
 
@@ -89,6 +89,28 @@ The room list is dynamically updated via the `rooms:list` server event, showing:
   client-side below 2 players (covers "just created the room" and "kicked back down to
   alone"), and the server independently rejects a `room:startGame` attempt with
   `NOT_ENOUGH_PLAYERS` below 2 regardless of what the client sends.
+- **Name-taken message** — trying to join with a name already in use in that room (or a
+  name that was just kicked from it, see below) surfaces as a dismissible red alert on the
+  landing page instead of failing silently; the same fix also resets the stuck loading
+  spinner that any failed join used to leave behind (nothing previously reset it on error).
+- **Invite Only** — the host can toggle a room between 🔓 **Public** and 🔒 **Invite Only**
+  (`room:setInviteOnly`, host-only, WAITING phase only). An invite-only room is excluded
+  from Quick Play matching and the Available Rooms list, but a direct room-code or
+  invite-link join is never blocked by it — "invite only" means "not auto-discoverable,"
+  not "unjoinable."
+- **Leave Room** — a button in the lobby (`room:leave`/`room:left`, WAITING phase only)
+  that actually removes the player from the room (DB row deleted, same cleanup as a kick)
+  and returns them to the landing page. Distinct from GAME_PHASE's **Leave Game**, which
+  forfeits (marks bankrupt) rather than removing the player, since there's a game in
+  progress to lose.
+- **Host reassignment** — if the host disconnects past the grace period, gets kicked (host
+  can't kick themselves, so this only ever happens via the other two paths), or leaves
+  voluntarily, the longest-tenured remaining player (`GameEngine.promoteNewHostIfNeeded`)
+  is promoted automatically, both in-memory and in the DB.
+- **Kicked players can't rejoin** — each room tracks kicked *names* (`RoomState.kickedNames`
+  — see CLAUDE.md for why this is name-based rather than a real ban) and rejects a fresh
+  `room:join` reusing one, whether via invite link or Quick Play, for the lifetime of the
+  room.
 
 ---
 
@@ -284,6 +306,7 @@ model Room {
   maxPlayers        Int          @default(4)
   currentPhaseRound Int          @default(1)
   createdAt         DateTime     @default(now())
+  inviteOnly        Boolean      @default(false) // host-toggled — see "Invite Only" above
   players           Player[]
 
   @@index([status])
@@ -351,6 +374,8 @@ model Asset {
 | `room:rejoin` | `{ roomId, playerId }` | Resume an existing session on a new socket — after a page refresh, an accidental back button, or a brief network drop — as long as it's within the server's reconnect grace period. See *Reconnection & Session Resume* below. |
 | `room:list` | — | Request list of available rooms |
 | `room:kick` | `{ playerId }` | Host removes a player from the room |
+| `room:leave` | — | Voluntarily leave the room lobby — WAITING phase only. Distinct from `game:leave`'s GAME_PHASE forfeit; this actually removes the player rather than marking them bankrupt. See *Lobby Features* above. |
+| `room:setInviteOnly` | `{ inviteOnly }` | Host toggles whether the room can be found via Quick Play / the Available Rooms list — WAITING phase only. Never blocks a direct room-code/invite-link join. |
 | `room:startGame` | — | Host starts the game (WAITING → GAME_PHASE, round 1) |
 | `game:submitDecisions` | `{ strategic: DecisionEntry[], operational: DecisionEntry[], lawsuits: LawsuitEntry[] }` | Full replacement of this turn's pending decisions (`{ name, targetId? }` each) *and* deliberate lawsuit filings (`{ targetId, decisionName, groundName }` each — see *Lawsuits* below). Structural validation only — per-turn limits (max 1 strategic / 2 operational / 3 lawsuits) come from `game_config.json` and are enforced by `DecisionEngine.canDeploy` / `GameLoop`'s lawsuit-filing step. |
 | `game:digDeeper` | `{ attackId }` | Pay `gameSettings.digDeeperCost` ($10,000 by default) to reveal the next tier of intel on one incoming attack — instant, outside the turn-resolution cycle. See *Attack Awareness & Dig Deeper* below. |
@@ -364,10 +389,12 @@ model Asset {
 | Event | Payload | Description |
 |-------|---------|-------------|
 | `room:joined` | `{ room, player, companies }` | Successfully joined a room — also the response to a successful `room:rejoin` |
+| `room:left` | — | Sent only to the requesting socket, confirming a successful `room:leave` — the client's cue to reset to the landing page |
 | `room:playerJoined` | `{ playerId, playerName, isHost, roomId }` | New player joined the room |
 | `room:playerKicked` | `{ kickedPlayerId, kickedPlayerName }` | Player was kicked from room |
 | `room:playerLeft` | `{ playerId, playerName, roomId }` | A disconnected player's reconnect grace period expired without them coming back — they're now actually removed. Never fires for a disconnect that reconnects in time; the rest of the room isn't told about those at all. |
-| `rooms:list` | `{ rooms: RoomInfo[] }` | List of available rooms (Quick Play) |
+| `room:updated` | `{ room }` | Broadcast to the whole room whenever the roster or room-level settings change outside a fresh join (kick, `room:leave`, host reassignment, `room:setInviteOnly`) — always a freshly-rebuilt `Room` snapshot (`GameEngine.buildRoomSnapshot`), never a stale cached one. Deliberately carries no `player` field, unlike `room:joined` — see *Game Engine Architecture* below for why that matters. |
+| `rooms:list` | `{ rooms: RoomInfo[] }` | List of available rooms (Quick Play) — never includes invite-only rooms |
 | `phase:changed` | `{ phase, round, timeLimit }` | Room advanced phase, or looped into another GAME_PHASE round |
 | `timer:update` | `{ timeLeft }` | Countdown tick |
 | `game:deck` | `{ decisions: DecisionDefinition[], gameSettings: GameSettings }` | Sent once, right when GAME_PHASE starts — the full 45-decision library and per-turn limits, static for the whole game. Also re-sent on a successful `room:rejoin` during GAME_PHASE. |
@@ -379,7 +406,7 @@ model Asset {
 | `game:left` | — | Sent only to the requesting socket, confirming a successful `game:leave` forfeit — the client's cue to show the "lost" takeover with the forfeit-specific message |
 | `game:readyUpdate` | `{ readyPlayerIds: string[], activePlayerCount: number }` | Broadcast on every `game:ready` toggle, and reset to an empty `readyPlayerIds` at the start of every new round |
 | `chat:message` | `{ playerId, playerName, message, timestamp }` | Broadcast to the room in response to a `chat:message` from any player in it |
-| `error` | `{ code, message }` | Error occurred (e.g. `NOT_HOST`, `INVALID_DECISIONS`, `REJOIN_FAILED`, `ANNUAL_REPORT_FAILED`, `NOT_ENOUGH_PLAYERS`, `LEAVE_GAME_FAILED`, `INVALID_READY`, `INVALID_CHAT_MESSAGE`) |
+| `error` | `{ code, message }` | Error occurred (e.g. `NOT_HOST`, `INVALID_DECISIONS`, `REJOIN_FAILED`, `ANNUAL_REPORT_FAILED`, `NOT_ENOUGH_PLAYERS`, `LEAVE_GAME_FAILED`, `INVALID_READY`, `INVALID_CHAT_MESSAGE`, `NAME_TAKEN`, `ROOM_FULL`, `ROOM_NOT_FOUND`, `KICKED_FROM_ROOM`, `LEAVE_ROOM_FAILED`, `INVALID_INVITE_ONLY`) |
 
 ### API Type Definitions
 
@@ -405,6 +432,15 @@ export interface RoomJoinPayload {
 export interface RoomRejoinPayload {
   roomId: string;
   playerId: string;
+}
+
+export interface RoomSetInviteOnlyPayload {
+  inviteOnly: boolean;
+}
+
+/** Broadcast for `room:updated` — see the enum entry for why this never carries a `player` field. */
+export interface RoomUpdatedResponse {
+  room: Room;
 }
 
 /** One rival's active decision, narrated for their "annual report" — see `game:getAnnualReport`. */
@@ -494,6 +530,15 @@ reconnection (see *Reconnection & Session Resume* below):
   (roster removal only).
 - `room:playerLeft` → Calls `gameStore.kickPlayer()` (same roster-removal logic) plus a
   distinguishing notification ("…connection timed out")
+- `room:updated` → Calls `gameStore.updateRoom()`, then re-derives *my own* player object
+  by matching my own id inside the fresh roster and calling `updatePlayer()` with that
+  entry — not a shared `player` field from the payload (there isn't one). This is the fix
+  for a real bug: broadcasting one shared player object to the whole room after a kick
+  used to silently overwrite every other client's own identity with the kicking host's.
+  Also how a newly-promoted host's own `isHost` flag reaches their own client, not just
+  how others see them.
+- `room:left` → Clears the saved session and calls `gameStore.resetSession()` plus
+  `setNotification('You left the room.')` — the ack for my own voluntary `room:leave`
 - `phase:changed` → Calls `gameStore.updatePhase()`
 - `timer:update` → Calls `gameStore.updateTimer()`
 - `player:bankrupt` → Calls `gameStore.markPlayerBankrupt()`; for *my own* id, also calls
@@ -999,6 +1044,7 @@ All client inputs are validated server-side using Zod schemas before processing:
 | | `lawsuits` | Array of `{ targetId, decisionName, groundName }`, max 10 entries — structural cap only; the real limit (`maxLawsuitsPerPlayerPerTurn`, 3) and the "target actually deployed this" check happen in `LegalEngine.fileLawsuit` |
 | `digDeeperSchema` | `attackId` | Required, 1-100 characters |
 | `gameReadySchema` | `ready` | Required boolean |
+| `roomSetInviteOnlySchema` | `inviteOnly` | Required boolean |
 | `roomRejoinSchema` | `roomId`, `playerId` | Both required, 1-50 characters — no separate auth token; the id pair itself is the bearer credential, same trust model as every other player id already used throughout the app (no passwords anywhere) |
 | `annualReportRequestSchema` | `rivalPlayerId` | Required, 1-100 characters |
 | `decisionDefinitionSchema` | `decision`, `level`, `description`, `nature`, `offensiveAction`, `excludes`, `impacts` | Structural — mirrors `DecisionDefinition`; doesn't re-verify formula semantics, same philosophy as `submitDecisionsSchema` |
@@ -1016,11 +1062,14 @@ only place that touches Prisma or Socket.IO for turn resolution:
 | Method | Description |
 |--------|-------------|
 | `createRoom(player)` | Creates a new room with the player as founder (max 4 players) |
-| `joinRoom(roomId, player)` | Joins an existing room; throws if full or the name is already taken |
+| `joinRoom(roomId, player)` | Joins an existing room; throws if full, the name is already taken, or the name is in `RoomState.kickedNames` for this room |
 | `markPlayerDisconnected(socketId)` | A socket disconnected — clears the player's live socket association but keeps them in the room and makes no DB write, starting their reconnect grace-period clock |
-| `finalizePlayerRemoval(roomId, playerId)` *(private)* | Actually removes a player whose grace period expired without a `room:rejoin` — the DB cleanup `markPlayerDisconnected`'s predecessor (`removePlayer`) used to do immediately; broadcasts `room:playerLeft`; cleans up the room too if it's now empty |
+| `finalizePlayerRemoval(roomId, playerId)` *(private)* | Actually removes a player whose grace period expired without a `room:rejoin` — the DB cleanup `markPlayerDisconnected`'s predecessor (`removePlayer`) used to do immediately; broadcasts `room:playerLeft`; cleans up the room if it's now empty, otherwise promotes a new host if needed and broadcasts `room:updated` |
+| `leaveRoom(roomId, playerId)` | Voluntary lobby departure — WAITING phase only. Same DB cleanup as a kick (player actually removed, not just marked bankrupt — there's no game in progress to forfeit), then either deletes the room (last player) or promotes a new host if needed and broadcasts `room:updated` |
+| `promoteNewHostIfNeeded(roomState)` | No-ops if the room already has a host or is empty; otherwise promotes the longest-tenured remaining player (`roomState.players` is a `Map`, so the first entry is genuinely the earliest joiner still present) and persists it. Called after every removal path — kick, `leaveRoom`, `finalizePlayerRemoval` — since any of them could have removed the host. |
+| `buildRoomSnapshot(roomState)` | Rebuilds a `Room` object fresh from `roomState.players` every time. The one thing to never do instead: broadcast `roomState.room` directly — its embedded `players` array is populated once at creation and nothing keeps it in sync afterward, which was the root cause of a real bug (a kick's "sync the roster" broadcast silently overwriting other players' own identity — see the `room:updated` handler above for the fix). |
 | `rejoinRoom(roomId, playerId, socketId)` | Re-associates an existing (still-within-grace-period) player with a new socket; returns data for the caller to emit (`room:joined` always, plus `game:deck`/cached `turn:resolved` or `game:over` depending on room phase) rather than doing the emitting itself, mirroring `digDeeper`'s pattern |
-| `buildRoomJoinedPayload(roomState, player)` | Builds the `room:joined` payload shape — shared by the fresh-join and rejoin paths |
+| `buildRoomJoinedPayload(roomState, player)` | Builds the `room:joined` payload shape (via `buildRoomSnapshot` plus the recipient's own `player`) — shared by the fresh-join and rejoin paths |
 | `digDeeper(roomId, playerId, attackId)` | "Dig Deeper" — pay to reveal the next tier of intel on one incoming attack, instantly, outside the turn-resolution cycle. Loads active players, calls `GameLoop.digDeeper` (pure), and on success does the one Prisma write (`cash` *and* `variables`, since `GameLoop` reads cash from the `variables` JSONB, not the column) |
 | `getAnnualReport(roomId, rivalPlayerId)` | AI-narrated "annual report" text for one rival, on demand — loads active players, calls `GameLoop.getActiveDecisionSummaries` (pure, re-derives from the rival's own `Company.engineState`), then asks `services/llmService.ts` to narrate each active decision (network I/O, cached, falls back to static `competitorsView` text on any failure). Read-only — no Prisma write |
 | `advancePhase(roomId)` | Linear phase advance (WAITING → GAME_PHASE); race-condition guarded |
@@ -1101,9 +1150,10 @@ npm run lint
 # like __proto__/constructor/arbitrary calls), gameLoop (incl. a regression test that
 # a lawsuit persisted into both the plaintiff's and defendant's own engineState
 # doesn't get double-counted when reconstructed on a later turn), gameEngine (incl.
-# toggleReady and forfeitGame's ready-interaction), validation schemas, llmService,
-# adminAuth middleware. No DB or live LLM required (mocked Prisma, incl. mocked
-# `formula` model; llmService's own network calls are mocked via global.fetch).
+# toggleReady, forfeitGame's ready-interaction, promoteNewHostIfNeeded, leaveRoom,
+# buildRoomSnapshot, and joinRoom's kickedNames rejection), validation schemas,
+# llmService, adminAuth middleware. No DB or live LLM required (mocked Prisma, incl.
+# mocked `formula` model; llmService's own network calls are mocked via global.fetch).
 npm test --workspace=server
 
 # Run frontend unit tests (Vitest) — Zustand stores, GamePhase utilities (incl.

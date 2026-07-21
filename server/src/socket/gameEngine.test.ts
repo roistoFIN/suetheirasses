@@ -56,6 +56,7 @@ const createMockPrisma = () => {
         maxPlayers: (data.maxPlayers as number) ?? 4,
         currentPhaseRound: (data.currentPhaseRound as number) ?? 1,
         createdAt: (data.createdAt as Date) || new Date(),
+        inviteOnly: (data.inviteOnly as boolean) ?? false,
       };
 
       return Promise.resolve({
@@ -472,6 +473,32 @@ describe('GameEngine', () => {
       await expect(engine.joinRoom(roomState.room.id, duplicate)).rejects.toThrow('Player name already taken');
     });
 
+    it('should throw when the name was kicked from this room, even after the name is free again', async () => {
+      const creator = {
+        id: '',
+        name: 'Alice',
+        roomId: '',
+        isHost: false,
+        bankrupt: false,
+        socketId: 'socket-1',
+      };
+      const roomState = await engine.createRoom(creator);
+      roomState.kickedNames.add('Bob');
+
+      const rejoinAttempt = {
+        id: '',
+        name: 'Bob',
+        roomId: '',
+        isHost: false,
+        bankrupt: false,
+        socketId: 'socket-2',
+      };
+
+      await expect(engine.joinRoom(roomState.room.id, rejoinAttempt)).rejects.toThrow(
+        'You were removed from this room and cannot rejoin',
+      );
+    });
+
     it('should set joining player isHost to false', async () => {
       const creator = {
         id: '',
@@ -529,6 +556,136 @@ describe('GameEngine', () => {
           }),
         }),
       );
+    });
+  });
+
+  describe('buildRoomSnapshot', () => {
+    it('should rebuild players fresh from roomState.players, not the stale roomState.room.players', async () => {
+      const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(creator);
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+
+      // roomState.room.players (the embedded array from room creation) never gets
+      // updated by joinRoom — this is exactly the staleness buildRoomSnapshot exists
+      // to route around. Confirm the raw embedded array really is stale...
+      expect(roomState.room.players).toHaveLength(1);
+
+      // ...but the snapshot is not.
+      const snapshot = engine.buildRoomSnapshot(roomState);
+      expect(snapshot.players).toHaveLength(2);
+      expect(snapshot.players.map((p) => p.name).sort()).toEqual(['Alice', 'Bob']);
+    });
+
+    it('should include inviteOnly', async () => {
+      const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(creator);
+      roomState.room.inviteOnly = true;
+
+      expect(engine.buildRoomSnapshot(roomState).inviteOnly).toBe(true);
+    });
+  });
+
+  describe('promoteNewHostIfNeeded', () => {
+    it('should no-op when a host already exists', async () => {
+      const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(creator);
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+
+      await engine.promoteNewHostIfNeeded(roomState);
+
+      const hosts = Array.from(roomState.players.values()).filter((p) => p.isHost);
+      expect(hosts).toHaveLength(1);
+      expect(hosts[0].name).toBe('Alice');
+    });
+
+    it('should no-op on an empty room', async () => {
+      const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(creator);
+      roomState.players.clear();
+
+      await expect(engine.promoteNewHostIfNeeded(roomState)).resolves.not.toThrow();
+    });
+
+    it('should promote the earliest-remaining-joined player when no host exists', async () => {
+      const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(creator);
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Carol', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-3' });
+
+      // Simulate the original host having just left — no one is host anymore.
+      const alice = Array.from(roomState.players.values()).find((p) => p.name === 'Alice')!;
+      roomState.players.delete(alice.id);
+
+      await engine.promoteNewHostIfNeeded(roomState);
+
+      const bob = Array.from(roomState.players.values()).find((p) => p.name === 'Bob')!;
+      const carol = Array.from(roomState.players.values()).find((p) => p.name === 'Carol')!;
+      expect(bob.isHost).toBe(true);
+      expect(carol.isHost).toBe(false);
+      expect(mockPrisma.player.update).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: bob.id }, data: { isHost: true } }),
+      );
+    });
+  });
+
+  describe('leaveRoom', () => {
+    it('should fail outside WAITING phase', async () => {
+      const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(creator);
+      roomState.room.status = RoomStatus.GAME_PHASE;
+      const alice = Array.from(roomState.players.values())[0];
+
+      const result = await engine.leaveRoom(roomState.room.id, alice.id);
+
+      expect(result).toEqual({ success: false, reason: 'not_in_lobby' });
+    });
+
+    it('should fail for an unknown player', async () => {
+      const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(creator);
+
+      const result = await engine.leaveRoom(roomState.room.id, 'not-a-real-player');
+
+      expect(result).toEqual({ success: false, reason: 'not_found' });
+    });
+
+    it('should remove the player and delete their DB rows', async () => {
+      const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(creator);
+      const bobRoomState = await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+      const bob = Array.from(bobRoomState.players.values()).find((p) => p.name === 'Bob')!;
+
+      const result = await engine.leaveRoom(roomState.room.id, bob.id);
+
+      expect(result).toEqual({ success: true });
+      expect(roomState.players.has(bob.id)).toBe(false);
+      expect(mockPrisma.player.delete).toHaveBeenCalledWith(expect.objectContaining({ where: { id: bob.id } }));
+      expect(engine.getPlayerRoom('socket-2')).toBeUndefined();
+    });
+
+    it('should promote a new host when the host leaves and others remain', async () => {
+      const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(creator);
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+      const alice = Array.from(roomState.players.values()).find((p) => p.name === 'Alice')!;
+
+      const result = await engine.leaveRoom(roomState.room.id, alice.id);
+
+      expect(result).toEqual({ success: true });
+      const bob = Array.from(roomState.players.values()).find((p) => p.name === 'Bob')!;
+      expect(bob.isHost).toBe(true);
+    });
+
+    it('should delete the room when the last player leaves', async () => {
+      const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(creator);
+      const alice = Array.from(roomState.players.values())[0];
+      const roomId = roomState.room.id;
+
+      const result = await engine.leaveRoom(roomId, alice.id);
+
+      expect(result).toEqual({ success: true });
+      expect(engine.getRoom(roomId)).toBeUndefined();
     });
   });
 
@@ -629,6 +786,29 @@ describe('GameEngine', () => {
 
       expect(localPrisma.player.delete).not.toHaveBeenCalled();
       expect(localEngine.getRoom(roomState.room.id)).toBeDefined();
+
+      localEngine.stop();
+    });
+
+    it('promotes a new host and broadcasts ROOM_UPDATED when the host\'s grace period expires and others remain', async () => {
+      vi.useFakeTimers();
+      const localIo = createMockIo();
+      const localPrisma = createMockPrisma();
+      const localEngine = new GameEngine(localIo, localPrisma);
+
+      const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await localEngine.createRoom(creator);
+      await localEngine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+
+      await localEngine.markPlayerDisconnected('socket-1'); // the host
+      await vi.advanceTimersByTimeAsync(70_000);
+
+      const bob = Array.from(roomState.players.values()).find((p) => p.name === 'Bob')!;
+      expect(bob.isHost).toBe(true);
+      expect(localIo.emit).toHaveBeenCalledWith(
+        ServerEvents.ROOM_UPDATED,
+        expect.objectContaining({ room: expect.objectContaining({ players: expect.arrayContaining([expect.objectContaining({ name: 'Bob', isHost: true })]) }) }),
+      );
 
       localEngine.stop();
     });
