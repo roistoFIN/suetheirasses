@@ -100,9 +100,12 @@ The room list is dynamically updated via the `rooms:list` server event, showing:
   not "unjoinable."
 - **Leave Room** — a button in the lobby (`room:leave`/`room:left`, WAITING phase only)
   that actually removes the player from the room (DB row deleted, same cleanup as a kick)
-  and returns them to the landing page. Distinct from GAME_PHASE's **Leave Game**, which
-  forfeits (marks bankrupt) rather than removing the player, since there's a game in
-  progress to lose.
+  and returns them to a fully-reset landing page: the loading spinner and lobby chat
+  history are both explicitly cleared (see CLAUDE.md — neither used to be, since
+  `Matchmaking` never unmounts across a room ↔ landing transition, so leftover component
+  state from the room you just left would otherwise carry into whatever's next). Distinct
+  from GAME_PHASE's **Leave Game**, which forfeits (marks bankrupt) rather than removing
+  the player, since there's a game in progress to lose.
 - **Host reassignment** — if the host disconnects past the grace period, gets kicked (host
   can't kick themselves, so this only ever happens via the other two paths), or leaves
   voluntarily, the longest-tenured remaining player (`GameEngine.promoteNewHostIfNeeded`)
@@ -110,7 +113,9 @@ The room list is dynamically updated via the `rooms:list` server event, showing:
 - **Kicked players can't rejoin** — each room tracks kicked *names* (`RoomState.kickedNames`
   — see CLAUDE.md for why this is name-based rather than a real ban) and rejects a fresh
   `room:join` reusing one, whether via invite link or Quick Play, for the lifetime of the
-  room.
+  room. Quick Play treats that rejection like any other unusable candidate room (full,
+  gone, whatever) — it skips to the next one, or creates a fresh room if none work, rather
+  than surfacing a hard error and stranding the player on the landing page.
 
 ---
 

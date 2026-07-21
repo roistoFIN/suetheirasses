@@ -164,6 +164,16 @@ matches its own id inside the fresh `room.players` array (see `socketStore.ts`'s
 `room:updated` handler) to refresh its own `isHost`/etc. — the only way a newly-promoted
 host's own view of themselves updates too, not just how others see them.
 
+A third, purely client-side bug landed in the same "host shown as a plain player" family:
+`Matchmaking.tsx`'s roster row rendered `p.isHost ? 'Host' : 'Player'` for each `Badge`,
+but had a bug where it read the outer `isHost` (`const isHost = player.isHost` — *the
+viewing player's own* host status) instead of `p.isHost` (the status of the player *that
+row is for*). Every row rendered the viewer's own host-ness, so a non-host viewer saw
+`Player` on the actual host's row too. When rendering a list of players and showing
+per-player state, always double-check which variable a JSX expression is actually
+closing over — `isHost` and `p.isHost` reading as interchangeable at a glance is exactly
+how this slipped through.
+
 ### Kicked-player rejoin blocking is name-based, not a real ban — same trust model gap as everywhere else in this app
 
 `RoomState.kickedNames` (a `Set<string>`, checked in `joinRoom`) blocks a fresh
@@ -175,6 +185,40 @@ against — a name is the only signal available without adding real accounts. A 
 player can still rejoin under a different name; don't try to "fix" this with
 fingerprinting/IP tracking/etc. without an explicit product decision to add real auth
 first, since that would be a much bigger scope change than this mechanism is meant to be.
+
+Quick Play's candidate loop (the `searchForRoom` branch of the `room:join` handler) must
+treat a `joinRoom` rejection from *any* cause as "this room's not usable, try the next
+one" — not just the `'Room is full'` race it originally special-cased. The first version
+only tolerated that one message and re-threw everything else, so a kicked player whose
+Quick Play search happened to consider the very room that kicked them got a hard
+`KICKED_FROM_ROOM` error instead of the search quietly moving on — a real shipped bug.
+Quick Play has no business surfacing a room-specific rejection reason at all; it means
+"any room, or a new one," so the loop's catch block should stay a blanket `continue`
+regardless of what future reasons `joinRoom` might grow to throw for.
+
+### `Matchmaking` never unmounts across a room ↔ landing transition — local component state must be reset explicitly, or it leaks into whatever's next
+
+`App.tsx` switches phases by re-rendering different JSX inside the *same* `Matchmaking`
+component instance (`if (room && player) return <RoomLobby/>; return <LandingPage/>;`) —
+there is no route change, no remount, nothing that would naturally reset local `useState`
+between "in a room" and "back on the landing page." Two real bugs in this session came
+from the same root cause, forgetting that:
+
+- `isCreating`/`isSearching` (drive the landing page's `LoadingOverlay`) were only ever
+  set `true`, never reset back to `false` on a *successful* join — invisible for as long
+  as a successful join immediately swaps to the room-lobby render (which doesn't render
+  the overlay at all), but the moment **Leave Room** made "go back to the landing page"
+  a reachable transition, the stale `true` from however the player originally got into
+  the room surfaced as a spinner stuck over an otherwise-unusable landing page.
+- `chatMessages` (lobby chat history) persisted across `room:leave`/being kicked/rejoining
+  a different room, since nothing ever cleared it — a room's chat log leaking into the
+  next room's chat window.
+
+Both are fixed the same way: a `useEffect` keyed on `room`/`room?.id` that resets the
+relevant local state on every transition across the room/no-room boundary, rather than
+relying on unmount. If you add more local state to `Matchmaking` that's conceptually
+"scoped to the current room" (or "scoped to being on the landing page"), reset it the
+same way — don't assume a phase change ever tears the component down for you.
 
 ### Everything per-round is client-full-replacement, not incremental
 

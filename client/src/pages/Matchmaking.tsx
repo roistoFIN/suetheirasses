@@ -81,6 +81,15 @@ const Matchmaking: React.FC = () => {
     setIsSearching(false);
   }, [error]);
 
+  /** Neither flag was ever reset on a *successful* join either (only the room-lobby view
+   * rendering instead of this landing view masked it) — reset on every transition across
+   * the room/no-room boundary, so landing back here (Leave Room, being kicked) never shows
+   * a stuck LoadingOverlay left over from however we originally got into a room. */
+  useEffect(() => {
+    setIsCreating(false);
+    setIsSearching(false);
+  }, [room]);
+
   /** Remember the player's name as soon as it's non-empty, so it doesn't need to be re-typed next visit. */
   useEffect(() => {
     const trimmed = playerName.trim();
@@ -88,6 +97,12 @@ const Matchmaking: React.FC = () => {
       saveName(trimmed);
     }
   }, [playerName]);
+
+  /** Chat history is per-room — Matchmaking never unmounts across a leave/kick/rejoin, so
+   * without this, messages from a room you've since left would linger into the next one. */
+  useEffect(() => {
+    setChatMessages([]);
+  }, [room?.id]);
 
   /** Lobby chat (WAITING phase only) — listens while a room is joined, resets on unmount. */
   useEffect(() => {
@@ -215,8 +230,8 @@ const Matchmaking: React.FC = () => {
                     Kick
                   </Button>
                 ) : (
-                  <Badge color={isHost ? 'orange' : 'gray'} size="sm">
-                    {isHost ? 'Host' : 'Player'}
+                  <Badge color={p.isHost ? 'orange' : 'gray'} size="sm">
+                    {p.isHost ? 'Host' : 'Player'}
                   </Badge>
                 )}
               </Flex>

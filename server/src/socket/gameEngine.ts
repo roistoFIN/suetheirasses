@@ -1125,12 +1125,12 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
               try {
                 roomState = await engine.joinRoom(room.id, player);
                 break;
-              } catch (joinError: any) {
-                // Room filled up between the DB query and joinRoom — fall through to create a new room
-                if (joinError.message === 'Room is full') {
-                  continue;
-                }
-                throw joinError;
+              } catch {
+                // This specific room rejected the join — full by the time we got here,
+                // this player's name was kicked from it, whatever. Quick Play means
+                // "any room," so just try the next candidate rather than surfacing a
+                // room-specific error; falls through to creating a new room if none work.
+                continue;
               }
             }
           }

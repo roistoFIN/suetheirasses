@@ -1,12 +1,6 @@
 ## Future Roadmap / To-Do
 
 # Lobby
-- Message, when trying to use reserved name
-- Invite only -option to lock room
-- "Leave Room" button to "Room Lobby", which takes back to starting screen
-- If host leaves the room, the first joined player becomes a new host
-- Host is incorrectly displayed as player to another player
-- If player is kicked from the room, he cannot rejoin the room via invite or via quick join
 
 # Game
 - Won, lost and turn change images
