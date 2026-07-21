@@ -18,8 +18,10 @@ import {
   LoadingOverlay,
   ScrollArea,
   Image,
+  Modal,
+  List,
 } from '@mantine/core';
-import { IconCheck, IconCopy } from '@tabler/icons-react';
+import { IconCheck, IconCopy, IconInfoCircle } from '@tabler/icons-react';
 import { useSocketStore } from '../stores/socketStore';
 import { useGameStore } from '../stores/gameStore';
 import { ClientEvents, ServerEvents, type RoomInfo, type ChatMessageBroadcast } from '@suetheirasses/shared';
@@ -66,6 +68,7 @@ const Matchmaking: React.FC = () => {
   const [availableRooms, setAvailableRooms] = useState<RoomInfo[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessageBroadcast[]>([]);
   const [chatInput, setChatInput] = useState('');
+  const [aboutOpen, setAboutOpen] = useState(false);
   const chatViewportRef = useRef<HTMLDivElement>(null);
   const { send, on, socket } = useSocketStore();
   const { room, player } = useGameStore();
@@ -292,12 +295,16 @@ const Matchmaking: React.FC = () => {
           radius="md"
           mb="md"
         />
-        <Title order={2} mb="xs" ta="center">
-          ⚖️ Sue Their Asses
-        </Title>
-        <Text c="dimmed" ta="center" mb="xl">
-          Multiplayer Business Strategy Game
-        </Text>
+        <Group justify="center" mb="xl">
+          <Button
+            variant="subtle"
+            color="dark"
+            leftSection={<IconInfoCircle size={16} />}
+            onClick={() => setAboutOpen(true)}
+          >
+            About
+          </Button>
+        </Group>
 
         <Stack>
           <Group align="flex-end" gap="xs">
@@ -401,6 +408,28 @@ const Matchmaking: React.FC = () => {
           )}
         </Stack>
       </Paper>
+
+      <Modal opened={aboutOpen} onClose={() => setAboutOpen(false)} title={<Title order={3}>⚖️ Sue Their Asses</Title>} centered size="md">
+        <Stack gap="md">
+          <Text size="sm">
+            A multiplayer business strategy game for 2-4 players. Everyone runs a rival
+            company, competing for the same market — and the instant your cash goes
+            negative, you're eliminated. Last company standing wins.
+          </Text>
+          <Text size="sm">Each round, every player simultaneously:</Text>
+          <List size="sm" spacing={4}>
+            <List.Item>Deploys strategic and operational decisions to grow their company — some safe, some legally risky</List.Item>
+            <List.Item>Watches rivals for risky moves worth suing them over, and files lawsuits against them</List.Item>
+            <List.Item>Negotiates or fights any lawsuits filed against them</List.Item>
+          </List>
+          <Text size="sm">
+            Decisions affect price, market share, revenue, and legal exposure — a risky
+            decision can boost your numbers fast, but it's also a lawsuit waiting to
+            happen. Outlast every other player to win.
+          </Text>
+          <Button onClick={() => setAboutOpen(false)}>Got it</Button>
+        </Stack>
+      </Modal>
     </Container>
   );
 };

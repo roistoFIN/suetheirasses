@@ -146,25 +146,53 @@ Dig Deeper* section) — never derive one of these without the other; they read 
 full replacement for that in-flight turn, never a delta. Keep this in mind when touching
 either the client submission logic (`GamePhase.tsx`) or `GameLoop.submitDecisions`.
 
-### Two exceptions to "everything happens in resolveTurn": Dig Deeper and reconnection
+### Three exceptions to "everything happens in resolveTurn": Dig Deeper, reconnection, and forfeit
 
 Almost every gameplay effect only ever happens inside the turn-timer-driven
-`resolveTurn`/`resolveGameTurn` cycle. Two things deliberately don't: `GameLoop.digDeeper`
-(pay $10k to reveal the next tier of intel on an incoming attack) and
-`GameEngine.rejoinRoom`/`markPlayerDisconnected`/`finalizePlayerRemoval` (session
-resume after a disconnect). Both mutate `Company` state instantly, outside the turn
-cycle — `digDeeper` still keeps `GameLoop` pure (no Prisma/Socket.IO in it; `GameEngine`
-does the one-off write), but if you're looking for "why did this player's cash/state
-change and I don't see it in `resolveTurn`," check these two paths first. The
+`resolveTurn`/`resolveGameTurn` cycle. Three things deliberately don't: `GameLoop.digDeeper`
+(pay $10k to reveal the next tier of intel on an incoming attack), `GameEngine.rejoinRoom`/
+`markPlayerDisconnected`/`finalizePlayerRemoval` (session resume after a disconnect), and
+`GameEngine.forfeitGame` (the "Leave Game" button's voluntary instant bankruptcy). All
+three mutate `Company`/`Player` state instantly, outside the turn cycle — `digDeeper`
+still keeps `GameLoop` pure (no Prisma/Socket.IO in it; `GameEngine` does the one-off
+write), and `forfeitGame` writes `bankrupt: true` directly rather than going through a
+turn's normal bankruptcy-check step — but if you're looking for "why did this player's
+cash/state change and I don't see it in `resolveTurn`," check these three paths first. The
 disconnect-grace-period sweep (`GameEngine`'s heartbeat interval, `RECONNECT_GRACE_PERIOD_MS`)
 mirrors the pre-existing stale-room cleanup (`STALE_ROOM_THRESHOLD`) pattern rather than
 using a per-player `setTimeout` — extend that same interval, don't add a second one.
 
+`forfeitGame` is also the one place that calls `resolveGameTurn` *early* rather than
+outside it — see *Ready-up triggers `resolveGameTurn` early* below for why that has to be
+done via a returned flag (`triggerImmediateResolution`) rather than a direct call from
+inside `forfeitGame` itself.
+
+### Ready-up triggers `resolveGameTurn` early — and never calls it from inside a method still holding `advancingRooms`
+
+The "Ready" toggle (`game:ready` → `GameEngine.toggleReady`) doesn't change what a turn
+computes — it's purely a timing trigger. Once every active (non-bankrupt) player's id is
+in `RoomState.readyPlayerIds`, the caller clears the round timer and calls
+`resolveGameTurn` immediately instead of waiting out the rest of it. `readyPlayerIds` is
+reset to empty at the start of every new round (inside `resolveGameTurn`'s "loop into next
+round" branch, and once more when `room:startGame` first enters GAME_PHASE) — extend both
+reset points if you add another way a round can start.
+
+`resolveGameTurn` guards against concurrent turn resolution with the `advancingRooms` lock
+(a room id in the set means a resolution is already in flight; a second call is a no-op).
+`forfeitGame` also acquires this same lock for its own duration, since it mutates
+overlapping room/player state. This means `forfeitGame` can never call `resolveGameTurn`
+directly from inside itself — the lock it's still holding would make that inner call
+silently no-op. Instead, when a forfeit happens to be the thing that makes every remaining
+active player ready, `forfeitGame` returns `{ triggerImmediateResolution: true }` and the
+*caller* — after `forfeitGame`'s `try/finally` has already released the lock — is the one
+that calls `resolveGameTurn`. Follow this same "return a flag, let the caller trigger it"
+shape for any other early-resolution path that itself needs to run inside `advancingRooms`.
+
 ### Local LLM for narrated "annual report" text — best-effort, never load-bearing
 
 `GameEngine.getAnnualReport` (triggered by `game:getAnnualReport`, opened from a rival's
-Full Filing modal in `GamePhase.tsx`) is a third out-of-band, on-demand path alongside
-Dig Deeper and reconnection above — but unlike those two, it's read-only (no `Company`
+Full Filing modal in `GamePhase.tsx`) is a fourth out-of-band, on-demand path alongside
+Dig Deeper, reconnection, and forfeit above — but unlike those, it's read-only (no `Company`
 row is ever written) and it does real network I/O, so it's the one place in the server
 that talks to something other than Postgres/Socket.IO: `server/src/services/llmService.ts`
 calls a local `llama.cpp` server (the `llm` service in `docker-compose.yml`, model
@@ -363,8 +391,18 @@ build step is needed to see changes during dev, only for production builds.
   `game_engine.json`/`game_config.json`/`defaultFormulas.ts` so existing content-
   dependent assertions — e.g. the `getAnnualReport` "Bot Attack" tests — keep passing
   unchanged). Use this layer for engine math, decision/legal rules, validation schema
-  logic, and room/phase lifecycle.
+  logic, and room/phase lifecycle. `gameLoop.test.ts`'s "should not duplicate a case
+  across turns" test and `gameEngine.test.ts`'s `toggleReady`/`forfeitGame`-ready-
+  interaction tests are the regression coverage for the two gotchas documented above
+  (`allCases` dedup, and the `advancingRooms`-lock-safe "return a flag" pattern for
+  early turn resolution) — extend those, don't just re-verify the happy path, if you
+  touch either area again.
 - `client/src/**/*.test.ts` — Vitest, Zustand stores and pure UI utilities.
+  `GamePhase.utils.test.ts` deliberately duplicates small pure functions out of
+  `GamePhase.tsx` (`fmt`, `getGroundsAgainst`, `detectNewlySuedCases`, etc.) rather than
+  importing them, to keep this test file lightweight (no Mantine/tabler-icons import
+  chain) — keep any duplicated copy in sync with the real implementation by hand if you
+  change one side.
 - `tests/api/*.test.ts` — Vitest + real Postgres via testcontainers (needs Docker).
   The only layer that actually verifies socket event contracts end-to-end
   (`game:submitDecisions`, `turn:resolved`, `game:over`) against a real Prisma schema.
@@ -384,3 +422,35 @@ against the ground's probability schedule at the target decision's elapsed time.
 task asks you to "match FORMULAS.md exactly" on this point, flag the conflict rather than
 silently reverting the deliberate-filing design — see README's *Lawsuits* section and
 `GameLoop`'s Step 8 / `LegalEngine.fileLawsuit` for context.
+
+### A `LegalCaseData` lives in two players' `engineState` at once — dedupe by id when reconstructing `allCases`
+
+A filed case is persisted into **both** the plaintiff's and the defendant's own
+`Company.engineState.legalCases` at the end of the turn it's active in (`resolveTurn`'s
+Step 12) — each side needs it in their own persisted state to see it on their next turn.
+`resolveTurn`'s Step 7 reconstructs `allCases` for the turn by reading every player's
+`engineState.legalCases` back in — since the same case (same `id`) sits in two different
+players' persisted lists, a naive concatenation double-counts it, and because Step 12
+persists whatever it finds in `allCases` back into *both* parties' `engineState` again,
+an undeduped list doubles again every subsequent turn (1 → 2 → 4 → …), eventually
+surfacing as a React duplicate-key warning on the "Open Lawsuits" / "YOU'VE BEEN SUED"
+lists client-side. `allCases` is built via a `Map<id, LegalCaseData>` specifically to
+prevent this (`gameLoop.ts`'s Step 7) — keep that dedup if you ever touch how `allCases`
+is assembled; `gameLoop.test.ts`'s "should not duplicate a case across turns" regression
+test resolves 3 turns in a row and asserts the count stays at 1 the whole way.
+
+### React `setState` updater callbacks must be pure — StrictMode will call them twice in dev
+
+`GamePhase.tsx`'s turn-sync `useEffect` used to call `setSuedCases((prev) => [...prev,
+...newlySued])` — a non-idempotent append — from *inside* `setMyData`'s functional-updater
+callback. React explicitly permits calling `setState` updater functions more than once
+(this is a distinct behavior from StrictMode's separate double-invocation of whole effect
+bodies, and happens even with an effect-level dedup guard in place) specifically to help
+catch impure updaters in development — so the same lawsuit got appended into `suedCases`
+twice, one becoming a genuine duplicate array entry, not just a wasted re-render. Fixed by
+reading `myData`/`competitors` directly via closure (safe since the effect itself is
+guarded by a `useRef` against StrictMode's dev-only double-invocation of the *effect*) and
+moving `setSuedCases` out of any updater entirely. If you add another effect that
+accumulates into array state based on a diff against the previous value, do the diffing
+and the accumulating `setState` call in the effect body directly — never inside another
+`setState`'s updater callback.

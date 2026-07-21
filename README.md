@@ -64,6 +64,32 @@ The room list is dynamically updated via the `rooms:list` server event, showing:
 - Current player count (e.g., 2/4)
 - Room status and phase round
 
+### Lobby Features
+
+- **Remembered name** — `Matchmaking.tsx` saves the player's name to `localStorage`
+  (`stita_player_name`) the moment it's non-empty, and pre-fills + locks the name field on
+  return visits so it never needs re-typing. A **Change Name** button sits next to the
+  field, enabled only once a name exists (freshly typed or remembered) — clicking it
+  unlocks the field for editing again.
+- **About modal** — the landing page's title/subtitle text was replaced with a single
+  **About** button; clicking it opens a closeable modal with a plain-language rules
+  summary (round flow, decisions, lawsuits, win condition), for players who land on the
+  page without prior context.
+- **Room Lobby chat** — a simple text chat scoped to the WAITING-phase lobby (`chat:message`,
+  client → server payload `{ message }`, broadcast back to the room as
+  `{ playerId, playerName, message, timestamp }`). Ephemeral — nothing is persisted, and a
+  newly-joined/rejoined player gets no history replay, only messages sent while they're
+  actually in the room.
+- **Kicked player redirect** — `room:playerKicked` for *your own* id now fully resets
+  `gameStore` (room/player/turn state, not just your roster entry) and clears the saved
+  session, landing you back on the plain landing page with a dismissible "You've been
+  removed from the room by the host." notification (`App.tsx`'s `NotificationBanner`,
+  fixed to the top of the screen, auto-dismisses after 6s).
+- **Minimum 2 players to start** — `room:startGame`'s **Start Game** button is disabled
+  client-side below 2 players (covers "just created the room" and "kicked back down to
+  alone"), and the server independently rejects a `room:startGame` attempt with
+  `NOT_ENOUGH_PLAYERS` below 2 regardless of what the client sends.
+
 ---
 
 ## 🏗️ Architecture
@@ -123,6 +149,11 @@ Tech stack is defined in tech-stack.md
 ```
 suetheirasses/
 ├── client/                          # React frontend application
+│   ├── public/
+│   │   └── images/                  # Static assets served as-is (Vite public/ convention)
+│   │       ├── hero.png             # Landing page hero art
+│   │       ├── sued.png             # "YOU'VE BEEN SUED" modal art
+│   │       └── lost.png             # "lost" takeover art (bankrupt/forfeit)
 │   ├── src/
 │   │   ├── components/              # Reusable UI components
 │   │   │   ├── Timer.tsx            # Phase countdown timer
@@ -136,7 +167,9 @@ suetheirasses/
 │   │   │   ├── gameStore.ts         # Game state (room, phase, timer, turn results)
 │   │   │   └── socketStore.ts       # Socket.IO connection & events
 │   │   ├── App.tsx                  # Root component — renders phase/`/admin` directly,
-│   │   │                            # no path-based routing for game phases (see CLAUDE.md)
+│   │   │                            # no path-based routing for game phases (see CLAUDE.md);
+│   │   │                            # also owns the global NotificationBanner and the
+│   │   │                            # "lost" takeover (bankrupt/forfeit)
 │   │   └── main.tsx                 # Entry point
 │   ├── index.html
 │   ├── vite.config.ts
@@ -322,7 +355,9 @@ model Asset {
 | `game:submitDecisions` | `{ strategic: DecisionEntry[], operational: DecisionEntry[], lawsuits: LawsuitEntry[] }` | Full replacement of this turn's pending decisions (`{ name, targetId? }` each) *and* deliberate lawsuit filings (`{ targetId, decisionName, groundName }` each — see *Lawsuits* below). Structural validation only — per-turn limits (max 1 strategic / 2 operational / 3 lawsuits) come from `game_config.json` and are enforced by `DecisionEngine.canDeploy` / `GameLoop`'s lawsuit-filing step. |
 | `game:digDeeper` | `{ attackId }` | Pay `gameSettings.digDeeperCost` ($10,000 by default) to reveal the next tier of intel on one incoming attack — instant, outside the turn-resolution cycle. See *Attack Awareness & Dig Deeper* below. |
 | `game:getAnnualReport` | `{ rivalPlayerId }` | Request AI-narrated "annual report" text for one rival's active decisions — on demand, outside the turn-resolution cycle. See *AI-Narrated Annual Reports* below. |
-| `chat:message` | `{ message }` | Send a chat message to the room |
+| `game:leave` | — | Voluntary forfeit — GAME_PHASE only. Instant bankruptcy for the requesting player; the game continues for everyone else. See *Leave Game* below. |
+| `game:ready` | `{ ready }` | Toggle ready status for the in-flight turn — GAME_PHASE only. Once every active player is ready, the turn resolves immediately. See *Ready-Up* below. |
+| `chat:message` | `{ message }` | Send a chat message to the room — WAITING phase only. See *Lobby Features* above. |
 
 #### Server → Client
 
@@ -337,11 +372,14 @@ model Asset {
 | `timer:update` | `{ timeLeft }` | Countdown tick |
 | `game:deck` | `{ decisions: DecisionDefinition[], gameSettings: GameSettings }` | Sent once, right when GAME_PHASE starts — the full 45-decision library and per-turn limits, static for the whole game. Also re-sent on a successful `room:rejoin` during GAME_PHASE. |
 | `turn:resolved` | `TurnResolutionResult` (`{ round, players: PlayerTurnResult[], gameOver, winnerId? }`) | Sent twice per round-1: once immediately when the game starts (starting-position preview, `GameLoop.getInitialSnapshot`), and again whenever a GAME_PHASE turn actually finishes resolving (`GameLoop.resolveTurn`) — full per-player state either way. `GameEngine` caches the most recent one per room and re-sends it on a successful `room:rejoin` during GAME_PHASE, so a reconnecting player doesn't wait for the next turn to see where things stand. |
-| `player:bankrupt` | `{ playerId, playerName }` | Player's cash went below $0 this turn — eliminated immediately (FORMULAS §12) |
+| `player:bankrupt` | `{ playerId, playerName }` | Player eliminated — either their cash went below $0 this turn (FORMULAS §12), or they voluntarily forfeited via `game:leave` |
 | `game:over` | `{ winner, finalStandings }` | Only one player remains; room moved to AFTERMATH. Also re-sent on a successful `room:rejoin` during AFTERMATH. |
 | `game:digDeeperResult` | `{ attackId, cost, newCash, attack: IncomingAttackInfo }` | Sent only to the requesting socket, never broadcast — the newly-unlocked intel tier for one attack |
 | `game:annualReportResult` | `{ rivalPlayerId, entries: AnnualReportEntry[] }` | Sent only to the requesting socket, never broadcast — AI-narrated (or static-fallback) flavor text for the rival's active decisions |
-| `error` | `{ code, message }` | Error occurred (e.g. `NOT_HOST`, `INVALID_DECISIONS`, `REJOIN_FAILED`, `ANNUAL_REPORT_FAILED`) |
+| `game:left` | — | Sent only to the requesting socket, confirming a successful `game:leave` forfeit — the client's cue to show the "lost" takeover with the forfeit-specific message |
+| `game:readyUpdate` | `{ readyPlayerIds: string[], activePlayerCount: number }` | Broadcast on every `game:ready` toggle, and reset to an empty `readyPlayerIds` at the start of every new round |
+| `chat:message` | `{ playerId, playerName, message, timestamp }` | Broadcast to the room in response to a `chat:message` from any player in it |
+| `error` | `{ code, message }` | Error occurred (e.g. `NOT_HOST`, `INVALID_DECISIONS`, `REJOIN_FAILED`, `ANNUAL_REPORT_FAILED`, `NOT_ENOUGH_PLAYERS`, `LEAVE_GAME_FAILED`, `INVALID_READY`, `INVALID_CHAT_MESSAGE`) |
 
 ### API Type Definitions
 
@@ -375,6 +413,26 @@ export interface AnnualReportEntry {
   text: string;   // AI-generated (or static-fallback) flavor text — never the real numbers
   year: number;   // deployedYear + 1
 }
+
+export interface ChatMessagePayload {
+  message: string;
+}
+
+export interface ChatMessageBroadcast {
+  playerId: string;
+  playerName: string;
+  message: string;
+  timestamp: string;
+}
+
+export interface GameReadyPayload {
+  ready: boolean;
+}
+
+export interface GameReadyUpdateResponse {
+  readyPlayerIds: string[];
+  activePlayerCount: number;
+}
 ```
 
 ### Zustand State Stores
@@ -406,6 +464,8 @@ Manages all game-related state including room state, player data, phase tracking
 | `setNotification(message)` | Set UI notification message |
 | `setCompanies(companies)` | Update company data for all players |
 | `setIsRejoining(isRejoining)` | Toggle the "attempting to resume a saved session" flag — gates `App.tsx`'s first paint so Matchmaking doesn't flash before a `room:rejoin` attempt resolves |
+| `resetSession()` | Wipes room/player/in-game state back to a fresh landing-page state — used when a player is kicked, or acknowledges the "lost" takeover via **Return to Start** |
+| `setSelfEliminationReason(reason)` | Sets `selfElimination` (`'bankrupt' \| 'forfeit'`) — checked by `App.tsx` ahead of the normal phase switch to show the full-screen "lost" takeover regardless of what phase the room is actually in. Set from `player:bankrupt` for the current player's own id (`'bankrupt'`), then upgraded to `'forfeit'` if a `game:left` ack follows. |
 
 #### `socketStore.ts`
 
@@ -417,6 +477,7 @@ reconnection (see *Reconnection & Session Resume* below):
 | `send(event, payload)` | Emit a socket event to the server |
 | `on(event, handler)` | Subscribe to a server event, returns unsubscribe function |
 | `disconnect()` | Close the socket connection |
+| `returnToLanding()` | Clears the saved session and calls `gameStore.resetSession()` — the shared "acknowledge and go back to the landing page" step behind both a kick and the "lost" takeover's **Return to Start** button |
 
 **Key event handlers:**
 - `connect` → If a session (`{ roomId, playerId }`) is saved in `localStorage`, sets
@@ -427,16 +488,23 @@ reconnection (see *Reconnection & Session Resume* below):
   to `localStorage` — covers both a fresh join and a successful rejoin, since the server
   reuses this same event for both
 - `room:playerJoined` → Calls `gameStore.addPlayer()` with deduplication guard
-- `room:playerKicked` → Calls `gameStore.kickPlayer()`; clears the saved session if *I'm*
-  the one who got kicked
+- `room:playerKicked` → For *my own* id: clears the saved session and calls
+  `gameStore.resetSession()` plus `setNotification(...)`, landing back on the plain
+  landing page — not just a roster removal. For anyone else, calls `gameStore.kickPlayer()`
+  (roster removal only).
 - `room:playerLeft` → Calls `gameStore.kickPlayer()` (same roster-removal logic) plus a
   distinguishing notification ("…connection timed out")
 - `phase:changed` → Calls `gameStore.updatePhase()`
 - `timer:update` → Calls `gameStore.updateTimer()`
+- `player:bankrupt` → Calls `gameStore.markPlayerBankrupt()`; for *my own* id, also calls
+  `setSelfEliminationReason('bankrupt')` — see *Leave Game* above
 - `game:over` → Calls `gameStore.setGameOver()`; clears the saved session (nothing left
   to reconnect to)
 - `game:digDeeperResult` → Calls `gameStore.applyDigDeeperResult()`
 - `game:annualReportResult` → Calls `gameStore.applyAnnualReportResult()`
+- `game:left` → Calls `setSelfEliminationReason('forfeit')` — upgrades the reason set by
+  the `player:bankrupt` handler moments earlier; does **not** itself reset the session,
+  that's deferred to the takeover screen's **Return to Start** button
 - `error` → Calls `gameStore.setError()`; a `REJOIN_FAILED` code additionally clears the
   saved session and `isRejoining`, so a stale/expired session self-heals into the normal
   landing page
@@ -715,6 +783,22 @@ Once fully investigated (tier 3), the button disables — no further charge. The
 also disabled client-side whenever cash is below `digDeeperCost`; the server enforces the
 same rule independently, so it's never possible to Dig Deeper into bankruptcy.
 
+### Ready-Up (Instant Turn Resolution)
+
+The 120s per-round timer doesn't have to run out — a separate **Turn** box in the header
+(distinct from the Threat Level bar, which used to carry the countdown itself) shows the
+round number, the countdown, and a **Ready** toggle (`READY (x/y)` → `✓ READY (x/y)`,
+`x`/`y` = ready count / active-player count). The instant every active (non-bankrupt)
+player is ready, `GameEngine` clears the timer and calls `resolveGameTurn` immediately
+instead of waiting out the rest of it — `GameEngine.toggleReady` tracks ready state as a
+`Set<playerId>` per room (`RoomState.readyPlayerIds`), reset to empty at the start of
+every new round (`game:readyUpdate` broadcasts `{ readyPlayerIds: [], activePlayerCount }`
+right alongside the round's `phase:changed`) and when the game first starts. Readiness is
+purely a timing trigger, not a turn-resolution mutation — it never changes what a turn
+computes, only when it fires. A player forfeiting (see *Leave Game* below) also drops
+their own ready flag and re-checks the condition, since their departure can be the thing
+that makes everyone *remaining* ready.
+
 ### Reconnection & Session Resume
 
 A raw socket disconnect — a network hiccup, an accidental browser back button, a page
@@ -737,6 +821,25 @@ ever lands with a genuinely empty store and no rejoin attempt underway (closing 
 was previously an infinite "Waiting for game data…" spinner on a raw refresh with no saved
 session). A failed rejoin (`REJOIN_FAILED` — expired grace period, ended game, bogus
 session) self-heals into the normal matchmaking flow by clearing the stale saved session.
+
+### Leave Game (Voluntary Forfeit)
+
+A red **Leave Game** button in the GAME_PHASE header (confirmation modal first — it's
+irreversible) emits `game:leave`. `GameEngine.forfeitGame` marks the requesting player
+bankrupt immediately — same DB write and `player:bankrupt` broadcast shape as a natural
+cash<0 elimination — and, if that leaves at most one active player, ends the game exactly
+like a normal turn's post-resolution win check would. The game continues uninterrupted for
+everyone else.
+
+The forfeiting player doesn't just get redirected — `App.tsx` shows a full-screen "lost"
+takeover (`lost.png`, "YOU FORFEITED") ahead of whatever phase the room is actually in, so
+even if their own forfeit just ended the game, they see this instead of the winner's
+GameOver screen. A **Return to Start** button on that screen is what actually resets the
+session and sends them back to the landing page — the takeover itself is just an
+acknowledgement step, not an auto-redirect. The identical takeover (`lost.png`, "YOU'VE
+GONE BANKRUPT") also covers natural cash<0 elimination, which previously had no client-side
+handling at all — both paths set the same `gameStore.selfElimination` flag from
+`player:bankrupt`/`game:left`, just with a different `reason`.
 
 ### AI-Narrated Annual Reports
 
@@ -868,7 +971,15 @@ A player is eliminated the instant their cash goes below $0 on any turn — stri
 (as both plaintiff and defendant) lapse; cases against them are paid out from a pool of
 that turn's positive income-side cash flow, oldest filing first, until the pool runs out
 (FORMULAS §16). The game continues, looping GAME_PHASE rounds, until only one player
-remains — there is no fixed round limit and no score-based win condition.
+remains — there is no fixed round limit and no score-based win condition. The eliminated
+player themselves sees the "lost" takeover described in *Leave Game* above, regardless of
+whether they left voluntarily or actually ran out of cash.
+
+Being sued is called out the same way — when `GamePhase.tsx`'s turn-sync effect detects a
+new case (by id) filed against the current player since the previous turn
+(`detectNewlySuedCases`, a pure diff function unit-tested independently of any live turn
+cycle), a **"YOU'VE BEEN SUED"** modal pops up showing `sued.png` plus the plaintiff, the
+decision sued over, the ground, and the stakes for every newly-filed case that turn.
 
 ---
 
@@ -887,6 +998,7 @@ All client inputs are validated server-side using Zod schemas before processing:
 | `submitDecisionsSchema` | `strategic`, `operational` | Arrays of `{ name, targetId? }`, max 20 entries each — structural sanity only; the real per-turn limits come from `game_config.json` via `DecisionEngine.canDeploy` |
 | | `lawsuits` | Array of `{ targetId, decisionName, groundName }`, max 10 entries — structural cap only; the real limit (`maxLawsuitsPerPlayerPerTurn`, 3) and the "target actually deployed this" check happen in `LegalEngine.fileLawsuit` |
 | `digDeeperSchema` | `attackId` | Required, 1-100 characters |
+| `gameReadySchema` | `ready` | Required boolean |
 | `roomRejoinSchema` | `roomId`, `playerId` | Both required, 1-50 characters — no separate auth token; the id pair itself is the bearer credential, same trust model as every other player id already used throughout the app (no passwords anywhere) |
 | `annualReportRequestSchema` | `rivalPlayerId` | Required, 1-100 characters |
 | `decisionDefinitionSchema` | `decision`, `level`, `description`, `nature`, `offensiveAction`, `excludes`, `impacts` | Structural — mirrors `DecisionDefinition`; doesn't re-verify formula semantics, same philosophy as `submitDecisionsSchema` |
@@ -912,7 +1024,9 @@ only place that touches Prisma or Socket.IO for turn resolution:
 | `digDeeper(roomId, playerId, attackId)` | "Dig Deeper" — pay to reveal the next tier of intel on one incoming attack, instantly, outside the turn-resolution cycle. Loads active players, calls `GameLoop.digDeeper` (pure), and on success does the one Prisma write (`cash` *and* `variables`, since `GameLoop` reads cash from the `variables` JSONB, not the column) |
 | `getAnnualReport(roomId, rivalPlayerId)` | AI-narrated "annual report" text for one rival, on demand — loads active players, calls `GameLoop.getActiveDecisionSummaries` (pure, re-derives from the rival's own `Company.engineState`), then asks `services/llmService.ts` to narrate each active decision (network I/O, cached, falls back to static `competitorsView` text on any failure). Read-only — no Prisma write |
 | `advancePhase(roomId)` | Linear phase advance (WAITING → GAME_PHASE); race-condition guarded |
-| `resolveGameTurn(roomId)` | Loads active players from the DB, calls `GameLoop.resolveTurn` (pure), then persists the returned `companyUpdates`/`bankruptedPlayers` and broadcasts `player:bankrupt`/`turn:resolved` — then either loops into another GAME_PHASE round or, once one player remains, transitions to AFTERMATH and emits `game:over`. Also caches the broadcast result (`lastTurnResults`) for `rejoinRoom` to re-send. |
+| `resolveGameTurn(roomId)` | Loads active players from the DB, calls `GameLoop.resolveTurn` (pure), then persists the returned `companyUpdates`/`bankruptedPlayers` and broadcasts `player:bankrupt`/`turn:resolved` — then either loops into another GAME_PHASE round (clearing `readyPlayerIds` and broadcasting `game:readyUpdate` for it) or, once one player remains, transitions to AFTERMATH and emits `game:over`. Also caches the broadcast result (`lastTurnResults`) for `rejoinRoom` to re-send. Called either by the round timer, or early — by the `game:ready`/`game:leave` socket handlers, once `toggleReady`/`forfeitGame` report every active player is ready — never from inside `toggleReady`/`forfeitGame` themselves; see *Ready-up triggers `resolveGameTurn` early* in CLAUDE.md for why. |
+| `forfeitGame(roomId, playerId)` | Voluntary forfeit — GAME_PHASE only. Marks the player bankrupt (same DB write + `player:bankrupt` broadcast shape as a natural elimination) and, if that leaves at most one active player, ends the game exactly like `resolveGameTurn`'s post-turn win check. Otherwise drops the forfeiting player's ready flag and returns `triggerImmediateResolution: true` if that alone now satisfies "every remaining active player is ready" — the caller, not this method, calls `resolveGameTurn` for that, since this method still holds the `advancingRooms` lock (see below) until it returns. |
+| `toggleReady(roomId, playerId, ready)` | Adds/removes one player from `RoomState.readyPlayerIds` (GAME_PHASE only, `null` for an unknown/bankrupt player or a non-GAME_PHASE room) and returns the updated `{ readyPlayerIds, activePlayerCount }` for the caller to broadcast and, if everyone active is now ready, immediately call `resolveGameTurn` with. |
 | `submitDecisions(roomId, playerId, decisions)` | Forwards a validated `game:submitDecisions` payload to `GameLoop` |
 | `broadcastInitialSnapshot(roomId, round)` | Called once, right when `room:startGame` fires — loads active players, calls `GameLoop.getInitialSnapshot` (pure), and broadcasts the result immediately so the game room renders without delay. Also caches it for `rejoinRoom`. |
 | `broadcastRoomState(roomId, event, data)` | Broadcasts state to all players in a room |
@@ -984,13 +1098,16 @@ npm run lint
 
 # Run backend unit tests (Vitest) — engine, calcEngine, decisionEngine, legalEngine,
 # formulaEngine (parser/evaluator correctness + rejection of dangerous-looking input
-# like __proto__/constructor/arbitrary calls), gameLoop, gameEngine, validation
-# schemas, llmService, adminAuth middleware. No DB or live LLM required (mocked
-# Prisma, incl. a mocked `formula` model; llmService's own network calls are mocked
-# via global.fetch).
+# like __proto__/constructor/arbitrary calls), gameLoop (incl. a regression test that
+# a lawsuit persisted into both the plaintiff's and defendant's own engineState
+# doesn't get double-counted when reconstructed on a later turn), gameEngine (incl.
+# toggleReady and forfeitGame's ready-interaction), validation schemas, llmService,
+# adminAuth middleware. No DB or live LLM required (mocked Prisma, incl. mocked
+# `formula` model; llmService's own network calls are mocked via global.fetch).
 npm test --workspace=server
 
-# Run frontend unit tests (Vitest) — Zustand stores, GamePhase utilities
+# Run frontend unit tests (Vitest) — Zustand stores, GamePhase utilities (incl.
+# detectNewlySuedCases, the pure diff behind the "YOU'VE BEEN SUED" modal)
 npm --workspace=client exec vitest run
 
 # Run API interface tests (Vitest + real PostgreSQL via testcontainers)
