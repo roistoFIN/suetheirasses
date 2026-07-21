@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseFormula, collectIdentifiers, FormulaParseError } from '../engine/formulaEngine.js';
 
 /**
  * Zod schema for the `room:join` Socket.IO event payload.
@@ -167,4 +168,239 @@ export type AnnualReportRequestPayload = z.infer<typeof annualReportRequestSchem
  */
 export function validateAnnualReportRequest(data: unknown): AnnualReportRequestPayload {
   return annualReportRequestSchema.parse(data);
+}
+
+// ============================================================
+// Admin Portal — decision library + game config (REST, not socket events).
+// Structural validation for the decision shape (mirrors submitDecisionsSchema's
+// philosophy — doesn't re-verify formula semantics), but strict field-by-field
+// validation for game config: every field there is a fixed, known number driving a
+// real formula, so a typo'd key should be rejected, not silently ignored.
+// ============================================================
+
+const impactEntrySchema = z.object({
+  type: z.enum(['absolute', 'relative']),
+  schedule: z.record(z.string(), z.number()),
+});
+
+const legalRiskDefinitionSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().min(1),
+  probability: z.record(z.string(), z.number()),
+  impact: impactEntrySchema.extend({ target: z.string().min(1) }),
+});
+
+/** Zod schema for one decision definition — the body of `POST`/`PUT /api/admin/decisions`. */
+export const decisionDefinitionSchema = z.object({
+  decision: z.string().min(1).max(100),
+  level: z.enum(['Strategic', 'Operational']),
+  description: z.string().min(1),
+  nature: z.enum(['Traditional', 'Grey Area', 'Dirty']),
+  offensiveAction: z.boolean(),
+  excludes: z.array(z.string()),
+  impacts: z.record(z.string(), impactEntrySchema),
+  legalRisks: z.array(legalRiskDefinitionSchema).optional(),
+  competitorsView: z.array(z.string()).optional(),
+  variableAmount: z.boolean().optional(),
+  requiresTarget: z.boolean().optional(),
+  legalRiskConditions: z.record(z.string(), z.unknown()).optional(),
+  cashFlowCategory: z.enum(['operating', 'investing', 'financing']).optional(),
+});
+
+/** Inferred TypeScript type for a validated decision definition. */
+export type ValidatedDecisionDefinition = z.infer<typeof decisionDefinitionSchema>;
+
+/**
+ * Validates and parses raw data against the decision definition schema.
+ *
+ * @param data - Raw request body from `POST`/`PUT /api/admin/decisions`.
+ * @returns Validated `ValidatedDecisionDefinition` object.
+ * @throws ZodValidationError if the payload fails any constraint.
+ */
+export function validateDecisionDefinition(data: unknown): ValidatedDecisionDefinition {
+  return decisionDefinitionSchema.parse(data);
+}
+
+const gameSettingsSchema = z.object({
+  minPlayers: z.number(),
+  maxPlayers: z.number(),
+  turnDurationSeconds: z.number(),
+  maxLawsuitsPerPlayerPerTurn: z.number(),
+  maxStrategicDecisionsPerTurn: z.number(),
+  maxOperationalDecisionsPerTurn: z.number(),
+  totalMarketVolumeTonnesPerYear: z.number(),
+  marketFixed: z.boolean(),
+  digDeeperCost: z.number(),
+});
+
+const playerStartingValuesSchema = z.object({
+  cash: z.number(),
+  assets: z.number(),
+  intangibleAssets: z.number(),
+  debt: z.number(),
+  reserves: z.number(),
+  operatingExpenses: z.number(),
+  staffCost: z.number(),
+  materialCostPerTon: z.number(),
+  otherIncome: z.number(),
+  price: z.number(),
+  capacityUtilization: z.number(),
+  processingLevel: z.number(),
+  energyIntensity: z.number(),
+  moistureContent: z.number(),
+  nutrientConsistency: z.number(),
+  supplySecurity: z.number(),
+  logisticsCostPerTon: z.number(),
+  processLoss: z.number(),
+  installedCapacity: z.number(),
+  totalSharesOutstanding: z.number(),
+  shareOwnership: z.record(z.string(), z.number()),
+  outrage: z.number(),
+  scrutiny: z.number(),
+  breakdowns: z.number(),
+  contaminationRisk: z.number(),
+  odorComplaints: z.number(),
+  tokenLiability: z.number(),
+  carbonFootprint: z.number(),
+  stockVolume: z.number(),
+  demand: z.number(),
+});
+
+const adminVariablesSchema = z.object({
+  competitiveness: z.object({
+    competitivenessWeight_quality_wq: z.number(),
+    competitivenessWeight_supply_ws: z.number(),
+    competitivenessWeight_loss_wl: z.number(),
+    competitivenessWeight_demand_wd: z.number(),
+    outrageDemandWeight: z.number(),
+  }),
+  legalProcess: z.object({
+    semaphoreGreenMax: z.number(),
+    semaphoreYellowMax: z.number(),
+    scrutinyLegalRiskMultiplier: z.number(),
+    legalExposureRatioCap: z.number(),
+    buySharesLegalRiskThresholdPercent: z.number(),
+  }),
+  riskGauge: z.object({
+    riskWeightLegalExposure_w1: z.number(),
+    riskWeightScrutiny_w2: z.number(),
+    riskWeightOutrage_w3: z.number(),
+  }),
+  ownership: z.object({
+    takeoverThresholdPercent: z.number(),
+  }),
+  finance: z.object({
+    baseFinanceCost: z.number(),
+    interestRate: z.number(),
+    taxRate: z.number(),
+    daysSalesOutstanding_DSO: z.number(),
+  }),
+  depreciation: z.object({
+    assetUsefulLifeYears: z.number(),
+    intangibleUsefulLifeYears: z.number(),
+  }),
+});
+
+/** Zod schema for the full game config — the body of `PUT /api/admin/config`. */
+export const gameConfigSchema = z.object({
+  gameSettings: gameSettingsSchema,
+  playerStartingValues: playerStartingValuesSchema,
+  adminVariables: adminVariablesSchema,
+});
+
+/** Inferred TypeScript type for a validated game config. */
+export type ValidatedGameConfig = z.infer<typeof gameConfigSchema>;
+
+/**
+ * Validates and parses raw data against the game config schema.
+ *
+ * @param data - Raw request body from `PUT /api/admin/config`.
+ * @returns Validated `ValidatedGameConfig` object.
+ * @throws ZodValidationError if the payload fails any constraint.
+ */
+export function validateGameConfig(data: unknown): ValidatedGameConfig {
+  return gameConfigSchema.parse(data);
+}
+
+// ============================================================
+// Admin Portal — formulas (FORMULAS.md §2-§7, DB-backed via the `Formula` table).
+// The key set is fixed (no create/delete route) — only `expression`/`description`
+// are ever written, and every expression is validated against BOTH syntax (via the
+// real parser, not a regex) AND a fixed per-key variable whitelist before it's
+// allowed anywhere near GameLoop. A formula that parses fine but references a
+// variable calcEngine.ts never provides for that call site would throw at
+// evaluation time, mid-turn, for every active game — this check catches that at
+// save time instead.
+// ============================================================
+
+/** Every identifier calcEngine.ts actually supplies to each formula's evaluation
+ * context — must stay in sync with the `evalNamed(formulas, key, { ... })` call
+ * sites in calcEngine.ts. */
+export const FORMULA_VARIABLES: Record<string, string[]> = {
+  effectiveDemand: ['demand', 'outrageDemandWeight', 'outrage'],
+  competitiveness: ['price', 'wq', 'processingLevel', 'ws', 'supplySecurity', 'wl', 'processLoss', 'wd', 'effectiveDemand'],
+  theoreticalVolume: ['marketShare', 'totalMarketVolume'],
+  maxSupply: ['installedCapacity', 'capacityUtilization'],
+  volume: ['theoreticalVolume', 'maxSupply'],
+  revenue: ['volume', 'price', 'revenueDelta'],
+  cogs: ['materialCostPerTon', 'logisticsCostPerTon', 'volume'],
+  grossProfit: ['revenue', 'cogs'],
+  ebitda: ['grossProfit', 'operatingExpenses', 'staffCost', 'otherIncome'],
+  ebit: ['ebitda', 'depreciation'],
+  financeCost: ['baseFinanceCost', 'debt', 'interestRate', 'financeCostDelta'],
+  profitBeforeTax: ['ebit', 'financeCost'],
+  taxCost: ['profitBeforeTax', 'taxRate', 'taxCostDelta'],
+  netProfit: ['profitBeforeTax', 'taxCost'],
+  newCash: ['cash', 'netProfit', 'depreciation'],
+  newReserves: ['reserves', 'netProfit'],
+  receivables: ['revenue', 'DSO', 'receivablesDelta'],
+  equity: ['newCash', 'receivables', 'assets', 'intangibleAssets', 'newReserves', 'debt'],
+  marketEquity: ['equity', 'legalExposure'],
+  stockValue: ['marketEquity', 'totalSharesOutstanding'],
+  adjustedProbability: ['baseProbability', 'scrutinyLegalRiskMultiplier', 'defendantScrutiny', 'defendantLegalExposureRatio'],
+  legalExposureRatio: ['legalExposureRatioCap', 'legalExposure', 'cash'],
+  riskGauge: ['w1', 'w2', 'w3', 'legalExposureRatio', 'legalExposureRatioCap', 'scrutiny', 'absOutrage'],
+};
+
+/** Zod schema for the body of `PUT /api/admin/formulas/:key`. */
+export const formulaUpdateSchema = z.object({
+  expression: z.string().min(1).max(500),
+  description: z.string().min(1).max(1000),
+});
+
+export type FormulaUpdatePayload = z.infer<typeof formulaUpdateSchema>;
+
+/**
+ * Validates a formula update: structural shape (Zod), expression syntax (the real
+ * parser — throws a clear, position-annotated error on invalid syntax), and that
+ * every variable the expression references is on that formula key's whitelist —
+ * an unrecognized key means the formula would fail at evaluation time instead of
+ * save time, so it's rejected here first.
+ *
+ * @param key - The formula key from the route param (`:key`), used to look up its
+ *   variable whitelist. Must be a known key (checked by the caller against the
+ *   loaded formula set — this function only validates shape/syntax/variables).
+ * @throws ZodValidationError on shape violations, FormulaParseError on invalid
+ *   syntax, or a plain Error naming the offending variable if it's not whitelisted.
+ */
+export function validateFormulaUpdate(key: string, data: unknown): FormulaUpdatePayload {
+  const parsed = formulaUpdateSchema.parse(data);
+
+  const allowedVariables = FORMULA_VARIABLES[key];
+  if (!allowedVariables) {
+    throw new FormulaParseError(`Unknown formula key "${key}"`);
+  }
+
+  const ast = parseFormula(parsed.expression);
+  const usedVariables = collectIdentifiers(ast);
+  const allowedSet = new Set(allowedVariables);
+  for (const name of usedVariables) {
+    if (!allowedSet.has(name)) {
+      throw new FormulaParseError(
+        `Unknown variable "${name}" — "${key}" only accepts: ${allowedVariables.join(', ')}`,
+      );
+    }
+  }
+
+  return parsed;
 }

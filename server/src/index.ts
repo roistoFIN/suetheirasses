@@ -5,7 +5,7 @@ import { Server } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
 import { setupSocketHandlers } from './socket/gameEngine.js';
 import { requireAdminToken } from './middleware/adminAuth.js';
-import gameConfigData from './data/game_config.json' with { type: 'json' };
+import { validateDecisionDefinition, validateGameConfig, validateFormulaUpdate } from './validation/schemas.js';
 
 const app = express();
 const httpServer = createServer(app);
@@ -70,13 +70,97 @@ app.get('/api/room/:roomId', async (req, res) => {
 const engine = setupSocketHandlers(io, prisma);
 
 // Admin portal REST endpoints — gated by ADMIN_TOKEN (see middleware/adminAuth.ts).
-// Read-only for now: room monitoring + the game config the server loaded at startup.
 app.get('/api/admin/rooms', requireAdminToken, (_req, res) => {
   res.json({ rooms: engine.getAdminRoomsSnapshot() });
 });
 
 app.get('/api/admin/config', requireAdminToken, (_req, res) => {
-  res.json(gameConfigData);
+  res.json(engine.getGameConfigSnapshot());
+});
+
+// The decision library + game config now live in the database (see
+// GameEngine.loadGameData()) and are editable here — writes take effect on the
+// very next turn resolved anywhere, no restart needed (GameLoop.loadDecisions /
+// updateConfig are re-called after every successful write).
+app.get('/api/admin/decisions', requireAdminToken, (_req, res) => {
+  res.json({ decisions: engine.getDecisionsSnapshot() });
+});
+
+app.post('/api/admin/decisions', requireAdminToken, async (req, res) => {
+  try {
+    const def = validateDecisionDefinition(req.body);
+    const result = await engine.upsertDecision(def, true);
+    if (!result.success) {
+      res.status(409).json({ error: 'Decision already exists', reason: result.reason });
+      return;
+    }
+    res.status(201).json(def);
+  } catch (error: any) {
+    res.status(400).json({ error: 'Invalid decision definition', message: error.message });
+  }
+});
+
+app.put('/api/admin/decisions/:name', requireAdminToken, async (req, res) => {
+  try {
+    const def = validateDecisionDefinition(req.body);
+    if (def.decision !== req.params.name) {
+      res.status(400).json({ error: 'Renaming a decision is not supported — delete and create instead' });
+      return;
+    }
+    const result = await engine.upsertDecision(def, false);
+    if (!result.success) {
+      res.status(404).json({ error: 'Decision not found', reason: result.reason });
+      return;
+    }
+    res.json(def);
+  } catch (error: any) {
+    res.status(400).json({ error: 'Invalid decision definition', message: error.message });
+  }
+});
+
+app.delete('/api/admin/decisions/:name', requireAdminToken, async (req, res) => {
+  const result = await engine.deleteDecision(req.params.name);
+  if (!result.success) {
+    const status = result.reason === 'in_use' ? 409 : 404;
+    const message = result.reason === 'in_use'
+      ? 'Decision is currently deployed by an active player — cannot delete'
+      : 'Decision not found';
+    res.status(status).json({ error: message, reason: result.reason });
+    return;
+  }
+  res.status(204).end();
+});
+
+app.put('/api/admin/config', requireAdminToken, async (req, res) => {
+  try {
+    const config = validateGameConfig(req.body);
+    await engine.updateGameConfigData(config);
+    res.json(config);
+  } catch (error: any) {
+    res.status(400).json({ error: 'Invalid game config', message: error.message });
+  }
+});
+
+// The pure, scalar, named-input formulas from FORMULAS.md §2-§7 — DB-backed
+// (see CLAUDE.md's "Formulas are DB-backed"). No POST/DELETE — the key set is
+// fixed, since each one is referenced by name at a specific calcEngine.ts call
+// site GameLoop hard-depends on; only the expression/description text is editable.
+app.get('/api/admin/formulas', requireAdminToken, (_req, res) => {
+  res.json({ formulas: engine.getFormulasSnapshot() });
+});
+
+app.put('/api/admin/formulas/:key', requireAdminToken, async (req, res) => {
+  try {
+    const { expression, description } = validateFormulaUpdate(req.params.key, req.body);
+    const result = await engine.updateFormula(req.params.key, expression, description);
+    if (!result.success) {
+      res.status(404).json({ error: 'Formula not found', reason: result.reason });
+      return;
+    }
+    res.json({ key: req.params.key, expression, description });
+  } catch (error: any) {
+    res.status(400).json({ error: 'Invalid formula', message: error.message });
+  }
 });
 
 // Graceful shutdown
@@ -95,12 +179,16 @@ async function start() {
   try {
     await prisma.$connect();
     console.log('Database connected');
+    // Must complete before the port opens — no socket can connect (and no admin
+    // request can land) before the decision library + game config are loaded.
+    await engine.loadGameData();
+    console.log('Game data loaded from database');
     httpServer.listen(PORT, () => {
       console.log(`Game server running on port ${PORT}`);
       console.log(`Socket.IO server ready`);
     });
   } catch (error) {
-    console.error('Failed to connect to database:', error);
+    console.error('Failed to start server:', error);
     process.exit(1);
   }
 }

@@ -207,6 +207,19 @@ export interface AdminRoomsResponse {
   rooms: AdminRoomSnapshot[];
 }
 
+/** One named formula from FORMULAS.md §2-§7 — DB-backed (`Formula` table), editable
+ * via `PUT /api/admin/formulas/:key`. The key set is fixed; only `expression`/
+ * `description` are ever written. */
+export interface FormulaInfo {
+  key: string;
+  expression: string;
+  description: string;
+}
+
+export interface FormulasResponse {
+  formulas: FormulaInfo[];
+}
+
 /** Response for `game:digDeeperResult` — sent only to the socket that paid for the dig. */
 export interface DigDeeperResultPayload {
   attackId: string;

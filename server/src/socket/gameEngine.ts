@@ -20,13 +20,11 @@ import {
   type TurnResolutionResult,
   type AnnualReportEntry,
   type AdminRoomSnapshot,
+  type FormulaInfo,
 } from '@suetheirasses/shared';
 import { validateRoomJoin, validateSubmitDecisions, validateDigDeeper, validateRoomRejoin, validateAnnualReportRequest } from '../validation/schemas.js';
 import { GameLoop } from '../engine/gameLoop.js';
 import { generateAnnualReportBlurb } from '../services/llmService.js';
-import gameEngineData from '../data/game_engine.json' with { type: 'json' };
-import gameConfigData from '../data/game_config.json' with { type: 'json' };
-
 
 export class GameEngine {
   public rooms: Map<string, RoomState> = new Map();
@@ -48,20 +46,81 @@ export class GameEngine {
   // Each room's last resolved turn (or round-1 starting snapshot) — re-sent to a
   // reconnecting player immediately instead of making them wait for the next turn.
   private lastTurnResults: Map<string, TurnResolutionResult> = new Map();
-  // Core turn-resolution engine — authoritative source of all GAME_PHASE calculations (FORMULAS.md)
-  private gameLoop: GameLoop;
-  // Static competitorsView fallback text per decision, for getAnnualReport when the LLM is unreachable.
-  private decisionsByName: Map<string, DecisionDefinition>;
+  // Core turn-resolution engine — authoritative source of all GAME_PHASE calculations (FORMULAS.md).
+  // Definite-assignment: only ever used after loadGameData() resolves (see index.ts's
+  // start() — awaited before httpServer.listen, so no socket can connect first).
+  private gameLoop!: GameLoop;
+  // In-memory mirror of the `decisions` table — the decision library, live-reloaded
+  // (loadDecisions() called again) on every admin create/update/delete via /admin.
+  // Also supplies the competitorsView fallback text for getAnnualReport when the LLM
+  // is unreachable.
+  private decisionsByName!: Map<string, DecisionDefinition>;
+  // In-memory mirror of the `game_config` singleton row — gameSettings/
+  // playerStartingValues/adminVariables, live-reloaded on every admin config edit.
+  private gameConfig!: GameConfig;
+  // In-memory mirror of the `formulas` table — the pure, scalar, named-input
+  // formulas from FORMULAS.md §2-§7, live-reloaded on every admin formula edit.
+  // Fixed key set (no create/delete via /admin) — see CLAUDE.md.
+  private formulasByKey!: Map<string, { expression: string; description: string }>;
 
   constructor(io: Server, prisma: PrismaClient) {
     this.io = io;
     this.prisma = prisma;
-    this.gameLoop = new GameLoop(gameConfigData as unknown as GameConfig);
-    this.gameLoop.loadDecisions(gameEngineData as unknown as DecisionDefinition[]);
-    this.decisionsByName = new Map(
-      (gameEngineData as unknown as DecisionDefinition[]).map((d) => [d.decision, d]),
-    );
     this.startHeartbeatCleanup();
+  }
+
+  /**
+   * Loads the decision library + game config from the database — must be awaited
+   * once, before the server starts accepting connections (see index.ts's start()).
+   * Decisions/config used to be static JSON imports; the DB is now authoritative at
+   * runtime and this is the only place that reads it at startup. `server/src/data/
+   * *.json` remain on disk purely as the versioned seed source for `npm run db:seed`
+   * (see prisma/seed.ts) — editing them directly no longer has any runtime effect.
+   */
+  async loadGameData(): Promise<void> {
+    const configRow = await this.prisma.gameConfigRow.findUnique({ where: { id: 1 } });
+    if (!configRow) {
+      throw new Error('GameConfigRow (id=1) not found — run `npm run db:seed` to populate it.');
+    }
+    this.gameConfig = {
+      gameSettings: configRow.gameSettings as unknown as GameSettings,
+      playerStartingValues: configRow.playerStartingValues as unknown as GameConfig['playerStartingValues'],
+      adminVariables: configRow.adminVariables as unknown as GameConfig['adminVariables'],
+    };
+    this.gameLoop = new GameLoop(this.gameConfig);
+
+    const decisionRows = await this.prisma.decision.findMany();
+    const decisions = decisionRows.map((r) => r.data as unknown as DecisionDefinition);
+    this.decisionsByName = new Map(decisions.map((d) => [d.decision, d]));
+    this.gameLoop.loadDecisions(decisions);
+
+    const formulaRows = await this.prisma.formula.findMany();
+    this.formulasByKey = new Map(formulaRows.map((r) => [r.key, { expression: r.expression, description: r.description }]));
+    this.gameLoop.loadFormulas(formulaRows.map((r) => ({ key: r.key, expression: r.expression })));
+  }
+
+  /** Current formula set, for `GET /api/admin/formulas`. */
+  getFormulasSnapshot(): FormulaInfo[] {
+    return Array.from(this.formulasByKey.entries()).map(([key, v]) => ({ key, ...v }));
+  }
+
+  /**
+   * Update one formula's expression/description — the key set is fixed (no create/
+   * delete via /admin; each key is referenced by name at a specific calcEngine.ts
+   * call site GameLoop hard-depends on). The caller (the `PUT /api/admin/formulas/:key`
+   * route) must already have validated the expression's syntax and variable whitelist
+   * via `validateFormulaUpdate` before calling this — a bad formula must never reach
+   * here, since this writes straight through to GameLoop's live formula set.
+   */
+  async updateFormula(key: string, expression: string, description: string): Promise<{ success: boolean; reason?: 'not_found' }> {
+    if (!this.formulasByKey.has(key)) return { success: false, reason: 'not_found' };
+
+    await this.prisma.formula.update({ where: { key }, data: { expression, description } });
+    this.formulasByKey.set(key, { expression, description });
+    this.gameLoop.loadFormulas(
+      Array.from(this.formulasByKey.entries()).map(([k, v]) => ({ key: k, expression: v.expression })),
+    );
+    return { success: true };
   }
 
   /** Submit one player's decisions for the current GAME_PHASE turn. */
@@ -161,6 +220,85 @@ export class GameEngine {
       });
     }
     return snapshot;
+  }
+
+  /** Current decision library, for `GET /api/admin/decisions` — same in-memory map GameLoop reads from. */
+  getDecisionsSnapshot(): DecisionDefinition[] {
+    return Array.from(this.decisionsByName.values());
+  }
+
+  /** Current game config, for `GET /api/admin/config`. */
+  getGameConfigSnapshot(): GameConfig {
+    return this.gameConfig;
+  }
+
+  /**
+   * Create or update one decision — `isNew` picks which; the caller (the
+   * `POST`/`PUT /api/admin/decisions` routes) already knows which one it's doing
+   * from the HTTP verb. Writes the DB row, then live-reloads `GameLoop`'s in-memory
+   * decision map so the change takes effect on the very next turn resolved, no
+   * restart needed.
+   */
+  async upsertDecision(
+    def: DecisionDefinition,
+    isNew: boolean,
+  ): Promise<{ success: boolean; reason?: 'already_exists' | 'not_found' }> {
+    const exists = this.decisionsByName.has(def.decision);
+    if (isNew && exists) return { success: false, reason: 'already_exists' };
+    if (!isNew && !exists) return { success: false, reason: 'not_found' };
+
+    await this.prisma.decision.upsert({
+      where: { name: def.decision },
+      create: { name: def.decision, data: def as any },
+      update: { data: def as any },
+    });
+    this.decisionsByName.set(def.decision, def);
+    this.gameLoop.loadDecisions(Array.from(this.decisionsByName.values()));
+    return { success: true };
+  }
+
+  /**
+   * Delete a decision — blocked if it's currently deployed in any active (non-
+   * bankrupt) player's `engineState.activeDecisions` anywhere. Several places in
+   * `GameLoop.resolveTurn`'s hot path dereference a decision instance's `.definition`
+   * without a null check, so removing a definition still in use would crash the next
+   * turn resolution for whoever has it deployed — this check is the safety net for
+   * that, not a nice-to-have.
+   */
+  async deleteDecision(name: string): Promise<{ success: boolean; reason?: 'not_found' | 'in_use' }> {
+    if (!this.decisionsByName.has(name)) return { success: false, reason: 'not_found' };
+    if (await this.isDecisionInUse(name)) return { success: false, reason: 'in_use' };
+
+    await this.prisma.decision.delete({ where: { name } });
+    this.decisionsByName.delete(name);
+    this.gameLoop.loadDecisions(Array.from(this.decisionsByName.values()));
+    return { success: true };
+  }
+
+  /** Write the new config to the DB, then live-reload GameLoop's in-memory copy. */
+  async updateGameConfigData(config: GameConfig): Promise<void> {
+    await this.prisma.gameConfigRow.update({
+      where: { id: 1 },
+      data: {
+        gameSettings: config.gameSettings as any,
+        playerStartingValues: config.playerStartingValues as any,
+        adminVariables: config.adminVariables as any,
+      },
+    });
+    this.gameConfig = config;
+    this.gameLoop.updateConfig(config);
+  }
+
+  /** Whether any non-bankrupt player, in any room, currently has this decision deployed. */
+  private async isDecisionInUse(name: string): Promise<boolean> {
+    const companies = await this.prisma.company.findMany({
+      where: { player: { bankrupt: false } },
+      select: { engineState: true },
+    });
+    return companies.some((c) => {
+      const activeDecisions = (c.engineState as any)?.activeDecisions ?? [];
+      return activeDecisions.some((d: any) => d.definitionName === name);
+    });
   }
 
   /** Load every non-bankrupt player + company row GameLoop needs to resolve/preview a turn. */
@@ -731,8 +869,8 @@ export class GameEngine {
 
     if (roomState.room.status === RoomStatus.GAME_PHASE) {
       result.gameDeck = {
-        decisions: gameEngineData as unknown as DecisionDefinition[],
-        gameSettings: gameConfigData.gameSettings as GameSettings,
+        decisions: Array.from(this.decisionsByName.values()),
+        gameSettings: this.gameConfig.gameSettings,
       };
       const lastTurn = this.lastTurnResults.get(roomId);
       if (lastTurn) result.turnResolved = lastTurn;
@@ -1072,8 +1210,8 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
       // Send the decision library + per-turn limits once — it's static for the
       // whole game, so the client can render the real Decision Deck immediately.
       engine.broadcastRoomState(roomId, ServerEvents.GAME_DECK, {
-        decisions: gameEngineData as unknown as DecisionDefinition[],
-        gameSettings: gameConfigData.gameSettings as GameSettings,
+        decisions: engine.getDecisionsSnapshot(),
+        gameSettings: engine.getGameConfigSnapshot().gameSettings,
       });
 
       // Players land straight in the game room with real starting numbers —

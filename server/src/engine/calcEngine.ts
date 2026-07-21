@@ -12,6 +12,7 @@
  */
 
 import type { PlayerVariables, AdminVariables } from '@suetheirasses/shared';
+import { evalNamed, type FormulaSet } from './formulaEngine.js';
 
 // ============================================================
 // Constants for depreciation asset types
@@ -114,6 +115,7 @@ export function calculateCompetitivenessAndMarketShare(
   playerIds: string[],
   playersVars: PlayerVariables[],
   admin: AdminVariables,
+  formulas: FormulaSet,
 ): Map<string, number> {
   if (playerIds.length !== playersVars.length) {
     throw new Error('playerIds and playersVars must have the same length');
@@ -126,10 +128,11 @@ export function calculateCompetitivenessAndMarketShare(
 
   for (let i = 0; i < playersVars.length; i++) {
     const v = playersVars[i];
-    const effectiveDemand = (v.demand - outrageDemandWeight * v.outrage) / 100;
-    const competitiveness = (1 / v.price) * (
-      1 + wq * v.processingLevel + ws * v.supplySecurity - wl * v.processLoss + wd * effectiveDemand
-    );
+    const effectiveDemand = evalNamed(formulas, 'effectiveDemand', { demand: v.demand, outrageDemandWeight, outrage: v.outrage });
+    const competitiveness = evalNamed(formulas, 'competitiveness', {
+      price: v.price, wq, processingLevel: v.processingLevel, ws, supplySecurity: v.supplySecurity,
+      wl, processLoss: v.processLoss, wd, effectiveDemand,
+    });
     competitivenessMap.set(playerIds[i], competitiveness);
   }
 
@@ -162,10 +165,11 @@ export function calculateVolume(
   vars: PlayerVariables,
   marketShare: number,
   totalMarketVolume: number,
+  formulas: FormulaSet,
 ): number {
-  const theoreticalVolume = marketShare * totalMarketVolume;
-  const maxSupply = vars.installedCapacity * vars.capacityUtilization;
-  return Math.min(theoreticalVolume, maxSupply);
+  const theoreticalVolume = evalNamed(formulas, 'theoreticalVolume', { marketShare, totalMarketVolume });
+  const maxSupply = evalNamed(formulas, 'maxSupply', { installedCapacity: vars.installedCapacity, capacityUtilization: vars.capacityUtilization });
+  return evalNamed(formulas, 'volume', { theoreticalVolume, maxSupply });
 }
 
 /**
@@ -186,6 +190,7 @@ export function calculatePL(
   volume: number,
   depreciation: number,
   admin: AdminVariables,
+  formulas: FormulaSet,
   absScheduleDeltas?: {
     revenueDelta?: number;
     financeCostDelta?: number;
@@ -206,17 +211,17 @@ export function calculatePL(
   const { revenueDelta = 0, financeCostDelta = 0, taxCostDelta = 0 } = absScheduleDeltas ?? {};
 
   // FORMULAS §4: Add decision-driven ABSOLUTE schedule additions to revenue
-  const revenue = volume * vars.price + revenueDelta;
-  const cogs = (vars.materialCostPerTon + vars.logisticsCostPerTon) * volume;
-  const grossProfit = revenue - cogs;
-  const ebitda = grossProfit - vars.operatingExpenses - vars.staffCost + vars.otherIncome;
-  const ebit = ebitda - depreciation;
+  const revenue = evalNamed(formulas, 'revenue', { volume, price: vars.price, revenueDelta });
+  const cogs = evalNamed(formulas, 'cogs', { materialCostPerTon: vars.materialCostPerTon, logisticsCostPerTon: vars.logisticsCostPerTon, volume });
+  const grossProfit = evalNamed(formulas, 'grossProfit', { revenue, cogs });
+  const ebitda = evalNamed(formulas, 'ebitda', { grossProfit, operatingExpenses: vars.operatingExpenses, staffCost: vars.staffCost, otherIncome: vars.otherIncome });
+  const ebit = evalNamed(formulas, 'ebit', { ebitda, depreciation });
   // FORMULAS §4: Add decision-driven ABSOLUTE schedule additions to financeCost
-  const financeCost = baseFinanceCost + Number(vars.debt) * interestRate + financeCostDelta;
-  const profitBeforeTax = ebit - financeCost;
+  const financeCost = evalNamed(formulas, 'financeCost', { baseFinanceCost, debt: Number(vars.debt), interestRate, financeCostDelta });
+  const profitBeforeTax = evalNamed(formulas, 'profitBeforeTax', { ebit, financeCost });
   // FORMULAS §4: Add decision-driven ABSOLUTE schedule adjustments to taxCost
-  const taxCost = Math.max(0, profitBeforeTax) * taxRate + taxCostDelta;
-  const netProfit = profitBeforeTax - taxCost;
+  const taxCost = evalNamed(formulas, 'taxCost', { profitBeforeTax, taxRate, taxCostDelta });
+  const netProfit = evalNamed(formulas, 'netProfit', { profitBeforeTax, taxCost });
 
   return { revenue, cogs, grossProfit, ebitda, ebit, financeCost, profitBeforeTax, taxCost, netProfit };
 }
@@ -238,20 +243,23 @@ export function updateBalanceSheet(
   revenue: number,
   legalExposure: number,
   admin: AdminVariables,
+  formulas: FormulaSet,
   absReceivablesDelta?: number,
 ): Pick<PlayerVariables, 'cash' | 'reserves' | 'receivables' | 'equity' | 'stockValue' | 'legalExposure'> {
   const { daysSalesOutstanding_DSO: DSO } = admin.finance;
   const receivablesDelta = absReceivablesDelta ?? 0;
 
-  const newCash = vars.cash + netProfit + depreciation;
-  const newReserves = vars.reserves + netProfit;
+  const newCash = evalNamed(formulas, 'newCash', { cash: vars.cash, netProfit, depreciation });
+  const newReserves = evalNamed(formulas, 'newReserves', { reserves: vars.reserves, netProfit });
   // FORMULAS §5: Add decision-driven ABSOLUTE schedule additions to receivables
-  const receivables = revenue * (DSO / 365) + receivablesDelta;
+  const receivables = evalNamed(formulas, 'receivables', { revenue, DSO, receivablesDelta });
   // Book equity (for financial statements)
-  const equity = newCash + receivables + vars.assets + vars.intangibleAssets + newReserves - Number(vars.debt);
+  const equity = evalNamed(formulas, 'equity', {
+    newCash, receivables, assets: vars.assets, intangibleAssets: vars.intangibleAssets, newReserves, debt: Number(vars.debt),
+  });
   // Market equity (legal exposure reduces stock price)
-  const marketEquity = Math.max(0, equity - legalExposure);
-  const stockValue = marketEquity / vars.totalSharesOutstanding;
+  const marketEquity = evalNamed(formulas, 'marketEquity', { equity, legalExposure });
+  const stockValue = evalNamed(formulas, 'stockValue', { marketEquity, totalSharesOutstanding: vars.totalSharesOutstanding });
 
   return {
     cash: newCash,
@@ -275,9 +283,12 @@ export function calculateAdjustedProbability(
   defendantScrutiny: number,
   defendantLegalExposureRatio: number,
   admin: AdminVariables,
+  formulas: FormulaSet,
 ): number {
   const { scrutinyLegalRiskMultiplier } = admin.legalProcess;
-  return baseProbability * (1 + (scrutinyLegalRiskMultiplier * defendantScrutiny) / 100 + defendantLegalExposureRatio);
+  return evalNamed(formulas, 'adjustedProbability', {
+    baseProbability, scrutinyLegalRiskMultiplier, defendantScrutiny, defendantLegalExposureRatio,
+  });
 }
 
 /**
@@ -289,9 +300,15 @@ export function calculateLegalExposureRatio(
   legalExposure: number,
   cash: number,
   admin: AdminVariables,
+  formulas: FormulaSet,
 ): number {
   const { legalExposureRatioCap } = admin.legalProcess;
-  return Math.min(legalExposureRatioCap, cash > 0 ? legalExposure / cash : 0);
+  // Guard stays in code, not the editable expression: legalExposureRatioCap is always
+  // positive, so MIN(cap, 0) === 0 whenever cash <= 0 — this preserves the exact
+  // current behavior (short-circuiting the division) rather than adding a new
+  // safety net that wasn't there before.
+  if (cash <= 0) return 0;
+  return evalNamed(formulas, 'legalExposureRatio', { legalExposureRatioCap, legalExposure, cash });
 }
 
 /**
@@ -307,24 +324,25 @@ export function calculateRiskGauge(
   vars: PlayerVariables,
   openCases: Array<{ probability: number; stakes: number }>,
   admin: AdminVariables,
+  formulas: FormulaSet,
 ): number {
   const { riskWeightLegalExposure_w1: w1, riskWeightScrutiny_w2: w2, riskWeightOutrage_w3: w3 } = admin.riskGauge;
   const { legalExposureRatioCap } = admin.legalProcess;
 
-  // Calculate legal exposure (sum of probabilities × stakes for open cases)
+  // Calculate legal exposure (sum of probabilities × stakes for open cases) — a
+  // genuine aggregation over a dynamic collection, stays as code, not a formula.
   const legalExposure = openCases.reduce((sum, c) => sum + c.probability * c.stakes, 0);
 
   // Calculate legal exposure ratio (normalized to cap)
-  const legalExposureRatio = calculateLegalExposureRatio(legalExposure, vars.cash, admin);
+  const legalExposureRatio = calculateLegalExposureRatio(legalExposure, vars.cash, admin, formulas);
 
-  // Normalize each component to 0-1 range by dividing by their cap values
-  const normalizeLegalExposureRatio = legalExposureRatio / legalExposureRatioCap;
-  const normalizeScrutiny = Math.min(1, vars.scrutiny / 100);
-  const normalizeOutrage = Math.min(1, Math.abs(vars.outrage) / 100);
+  // The expression grammar has no ABS builtin — pre-compute it in code, same
+  // treatment as every other pre-aggregated input (e.g. legalExposure above).
+  const absOutrage = Math.abs(vars.outrage);
 
-  const risk = w1 * normalizeLegalExposureRatio + w2 * normalizeScrutiny + w3 * normalizeOutrage;
-  
-  return Math.min(100, risk * 100); // Return as percentage 0-100
+  return evalNamed(formulas, 'riskGauge', {
+    w1, w2, w3, legalExposureRatio, legalExposureRatioCap, scrutiny: vars.scrutiny, absOutrage,
+  });
 }
 
 /**

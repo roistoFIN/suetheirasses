@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { GameEngine } from './gameEngine';
-import { RoomStatus, ServerEvents, PHASE_TIMERS, PHASE_ORDER } from '@suetheirasses/shared';
+import { RoomStatus, ServerEvents, PHASE_TIMERS, PHASE_ORDER, type DecisionDefinition, type GameConfig } from '@suetheirasses/shared';
 import type { Server, Socket } from 'socket.io';
 import type { PrismaClient, Room as PrismaRoom, Player as PrismaPlayer, Company as PrismaCompany } from '@prisma/client';
+import gameEngineData from '../data/game_engine.json' with { type: 'json' };
+import gameConfigData from '../data/game_config.json' with { type: 'json' };
+import { DEFAULT_FORMULA_SEEDS } from '../engine/defaultFormulas.js';
 
 // Real network I/O (llama.cpp) is out of scope for this layer per CLAUDE.md's test-layer
 // guidance — mocked deterministically here; llmService's own fallback/caching/sanitizing
@@ -114,14 +117,85 @@ const createMockPrisma = () => {
     findUnique: vi.fn().mockImplementation(({ where }: { where: { playerId: string } }) => {
       return Promise.resolve(createdCompanies.find((c) => c.playerId === where.playerId) || null);
     }),
+    // Backs GameEngine.isDecisionInUse — mirrors the real `where: { player: { bankrupt: false } }`
+    // relational filter by cross-referencing each company's owning player's bankrupt flag.
+    findMany: vi.fn().mockImplementation(({ where }: any = {}) => {
+      const wantNonBankrupt = where?.player?.bankrupt === false;
+      return Promise.resolve(
+        createdCompanies
+          .filter((c: any) => {
+            if (!wantNonBankrupt) return true;
+            const owner = createdPlayers.find((p: any) => p.id === c.playerId);
+            return owner ? owner.bankrupt === false : true;
+          })
+          .map((c: any) => ({ engineState: c.engineState ?? {} })),
+      );
+    }),
     delete: vi.fn().mockResolvedValue({}),
     update: vi.fn().mockResolvedValue({}),
+  };
+
+  // Seeded from the real decision library/config, exactly like production data —
+  // so every existing assertion depending on real decision content (e.g. the
+  // getAnnualReport "Bot Attack" tests) keeps passing unchanged now that it's
+  // sourced through the mocked DB instead of a direct JSON import.
+  const decisionRows = new Map<string, { name: string; data: DecisionDefinition }>(
+    (gameEngineData as unknown as DecisionDefinition[]).map((d) => [d.decision, { name: d.decision, data: d }]),
+  );
+  const seedConfig = gameConfigData as unknown as GameConfig;
+  let gameConfigRow: { id: number; gameSettings: unknown; playerStartingValues: unknown; adminVariables: unknown } = {
+    id: 1,
+    gameSettings: seedConfig.gameSettings,
+    playerStartingValues: seedConfig.playerStartingValues,
+    adminVariables: seedConfig.adminVariables,
+  };
+
+  const mockDecision = {
+    findMany: vi.fn().mockImplementation(() => Promise.resolve(Array.from(decisionRows.values()))),
+    upsert: vi.fn().mockImplementation(({ where, create, update }: any) => {
+      const row = decisionRows.has(where.name)
+        ? { name: where.name, data: update.data }
+        : { name: create.name, data: create.data };
+      decisionRows.set(where.name, row);
+      return Promise.resolve(row);
+    }),
+    delete: vi.fn().mockImplementation(({ where }: any) => {
+      decisionRows.delete(where.name);
+      return Promise.resolve({});
+    }),
+  };
+
+  const mockGameConfigRow = {
+    findUnique: vi.fn().mockImplementation(() => Promise.resolve(gameConfigRow)),
+    update: vi.fn().mockImplementation(({ data }: any) => {
+      gameConfigRow = { ...gameConfigRow, ...data };
+      return Promise.resolve(gameConfigRow);
+    }),
+  };
+
+  // Seeded from the real 23 formulas (same source prisma/seed.ts uses), so every
+  // existing assertion depending on real formula content keeps passing unchanged.
+  const formulaRows = new Map<string, { key: string; expression: string; description: string }>(
+    DEFAULT_FORMULA_SEEDS.map((f) => [f.key, { ...f }]),
+  );
+  const mockFormula = {
+    findMany: vi.fn().mockImplementation(() => Promise.resolve(Array.from(formulaRows.values()))),
+    update: vi.fn().mockImplementation(({ where, data }: any) => {
+      const existing = formulaRows.get(where.key);
+      if (!existing) throw new Error(`Formula "${where.key}" not found`);
+      const updated = { ...existing, ...data };
+      formulaRows.set(where.key, updated);
+      return Promise.resolve(updated);
+    }),
   };
 
   const mockPrisma: Partial<PrismaClient> = {
     room: mockRoom,
     player: mockPlayer,
     company: mockCompany,
+    decision: mockDecision as any,
+    gameConfigRow: mockGameConfigRow as any,
+    formula: mockFormula as any,
     asset: {
       deleteMany: vi.fn().mockResolvedValue({}),
     },
@@ -138,7 +212,7 @@ describe('GameEngine', () => {
   let mockIo: Server;
   let mockPrisma: PrismaClient;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     mockIo = createMockIo();
     mockPrisma = createMockPrisma();
@@ -148,6 +222,9 @@ describe('GameEngine', () => {
     (mockPrisma as Partial<PrismaClient>).company = mockPrisma.company;
     (mockPrisma as Partial<PrismaClient>).asset = mockPrisma.asset;
     engine = new GameEngine(mockIo, mockPrisma);
+    // Decisions/config now load from the DB (see GameEngine.loadGameData) instead
+    // of a synchronous JSON import — every test needs this awaited first.
+    await engine.loadGameData();
   });
 
   describe('createRoom', () => {
@@ -1413,6 +1490,149 @@ describe('GameEngine', () => {
 
       const bob = room.players.find((p) => p.id === bobId)!;
       expect(bob).toMatchObject({ name: 'Bob', isHost: false, bankrupt: false, connected: false });
+    });
+  });
+
+  describe('upsertDecision', () => {
+    const newDecision = {
+      decision: 'Test Admin Decision',
+      level: 'Operational' as const,
+      description: 'A decision created for testing.',
+      nature: 'Traditional' as const,
+      offensiveAction: false,
+      excludes: [],
+      impacts: { cash: { type: 'absolute' as const, schedule: { default: -1000 } } },
+    };
+
+    it('creates a new decision and live-reloads it into GameLoop', async () => {
+      const result = await engine.upsertDecision(newDecision, true);
+
+      expect(result).toEqual({ success: true });
+      expect(engine.getDecisionsSnapshot().find((d) => d.decision === 'Test Admin Decision')).toEqual(newDecision);
+    });
+
+    it('rejects creating a decision that already exists', async () => {
+      const result = await engine.upsertDecision({ ...newDecision, decision: 'Bot Attack' }, true);
+
+      expect(result).toEqual({ success: false, reason: 'already_exists' });
+    });
+
+    it('updates an existing decision and live-reloads the change', async () => {
+      const updated = { ...newDecision, decision: 'Bot Attack', description: 'Updated description.' };
+
+      const result = await engine.upsertDecision(updated, false);
+
+      expect(result).toEqual({ success: true });
+      expect(engine.getDecisionsSnapshot().find((d) => d.decision === 'Bot Attack')?.description).toBe('Updated description.');
+    });
+
+    it('rejects updating a decision that does not exist', async () => {
+      const result = await engine.upsertDecision(newDecision, false);
+
+      expect(result).toEqual({ success: false, reason: 'not_found' });
+    });
+  });
+
+  describe('deleteDecision', () => {
+    it('deletes an unused decision and removes it from GameLoop', async () => {
+      const result = await engine.deleteDecision('Fox Release');
+
+      expect(result).toEqual({ success: true });
+      expect(engine.getDecisionsSnapshot().find((d) => d.decision === 'Fox Release')).toBeUndefined();
+    });
+
+    it('returns not_found for an unknown decision', async () => {
+      const result = await engine.deleteDecision('Nonexistent Decision');
+
+      expect(result).toEqual({ success: false, reason: 'not_found' });
+    });
+
+    it('rejects deletion while a non-bankrupt player currently has it deployed', async () => {
+      const player = await mockPrisma.player.create({
+        data: { name: 'Alice', roomId: 'room-1', isHost: true, bankrupt: false, socketId: 'socket-1' },
+      } as any) as any;
+      player.company.engineState = {
+        activeDecisions: [{ id: 'inst-1', definitionName: 'Bot Attack', deployedYear: 1, elapsedYears: 0, isMatured: true }],
+      };
+
+      const result = await engine.deleteDecision('Bot Attack');
+
+      expect(result).toEqual({ success: false, reason: 'in_use' });
+      expect(engine.getDecisionsSnapshot().find((d) => d.decision === 'Bot Attack')).toBeDefined();
+    });
+
+    it('allows deletion once the only player with it deployed is bankrupt', async () => {
+      const player = await mockPrisma.player.create({
+        data: { name: 'Alice', roomId: 'room-1', isHost: true, bankrupt: true, socketId: 'socket-1' },
+      } as any) as any;
+      player.company.engineState = {
+        activeDecisions: [{ id: 'inst-1', definitionName: 'Bot Attack', deployedYear: 1, elapsedYears: 0, isMatured: true }],
+      };
+
+      const result = await engine.deleteDecision('Bot Attack');
+
+      expect(result).toEqual({ success: true });
+    });
+  });
+
+  describe('updateGameConfigData', () => {
+    it('persists the new config and live-reloads it into GameLoop', async () => {
+      const newConfig = engine.getGameConfigSnapshot();
+      const updated = { ...newConfig, gameSettings: { ...newConfig.gameSettings, digDeeperCost: 55555 } };
+
+      await engine.updateGameConfigData(updated);
+
+      expect(engine.getGameConfigSnapshot().gameSettings.digDeeperCost).toBe(55555);
+      expect(mockPrisma.gameConfigRow.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: {
+          gameSettings: updated.gameSettings,
+          playerStartingValues: updated.playerStartingValues,
+          adminVariables: updated.adminVariables,
+        },
+      });
+    });
+  });
+
+  describe('updateFormula', () => {
+    it('returns not_found for an unknown formula key', async () => {
+      const result = await engine.updateFormula('notARealFormula', '1 + 1', 'bogus');
+
+      expect(result).toEqual({ success: false, reason: 'not_found' });
+    });
+
+    it('persists the new expression/description and reflects it in getFormulasSnapshot', async () => {
+      const result = await engine.updateFormula('revenue', 'volume * price * 2 + revenueDelta', 'doubled for testing');
+
+      expect(result).toEqual({ success: true });
+      const snapshot = engine.getFormulasSnapshot().find((f) => f.key === 'revenue');
+      expect(snapshot).toEqual({ key: 'revenue', expression: 'volume * price * 2 + revenueDelta', description: 'doubled for testing' });
+      expect(mockPrisma.formula.update).toHaveBeenCalledWith({
+        where: { key: 'revenue' },
+        data: { expression: 'volume * price * 2 + revenueDelta', description: 'doubled for testing' },
+      });
+    });
+
+    it('live-reloads GameLoop — a changed formula affects the very next computation, no restart', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+
+      await engine.broadcastInitialSnapshot(roomState.room.id, 1);
+      const before = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls
+        .filter((call: [string, ...unknown[]]) => call[0] === ServerEvents.TURN_RESOLVED)
+        .pop()![1] as any;
+      const revenueBefore = before.players[0].derived.revenue;
+
+      await engine.updateFormula('revenue', 'volume * price * 2 + revenueDelta', 'doubled for testing');
+
+      await engine.broadcastInitialSnapshot(roomState.room.id, 1);
+      const after = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls
+        .filter((call: [string, ...unknown[]]) => call[0] === ServerEvents.TURN_RESOLVED)
+        .pop()![1] as any;
+      const revenueAfter = after.players[0].derived.revenue;
+
+      // Doubling the formula should double revenue (volume*price term dominates; revenueDelta is 0 pre-decisions)
+      expect(revenueAfter).toBeCloseTo(revenueBefore * 2, 4);
     });
   });
 });

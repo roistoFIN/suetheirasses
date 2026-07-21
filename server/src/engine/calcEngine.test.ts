@@ -14,7 +14,14 @@ import {
   getScheduleValue,
   DEPRECIATING_ASSETS,
 } from './calcEngine';
+import { buildFormulaSet } from './formulaEngine';
+import { DEFAULT_FORMULA_SEEDS } from './defaultFormulas';
 import type { PlayerVariables, AdminVariables } from '@suetheirasses/shared';
+
+// The real 23 seeded formula expressions, compiled once — every calcEngine function
+// that now takes a FormulaSet is exercised against the actual production formulas,
+// not a stand-in, so these tests still validate real behavior, not just plumbing.
+const DEFAULT_FORMULAS = buildFormulaSet(DEFAULT_FORMULA_SEEDS);
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -219,7 +226,7 @@ describe('calcEngine', () => {
       ];
       const admin = makeAdmin();
 
-      const result = calculateCompetitivenessAndMarketShare(ids, vars, admin);
+      const result = calculateCompetitivenessAndMarketShare(ids, vars, admin, DEFAULT_FORMULAS);
 
       expect(result.get('p1')).toBeGreaterThan(result.get('p2')!);
       const total = Array.from(result.values()).reduce((s, v) => s + v, 0);
@@ -228,7 +235,7 @@ describe('calcEngine', () => {
 
     it('should throw when ids and vars lengths mismatch', () => {
       expect(() =>
-        calculateCompetitivenessAndMarketShare(['p1'], [makeVars(), makeVars()], makeAdmin()),
+        calculateCompetitivenessAndMarketShare(['p1'], [makeVars(), makeVars()], makeAdmin(), DEFAULT_FORMULAS),
       ).toThrow('must have the same length');
     });
 
@@ -240,7 +247,7 @@ describe('calcEngine', () => {
         makeVars({ price: 1, processingLevel: 0, supplySecurity: 0, processLoss: 0, demand: 0, outrage: 0 }),
       ];
 
-      const result = calculateCompetitivenessAndMarketShare(ids, vars, makeAdmin());
+      const result = calculateCompetitivenessAndMarketShare(ids, vars, makeAdmin(), DEFAULT_FORMULAS);
 
       expect(result.get('p1')).toBeCloseTo(1 / 3, 4);
       expect(result.get('p2')).toBeCloseTo(1 / 3, 4);
@@ -251,7 +258,7 @@ describe('calcEngine', () => {
       const ids = ['alice', 'bob'];
       const vars = [makeVars(), makeVars()];
 
-      const result = calculateCompetitivenessAndMarketShare(ids, vars, makeAdmin());
+      const result = calculateCompetitivenessAndMarketShare(ids, vars, makeAdmin(), DEFAULT_FORMULAS);
 
       expect(result.has('alice')).toBe(true);
       expect(result.has('bob')).toBe(true);
@@ -261,21 +268,21 @@ describe('calcEngine', () => {
   describe('calculateVolume', () => {
     it('should cap volume at max supply', () => {
       const vars = makeVars({ installedCapacity: 5000, capacityUtilization: 0.8 });
-      const volume = calculateVolume(vars, 0.5, 10000);
+      const volume = calculateVolume(vars, 0.5, 10000, DEFAULT_FORMULAS);
       // theoretical = 0.5 * 10000 = 5000, maxSupply = 5000 * 0.8 = 4000
       expect(volume).toBe(4000);
     });
 
     it('should use theoretical volume when below supply cap', () => {
       const vars = makeVars({ installedCapacity: 20000, capacityUtilization: 0.9 });
-      const volume = calculateVolume(vars, 0.3, 10000);
+      const volume = calculateVolume(vars, 0.3, 10000, DEFAULT_FORMULAS);
       // theoretical = 0.3 * 10000 = 3000, maxSupply = 20000 * 0.9 = 18000
       expect(volume).toBe(3000);
     });
 
     it('should return zero when market share is zero', () => {
       const vars = makeVars();
-      expect(calculateVolume(vars, 0, 10000)).toBe(0);
+      expect(calculateVolume(vars, 0, 10000, DEFAULT_FORMULAS)).toBe(0);
     });
   });
 
@@ -293,7 +300,7 @@ describe('calcEngine', () => {
       const volume = 5000;
       const depreciation = 5000;
 
-      const result = calculatePL(vars, volume, depreciation, admin);
+      const result = calculatePL(vars, volume, depreciation, admin, DEFAULT_FORMULAS);
 
       expect(result.revenue).toBe(5000 * 500); // volume * price
       expect(result.cogs).toBe((100 + 50) * 5000);
@@ -316,7 +323,7 @@ describe('calcEngine', () => {
       });
       const admin = makeAdmin();
 
-      const result = calculatePL(vars, 100, 1000, admin);
+      const result = calculatePL(vars, 100, 1000, admin, DEFAULT_FORMULAS);
 
       expect(result.taxCost).toBe(0);
     });
@@ -338,7 +345,7 @@ describe('calcEngine', () => {
       const revenue = 250000;
       const legalExposure = 0;
 
-      const result = updateBalanceSheet(vars, netProfit, depreciation, revenue, legalExposure, admin);
+      const result = updateBalanceSheet(vars, netProfit, depreciation, revenue, legalExposure, admin, DEFAULT_FORMULAS);
 
       expect(result.cash).toBe(100000 + 15000 + 5000);
       expect(result.reserves).toBe(30000 + 15000);
@@ -353,19 +360,19 @@ describe('calcEngine', () => {
 
   describe('calculateAdjustedProbability', () => {
     it('should increase probability with scrutiny', () => {
-      const result = calculateAdjustedProbability(0.5, 10, 0, makeAdmin());
+      const result = calculateAdjustedProbability(0.5, 10, 0, makeAdmin(), DEFAULT_FORMULAS);
       // 0.5 * (1 + 0.02 * 10 / 100 + 0) = 0.5 * (1 + 0.002) = 0.501
       expect(result).toBeCloseTo(0.501, 4);
     });
 
     it('should return base probability when scrutiny is zero', () => {
-      const result = calculateAdjustedProbability(0.3, 0, 0, makeAdmin());
+      const result = calculateAdjustedProbability(0.3, 0, 0, makeAdmin(), DEFAULT_FORMULAS);
       expect(result).toBeCloseTo(0.3, 4);
     });
 
     it('should scale linearly with scrutiny', () => {
-      const r1 = calculateAdjustedProbability(0.5, 5, 0, makeAdmin());
-      const r2 = calculateAdjustedProbability(0.5, 10, 0, makeAdmin());
+      const r1 = calculateAdjustedProbability(0.5, 5, 0, makeAdmin(), DEFAULT_FORMULAS);
+      const r2 = calculateAdjustedProbability(0.5, 10, 0, makeAdmin(), DEFAULT_FORMULAS);
       expect(r2).toBeGreaterThan(r1);
     });
   });
@@ -383,7 +390,7 @@ describe('calcEngine', () => {
         { probability: 0.3, stakes: 10000 },
       ];
 
-      const result = calculateRiskGauge(vars, openCases, admin);
+      const result = calculateRiskGauge(vars, openCases, admin, DEFAULT_FORMULAS);
 
       expect(result).toBeGreaterThanOrEqual(0);
       expect(result).toBeLessThanOrEqual(100);
@@ -393,8 +400,8 @@ describe('calcEngine', () => {
       const vars = makeVars({ cash: 100000, scrutiny: 10, outrage: 5 });
       const admin = makeAdmin();
 
-      const r1 = calculateRiskGauge(vars, [], admin);
-      const r2 = calculateRiskGauge(vars, [{ probability: 0.8, stakes: 50000 }], admin);
+      const r1 = calculateRiskGauge(vars, [], admin, DEFAULT_FORMULAS);
+      const r2 = calculateRiskGauge(vars, [{ probability: 0.8, stakes: 50000 }], admin, DEFAULT_FORMULAS);
 
       expect(r2).toBeGreaterThan(r1);
     });
@@ -404,7 +411,7 @@ describe('calcEngine', () => {
       const admin = makeAdmin();
       const openCases = [{ probability: 1, stakes: 1000000 }];
 
-      const result = calculateRiskGauge(vars, openCases, admin);
+      const result = calculateRiskGauge(vars, openCases, admin, DEFAULT_FORMULAS);
 
       expect(result).toBe(75); // w1*1 + w2*1 + w3*1 = 0.3 + 0.2 + 0.25 = 0.75 -> 75
     });
@@ -609,27 +616,27 @@ describe('calcEngine', () => {
   describe('calculateLegalExposureRatio', () => {
     it('should calculate ratio as legalExposure / cash', () => {
       const admin = makeAdmin();
-      const ratio = calculateLegalExposureRatio(50000, 100000, admin);
+      const ratio = calculateLegalExposureRatio(50000, 100000, admin, DEFAULT_FORMULAS);
       // 50000 / 100000 = 0.5
       expect(ratio).toBeCloseTo(0.5, 4);
     });
 
     it('should cap at legalExposureRatioCap', () => {
       const admin = makeAdmin();
-      const ratio = calculateLegalExposureRatio(100000, 100000, admin);
+      const ratio = calculateLegalExposureRatio(100000, 100000, admin, DEFAULT_FORMULAS);
       // 100000 / 100000 = 1.0, but cap is 0.8
       expect(ratio).toBeCloseTo(0.8, 4);
     });
 
     it('should return 0 when cash is zero', () => {
       const admin = makeAdmin();
-      const ratio = calculateLegalExposureRatio(50000, 0, admin);
+      const ratio = calculateLegalExposureRatio(50000, 0, admin, DEFAULT_FORMULAS);
       expect(ratio).toBe(0);
     });
 
     it('should return 0 when legal exposure is zero', () => {
       const admin = makeAdmin();
-      const ratio = calculateLegalExposureRatio(0, 100000, admin);
+      const ratio = calculateLegalExposureRatio(0, 100000, admin, DEFAULT_FORMULAS);
       expect(ratio).toBe(0);
     });
 
@@ -643,14 +650,14 @@ describe('calcEngine', () => {
           buySharesLegalRiskThresholdPercent: 0.05,
         },
       });
-      const ratio = calculateLegalExposureRatio(60000, 100000, admin);
+      const ratio = calculateLegalExposureRatio(60000, 100000, admin, DEFAULT_FORMULAS);
       // 60000 / 100000 = 0.6, but cap is 0.5
       expect(ratio).toBeCloseTo(0.5, 4);
     });
 
     it('should not cap when ratio is below cap', () => {
       const admin = makeAdmin();
-      const ratio = calculateLegalExposureRatio(30000, 100000, admin);
+      const ratio = calculateLegalExposureRatio(30000, 100000, admin, DEFAULT_FORMULAS);
       // 30000 / 100000 = 0.3 < 0.8 (cap)
       expect(ratio).toBeCloseTo(0.3, 4);
     });
@@ -659,7 +666,7 @@ describe('calcEngine', () => {
   describe('calculateAdjustedProbability', () => {
     it('should increase probability with scrutiny alone', () => {
       const admin = makeAdmin();
-      const result = calculateAdjustedProbability(0.5, 10, 0, admin);
+      const result = calculateAdjustedProbability(0.5, 10, 0, admin, DEFAULT_FORMULAS);
       // 0.5 * (1 + 0.02 * 10 / 100 + 0) = 0.5 * (1 + 0.002) = 0.5 * 1.002 = 0.501
       // Actually wait, let me re-read the formula: (scrutinyLegalRiskMultiplier * scrutiny) / 100
       // So: 0.5 * (1 + 0.02 * 10) = 0.5 * 1.2 = 0.6 (when scrutiny is not divided by 100)
@@ -672,29 +679,29 @@ describe('calcEngine', () => {
 
     it('should increase probability with legal exposure ratio alone', () => {
       const admin = makeAdmin();
-      const result = calculateAdjustedProbability(0.5, 0, 0.5, admin);
+      const result = calculateAdjustedProbability(0.5, 0, 0.5, admin, DEFAULT_FORMULAS);
       // 0.5 * (1 + 0 + 0.5) = 0.5 * 1.5 = 0.75
       expect(result).toBeCloseTo(0.75, 4);
     });
 
     it('should increase probability with both scrutiny and legal exposure ratio', () => {
       const admin = makeAdmin();
-      const result = calculateAdjustedProbability(0.5, 10, 0.4, admin);
+      const result = calculateAdjustedProbability(0.5, 10, 0.4, admin, DEFAULT_FORMULAS);
       // 0.5 * (1 + 0.02 * 10 / 100 + 0.4) = 0.5 * (1 + 0.002 + 0.4) = 0.5 * 1.402 = 0.701
       expect(result).toBeCloseTo(0.701, 4);
     });
 
     it('should return base probability when both scrutiny and legal exposure are zero', () => {
       const admin = makeAdmin();
-      const result = calculateAdjustedProbability(0.3, 0, 0, admin);
+      const result = calculateAdjustedProbability(0.3, 0, 0, admin, DEFAULT_FORMULAS);
       expect(result).toBeCloseTo(0.3, 4);
     });
 
     it('should scale linearly with increasing legal exposure ratio', () => {
       const admin = makeAdmin();
-      const r1 = calculateAdjustedProbability(0.5, 0, 0.1, admin);
-      const r2 = calculateAdjustedProbability(0.5, 0, 0.3, admin);
-      const r3 = calculateAdjustedProbability(0.5, 0, 0.5, admin);
+      const r1 = calculateAdjustedProbability(0.5, 0, 0.1, admin, DEFAULT_FORMULAS);
+      const r2 = calculateAdjustedProbability(0.5, 0, 0.3, admin, DEFAULT_FORMULAS);
+      const r3 = calculateAdjustedProbability(0.5, 0, 0.5, admin, DEFAULT_FORMULAS);
       
       expect(r1).toBeLessThan(r2);
       expect(r2).toBeLessThan(r3);
@@ -703,7 +710,7 @@ describe('calcEngine', () => {
     it('should cap probability contribution at legal exposure cap', () => {
       const admin = makeAdmin();
       // Even if legal exposure ratio is provided as 1.0, it still contributes linearly
-      const result = calculateAdjustedProbability(0.1, 0, 0.8, admin);
+      const result = calculateAdjustedProbability(0.1, 0, 0.8, admin, DEFAULT_FORMULAS);
       // 0.1 * (1 + 0.8) = 0.18
       expect(result).toBeCloseTo(0.18, 4);
     });
@@ -720,7 +727,7 @@ describe('calcEngine', () => {
       // normalized = 0.2 / 0.8 = 0.25
       // risk = 100 * (0.3 * 0.25 + 0.2 * 0 + 0.25 * 0) = 100 * 0.075 = 7.5
       
-      const result = calculateRiskGauge(vars, openCases, admin);
+      const result = calculateRiskGauge(vars, openCases, admin, DEFAULT_FORMULAS);
       expect(result).toBeCloseTo(7.5, 1);
     });
 
@@ -733,7 +740,7 @@ describe('calcEngine', () => {
       // normalized scrutiny = MIN(1, 50 / 100) = 0.5
       // risk = 100 * (0.3 * 0 + 0.2 * 0.5 + 0.25 * 0) = 100 * 0.1 = 10
       
-      const result = calculateRiskGauge(vars, openCases, admin);
+      const result = calculateRiskGauge(vars, openCases, admin, DEFAULT_FORMULAS);
       expect(result).toBeCloseTo(10, 1);
     });
 
@@ -746,7 +753,7 @@ describe('calcEngine', () => {
       // normalized outrage = MIN(1, 75 / 100) = 0.75
       // risk = 100 * (0.3 * 0 + 0.2 * 0 + 0.25 * 0.75) = 100 * 0.1875 = 18.75
       
-      const result = calculateRiskGauge(vars, openCases, admin);
+      const result = calculateRiskGauge(vars, openCases, admin, DEFAULT_FORMULAS);
       expect(result).toBeCloseTo(18.75, 1);
     });
 
@@ -761,7 +768,7 @@ describe('calcEngine', () => {
       // normalized outrage = 0.5
       // risk = 100 * (0.3 * 0.25 + 0.2 * 0.5 + 0.25 * 0.5) = 100 * (0.075 + 0.1 + 0.125) = 30
       
-      const result = calculateRiskGauge(vars, openCases, admin);
+      const result = calculateRiskGauge(vars, openCases, admin, DEFAULT_FORMULAS);
       expect(result).toBeCloseTo(30, 1);
     });
 
@@ -774,7 +781,7 @@ describe('calcEngine', () => {
       // normalized outrage = MIN(1, 2.0) = 1.0
       // risk = 100 * (0 + 0.2 * 1.0 + 0.25 * 1.0) = 100 * 0.45 = 45
       
-      const result = calculateRiskGauge(vars, openCases, admin);
+      const result = calculateRiskGauge(vars, openCases, admin, DEFAULT_FORMULAS);
       expect(result).toBeCloseTo(45, 1);
     });
 
@@ -786,7 +793,7 @@ describe('calcEngine', () => {
       // normalized outrage = MIN(1, ABS(-60) / 100) = 0.6
       // risk = 100 * (0 + 0 + 0.25 * 0.6) = 15
       
-      const result = calculateRiskGauge(vars, openCases, admin);
+      const result = calculateRiskGauge(vars, openCases, admin, DEFAULT_FORMULAS);
       expect(result).toBeCloseTo(15, 1);
     });
 
@@ -803,7 +810,7 @@ describe('calcEngine', () => {
       // normalized = 0.18 / 0.8 = 0.225
       // risk = 100 * 0.3 * 0.225 = 6.75
       
-      const result = calculateRiskGauge(vars, openCases, admin);
+      const result = calculateRiskGauge(vars, openCases, admin, DEFAULT_FORMULAS);
       expect(result).toBeCloseTo(6.75, 1);
     });
   });
@@ -824,7 +831,7 @@ describe('calcEngine', () => {
       const revenue = 200000;
 
       const legalExposure = 10000;
-      const result = updateBalanceSheet(vars, netProfit, depreciation, revenue, legalExposure, admin);
+      const result = updateBalanceSheet(vars, netProfit, depreciation, revenue, legalExposure, admin, DEFAULT_FORMULAS);
 
       expect(result).toHaveProperty('cash');
       expect(result).toHaveProperty('reserves');
@@ -850,7 +857,7 @@ describe('calcEngine', () => {
       const revenue = 100000;
       const legalExposure = 5000;
 
-      const result = updateBalanceSheet(vars, netProfit, depreciation, revenue, legalExposure, admin);
+      const result = updateBalanceSheet(vars, netProfit, depreciation, revenue, legalExposure, admin, DEFAULT_FORMULAS);
 
       // DSO = 30 days, so receivables = 100000 * (30 / 365)
       expect(result.receivables).toBeCloseTo(100000 * (30 / 365), 2);
@@ -871,7 +878,7 @@ describe('calcEngine', () => {
       const revenue = 250000;
       const legalExposure = 0;
 
-      const result = updateBalanceSheet(vars, netProfit, depreciation, revenue, legalExposure, admin);
+      const result = updateBalanceSheet(vars, netProfit, depreciation, revenue, legalExposure, admin, DEFAULT_FORMULAS);
 
       // market equity = equity - legalExposure = equity
       // stock value = market equity / shares
@@ -894,7 +901,7 @@ describe('calcEngine', () => {
       const revenue = 100000;
       const legalExposure = 200000; // Huge legal exposure
 
-      const result = updateBalanceSheet(vars, netProfit, depreciation, revenue, legalExposure, admin);
+      const result = updateBalanceSheet(vars, netProfit, depreciation, revenue, legalExposure, admin, DEFAULT_FORMULAS);
 
       // market equity should be capped at 0, so stock value should be 0
       expect(result.stockValue).toBe(0);
@@ -912,7 +919,7 @@ describe('calcEngine', () => {
       const admin = makeAdmin();
       const originalCash = vars.cash;
 
-      updateBalanceSheet(vars, 15000, 5000, 250000, 5000, admin);
+      updateBalanceSheet(vars, 15000, 5000, 250000, 5000, admin, DEFAULT_FORMULAS);
 
       expect(vars.cash).toBe(originalCash); // Original should be unchanged
     });

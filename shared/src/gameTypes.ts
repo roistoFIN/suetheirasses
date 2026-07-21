@@ -1,8 +1,9 @@
 // ============================================================
-// Game Engine Types — shared between server and future admin panel
+// Game Engine Types — shared between server and the /admin portal
 // ============================================================
 
-/** A single decision definition loaded from game_engine.json */
+/** A single decision definition — DB-backed (`Decision` table), seeded from
+ * server/src/data/game_engine.json, editable live via /admin. */
 export interface DecisionDefinition {
   decision: string;
   level: 'Strategic' | 'Operational';
@@ -32,7 +33,8 @@ export interface LegalRiskDefinition {
   impact: ImpactEntry & { target: string };
 }
 
-/** Admin-configurable constants from game_config.json */
+/** Admin-configurable constants — DB-backed (`GameConfigRow` table), seeded from
+ * server/src/data/game_config.json, editable live via /admin. */
 export interface GameConfig {
   gameSettings: GameSettings;
   playerStartingValues: PlayerStartingValues;

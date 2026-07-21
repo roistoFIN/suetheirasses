@@ -86,3 +86,51 @@ model Asset {
 // because the game engine reads/writes the entire state atomically
 // each turn.
 // ==============================================================
+
+// ============================================================
+// Decision library + game config — authoritative at runtime (loaded once by
+// GameEngine.loadGameData() at startup, live-reloaded on every admin edit via
+// /admin). server/src/data/*.json remain on disk purely as the versioned seed
+// source for `npm run db:seed` (see prisma/seed.ts), not as a runtime data path.
+// ============================================================
+
+model Decision {
+  // == data.decision, promoted to a real column for lookup/uniqueness/admin CRUD.
+  name      String   @id
+  // The rest of DecisionDefinition (level, description, nature, offensiveAction,
+  // excludes, impacts, legalRisks?, competitorsView?, etc.), verbatim.
+  data      Json
+  updatedAt DateTime @updatedAt
+
+  @@map("decisions")
+}
+
+// Named *Row* to avoid colliding with shared/src/gameTypes.ts's `GameConfig` TS type.
+// Singleton: always exactly one row, id=1 by convention (no DB-level enforcement,
+// same pragmatic style as the rest of this schema).
+model GameConfigRow {
+  id                   Int      @id @default(1)
+  gameSettings         Json
+  playerStartingValues Json
+  adminVariables       Json
+  updatedAt            DateTime @updatedAt
+
+  @@map("game_config")
+}
+
+// The pure, scalar, named-input math formulas from FORMULAS.md (§2-§7) — e.g.
+// "competitiveness", "netProfit". Admin-editable expression text, evaluated by
+// server/src/engine/formulaEngine.ts (a safe hand-rolled parser, no eval/Function/vm).
+// The key set is fixed — no create/delete via /admin, since each key is referenced
+// by name at a specific calcEngine.ts call site GameLoop hard-depends on; only the
+// expression text is editable. Everything procedural/order-dependent in FORMULAS.md
+// (execution phases, depreciation ledger iteration, bankruptcy waterfall, FIFO
+// tie-breaking) stays as TypeScript, not represented here — see CLAUDE.md.
+model Formula {
+  key         String   @id
+  expression  String
+  description String
+  updatedAt   DateTime @updatedAt
+
+  @@map("formulas")
+}

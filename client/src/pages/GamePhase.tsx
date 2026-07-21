@@ -81,7 +81,7 @@ function getOpponentName(caseData: LegalCaseData, myPlayerId: string, playerName
 }
 
 // ============================================================
-// Styles — WarRoomDashboard aesthetic (stamps, thick borders, shadows),
+// Styles — war-room dashboard aesthetic (stamps, thick borders, shadows),
 // plain style objects using Mantine v7 CSS variables (see Timer.tsx for
 // the established convention — Mantine v7 dropped @mantine/styles/createStyles).
 // ============================================================

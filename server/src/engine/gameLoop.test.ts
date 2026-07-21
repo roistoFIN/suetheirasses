@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { GameLoop, type EngineDataInput } from './gameLoop';
+import { DEFAULT_FORMULA_SEEDS } from './defaultFormulas';
 import type { GameConfig, PlayerVariables } from '@suetheirasses/shared';
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -153,6 +154,7 @@ describe('GameLoop', () => {
     config = makeConfig();
 
     gameLoop = new GameLoop(config);
+    gameLoop.loadFormulas(DEFAULT_FORMULA_SEEDS);
     gameLoop.loadDecisions([
       {
         decision: 'New Factory',

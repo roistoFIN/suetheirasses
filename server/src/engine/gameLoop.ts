@@ -51,6 +51,7 @@ import {
 import { DecisionEngine, MAX_INVESTIGATION_LEVEL, summarizeTargetImpacts, pickBestGround } from './decisionEngine.js';
 import type { DeployedDecision, TargetImpactResult } from './decisionEngine.js';
 import { LegalEngine } from './legalEngine.js';
+import { buildFormulaSet, type FormulaSet } from './formulaEngine.js';
 
 // ============================================================
 // Public input/output types — the boundary between GameLoop's pure
@@ -182,6 +183,11 @@ export class GameLoop {
   private legalEngine = new LegalEngine();
   private config: GameConfig;
   private adminVars: AdminVariables;
+  // The pure, scalar, named-input formulas from FORMULAS.md §2-§7 — DB-backed
+  // (Formula table), loaded via loadFormulas() same as decisions/config. Empty
+  // until GameEngine.loadGameData() populates it at startup (before the server
+  // accepts connections), so this is never read before it's real.
+  private formulas: FormulaSet = new Map();
 
   // Per-room turn state (decisions submitted during Phase A)
   private submissions = new Map<string, Map<string, SubmittedDecisions>>();
@@ -191,10 +197,32 @@ export class GameLoop {
     this.adminVars = config.adminVariables;
   }
 
-  /** Load all decision definitions from game_engine.json */
+  /**
+   * Replace gameSettings/playerStartingValues/adminVariables in place — called both
+   * for the initial DB-backed load (`GameEngine.loadGameData`) and every later admin
+   * edit via `/admin` (`GameEngine.updateGameConfigData`). Takes effect on the next
+   * turn resolved after the call; nothing in-flight needs to be re-run.
+   */
+  updateConfig(config: GameConfig): void {
+    this.config = config;
+    this.adminVars = config.adminVariables;
+  }
+
+  /** Load all decision definitions — from the DB via GameEngine.loadGameData(), not
+   * from game_engine.json directly (that file is now seed-only, see prisma/seed.ts).
+   * Safe to call again any time — DecisionEngine/LegalEngine just replace their
+   * internal maps, so an admin edit takes effect on the next turn immediately. */
   loadDecisions(definitions: DecisionDefinition[]): void {
     this.decisionEngine.setDefinitions(definitions);
     this.legalEngine.setDefinitions(definitions);
+  }
+
+  /** Compile and load the named formulas from FORMULAS.md §2-§7 — from the DB via
+   * GameEngine.loadGameData(). Safe to call again any time (GameEngine.updateFormula
+   * does so after every admin edit) — replaces the whole set outright, taking effect
+   * on the next turn resolved. */
+  loadFormulas(rows: Array<{ key: string; expression: string }>): void {
+    this.formulas = buildFormulaSet(rows);
   }
 
   // ============================================================
@@ -321,7 +349,7 @@ export class GameLoop {
     }
 
     // ── Step 4 — Competitiveness & market share (FORMULAS §2) ─
-    const marketShares = calculateCompetitivenessAndMarketShare(playerIds, varsList, this.adminVars);
+    const marketShares = calculateCompetitivenessAndMarketShare(playerIds, varsList, this.adminVars, this.formulas);
     let si = 0;
     for (const pid of playerIds) {
       varsList[si].marketShare = marketShares.get(pid) || 0;
@@ -334,7 +362,7 @@ export class GameLoop {
     // ── Step 5 — Volume with supply cap (FORMULAS §3) ─────────
     const totalVol = this.config.gameSettings.totalMarketVolumeTonnesPerYear;
     for (const [, ctx] of ctxs) {
-      ctx.vars.volume = calculateVolume(ctx.vars, ctx.vars.marketShare || 0, totalVol);
+      ctx.vars.volume = calculateVolume(ctx.vars, ctx.vars.marketShare || 0, totalVol, this.formulas);
     }
 
     // ── Step 6 — P&L (FORMULAS §4) ────────────────────────────
@@ -342,7 +370,7 @@ export class GameLoop {
     for (const [pid, ctx] of ctxs) {
       const dep = depreciationMap.get(pid) ?? 0;
       const deltas = absDeltasMap.get(pid) ?? { revenueDelta: 0, financeCostDelta: 0, taxCostDelta: 0, receivablesDelta: 0, cashDelta: 0 };
-      plMap.set(pid, calculatePL(ctx.vars, ctx.vars.volume || 0, dep, this.adminVars, {
+      plMap.set(pid, calculatePL(ctx.vars, ctx.vars.volume || 0, dep, this.adminVars, this.formulas, {
         revenueDelta: deltas.revenueDelta,
         financeCostDelta: deltas.financeCostDelta,
         taxCostDelta: deltas.taxCostDelta,
@@ -373,14 +401,14 @@ export class GameLoop {
       const dep = depreciationMap.get(pid) ?? 0;
       const deltas = absDeltasMap.get(pid) ?? { revenueDelta: 0, financeCostDelta: 0, taxCostDelta: 0, receivablesDelta: 0, cashDelta: 0 };
       const legalExposure = legalExposureMap.get(pid) ?? 0;
-      const bs = updateBalanceSheet(ctx.vars, pl.netProfit, dep, pl.revenue, legalExposure, this.adminVars, deltas.receivablesDelta);
+      const bs = updateBalanceSheet(ctx.vars, pl.netProfit, dep, pl.revenue, legalExposure, this.adminVars, this.formulas, deltas.receivablesDelta);
       ctx.vars.cash = bs.cash;
       ctx.vars.reserves = bs.reserves;
       ctx.vars.receivables = bs.receivables;
       ctx.vars.equity = bs.equity;
       ctx.vars.stockValue = bs.stockValue;
       ctx.vars.legalExposure = bs.legalExposure;
-      ctx.vars.legalExposureRatio = calculateLegalExposureRatio(legalExposure, ctx.vars.cash, this.adminVars);
+      ctx.vars.legalExposureRatio = calculateLegalExposureRatio(legalExposure, ctx.vars.cash, this.adminVars, this.formulas);
     }
 
     // ── Step 8 — Deliberate lawsuit filings (FORMULAS §6) ─────────────────────
@@ -419,12 +447,14 @@ export class GameLoop {
         legalExposureMap.get(trial.defendantId) ?? 0,
         defCtx.vars.cash,
         this.adminVars,
+        this.formulas,
       );
       const adjProb = calculateAdjustedProbability(
         trial.baseProbability,
         defCtx.vars.scrutiny,
         defLegalExposureRatio,
         this.adminVars,
+        this.formulas,
       );
       const won = Math.random() < adjProb;
       trial.adjustedProbability = adjProb;
@@ -542,7 +572,7 @@ export class GameLoop {
       const openCases = allCases
         .filter(c => c.defendantId === pid && c.status !== 'resolved')
         .map(c => ({ probability: c.adjustedProbability ?? c.baseProbability, stakes: c.stakes }));
-      riskMap.set(pid, calculateRiskGauge(ctx.vars, openCases, this.adminVars));
+      riskMap.set(pid, calculateRiskGauge(ctx.vars, openCases, this.adminVars, this.formulas));
     }
 
     // ── Step 12 — Collect Company persistence updates (all engine state in JSONB) ──
@@ -655,7 +685,7 @@ export class GameLoop {
 
     // FORMULAS §2 — competitiveness & market share (zero-sum across all players)
     const varsList = playerIds.map(pid => varsByPlayer.get(pid)!);
-    const marketShares = calculateCompetitivenessAndMarketShare(playerIds, varsList, this.adminVars);
+    const marketShares = calculateCompetitivenessAndMarketShare(playerIds, varsList, this.adminVars, this.formulas);
     for (const pid of playerIds) {
       varsByPlayer.get(pid)!.marketShare = marketShares.get(pid) || 0;
     }
@@ -664,16 +694,16 @@ export class GameLoop {
     const totalVol = this.config.gameSettings.totalMarketVolumeTonnesPerYear;
     for (const pid of playerIds) {
       const vars = varsByPlayer.get(pid)!;
-      vars.volume = calculateVolume(vars, vars.marketShare || 0, totalVol);
+      vars.volume = calculateVolume(vars, vars.marketShare || 0, totalVol, this.formulas);
     }
 
     const results: PlayerTurnResult[] = [];
     for (const pid of playerIds) {
       const vars = varsByPlayer.get(pid)!;
       // FORMULAS §4 — P&L (no decisions yet, so no absolute schedule deltas)
-      const pl = calculatePL(vars, vars.volume || 0, 0, this.adminVars);
+      const pl = calculatePL(vars, vars.volume || 0, 0, this.adminVars, this.formulas);
       // FORMULAS §5 — balance sheet (no legal exposure yet — no cases exist on turn 1)
-      const bs = updateBalanceSheet(vars, pl.netProfit, 0, pl.revenue, 0, this.adminVars);
+      const bs = updateBalanceSheet(vars, pl.netProfit, 0, pl.revenue, 0, this.adminVars, this.formulas);
       vars.cash = bs.cash;
       vars.reserves = bs.reserves;
       vars.receivables = bs.receivables;
@@ -700,7 +730,7 @@ export class GameLoop {
         },
         activeDecisions: [],
         legalCases: [],
-        riskGauge: calculateRiskGauge(vars, [], this.adminVars),
+        riskGauge: calculateRiskGauge(vars, [], this.adminVars, this.formulas),
         incomingAttacks: [],
       });
     }
@@ -864,7 +894,7 @@ export class GameLoop {
       info.effectSummary = summarizeTargetImpacts(decision.definition.impacts, decision.elapsedYears);
     }
     if (level >= 3) {
-      const best = pickBestGround(decision.definition, decision.elapsedYears, attackerVars, this.adminVars);
+      const best = pickBestGround(decision.definition, decision.elapsedYears, attackerVars, this.adminVars, this.formulas);
       if (best) {
         info.suggestedGroundName = best.name;
         info.suggestedGroundDescription = best.description;

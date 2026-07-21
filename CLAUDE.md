@@ -14,13 +14,18 @@ The full design spec — every game mechanic, phase flow, socket event, and Zust
 method — is documented in `README.md`. Read it before making non-trivial changes; this
 file only covers what the README doesn't (commands and architecture orientation).
 
-**`definitionDocumentation/` is the source of truth for game design** — `FORMULAS.md`
-(every formula and the exact per-turn calculation order, referenced throughout the code
-as `FORMULAS §N`) and `game_engine.json`/`game_config.json` (canonical copies of the
-decision library and starting/admin values). `server/src/data/` holds the runtime copies
-actually loaded by the server. Never derive game math from the code alone — check
-FORMULAS.md first, since the code documents known deliberate deviations from spec (see
-README's *Lawsuits* section).
+**`definitionDocumentation/FORMULAS.md` is the source of truth for game math** — every
+formula and the exact per-turn calculation order, referenced throughout the code as
+`FORMULAS §N`. Never derive game math from the code alone — check FORMULAS.md first,
+since the code documents known deliberate deviations from spec (see README's *Lawsuits*
+section). Neither the decision library/config nor the pure-math half of FORMULAS.md
+(§2-§7's scalar formulas — competitiveness, P&L, balance sheet, legal-risk/risk-gauge
+math) are static files anymore — all three live in Postgres (`Decision`/`GameConfigRow`/
+`Formula` tables) and are editable live from `/admin`. See *"Decisions/config are
+DB-backed, not static JSON"* and *"Formulas are DB-backed"* below before assuming
+`game_engine.json`/`game_config.json`/FORMULAS.md's prose reflect what's actually
+running — FORMULAS.md's *procedural* half (execution order, depreciation ledger,
+bankruptcy waterfall, FIFO tie-breaking) is still the one and only source, unchanged.
 
 ## Commands
 
@@ -97,8 +102,10 @@ separately, or use `test:all` for the Docker-dependent API+E2E suites.
   `GameLoop`, then persist the returned `companyUpdates`/`bankruptedPlayers` and emit
   `player:bankrupt`/`turn:resolved` themselves.
 - **`GameLoop`** (`server/src/engine/gameLoop.ts`) — the authoritative turn-resolution
-  engine, loaded once at startup from `server/src/data/game_engine.json` /
-  `game_config.json`. **It is a pure computation engine** — no Prisma, no Socket.IO, no
+  engine, loaded via `GameEngine.loadGameData()` from the `Decision`/`GameConfigRow`
+  tables (DB-backed and admin-editable — see *"Decisions/config are DB-backed, not
+  static JSON"* below; `server/src/data/*.json` are seed-only now). **It is a pure
+  computation engine** — no Prisma, no Socket.IO, no
   `async`/`await` anywhere in it. `resolveTurn(roomId, round, players)` and
   `getInitialSnapshot(roomId, round, players)` take plain `EngineDataInput[]` and return
   plain data (`TurnResolutionOutcome` / `TurnResolutionResult`); they never write to the
@@ -201,7 +208,7 @@ that has no relationship to game state at all. `react-router`'s `BrowserRouter` 
 wraps the app (kept in `main.tsx`) purely for `Matchmaking.tsx`'s `useSearchParams`
 (reads the `?room=` invite-link query param) — not for its routing.
 
-### Admin portal — env-var token, REST-only, read-only
+### Admin portal — env-var token, REST-only
 
 `/admin` is gated by a single shared secret (`ADMIN_TOKEN`), checked by
 `server/src/middleware/adminAuth.ts` on every `/api/admin/*` request via the
@@ -215,11 +222,103 @@ in `sessionStorage`, sending it as a header on each request — don't add an
 `ADMIN_TOKEN`-shaped `VITE_*` env var, since anything under `VITE_*` ships in the public
 client bundle. `GameEngine.getAdminRoomsSnapshot()` is a synchronous, in-memory-only
 read (no Prisma) — it's a monitoring snapshot of every room in every phase, distinct
-from the `room:list` Quick Play handler (WAITING-only, non-full rooms only). The
-endpoints are read-only today (rooms + the startup `GameConfig`); there's no live
-config-editing or room-management (kick/delete) yet — if you add either, keep it behind
-the same `requireAdminToken` middleware and treat it as a genuinely destructive action
-if it touches Prisma or a live room.
+from the `room:list` Quick Play handler (WAITING-only, non-full rooms only).
+
+The decision library and game config are now genuinely writable from here (see next
+section) — `POST`/`PUT`/`DELETE /api/admin/decisions` and `PUT /api/admin/config`, each
+validated by `decisionDefinitionSchema`/`gameConfigSchema` in `validation/schemas.ts`
+before touching the DB. Room monitoring is polled every 5s in `AdminPortal.tsx`;
+decisions/config are deliberately fetched once (on auth, and again after a successful
+save) rather than polled, so a background poll can never silently clobber an admin's
+in-progress edit — see the comment at the top of `AdminPortal.tsx`. Editing is raw-JSON
+`Textarea` + server-side Zod validation, not a structured form per field — proportionate
+given `DecisionDefinition.impacts` is an open-ended nested record; if you're tempted to
+build a bespoke form for one field, prefer improving the Zod error messages instead.
+
+### Decisions/config are DB-backed, not static JSON — live-reloaded on every admin edit
+
+`game_engine.json`/`game_config.json` (`server/src/data/`) used to be loaded once at
+server startup and held in memory for the life of the process. They're now **seed-only**
+— `Decision`/`GameConfigRow` Prisma models are authoritative at runtime, populated by
+`prisma/seed.ts` (`npm run db:seed`, idempotent — safe to re-run; also the disaster-
+recovery path: `npx prisma migrate reset && npm run db:seed`). Editing the JSON files
+directly has **no runtime effect** once the DB is seeded — don't "fix" a decision by
+editing `game_engine.json`, use `/admin` (or edit the DB directly and re-run
+`loadGameData`/restart).
+
+`GameEngine.loadGameData()` (called once in `index.ts`'s `start()`, awaited *before*
+`httpServer.listen()` so no socket can connect first) reads both tables and constructs
+`GameLoop`. Every admin write (`upsertDecision`/`deleteDecision`/`updateGameConfigData`)
+writes the DB row and then calls the exact same `GameLoop.loadDecisions()` /
+`GameLoop.updateConfig()` used at startup — this is a deliberate reuse, not a separate
+"hot reload" code path, and it takes effect on the very next turn resolved anywhere, no
+restart needed. `GameEngine.decisionsByName`/`gameConfig` are the in-memory mirrors kept
+in sync with every write; `getDecisionsSnapshot()`/`getGameConfigSnapshot()` read them
+back out for the admin GET routes and the `game:deck` broadcast.
+
+**Deleting a decision is guarded, not just validated.** Several places in
+`GameLoop.resolveTurn`'s hot path dereference a decision instance's `.definition`
+without a null check (e.g. `d.definition.decision`, `.description`, `.impacts` in
+`gameLoop.ts`) — removing a definition still active in a live game would crash the next
+turn resolution for whoever has it deployed. `GameEngine.deleteDecision` checks (via
+`isDecisionInUse`, a full scan of every non-bankrupt company's
+`engineState.activeDecisions`) whether the decision is currently deployed anywhere and
+rejects with `{ reason: 'in_use' }` (409) if so, before touching the DB. If you add
+another way to remove/rename a decision, keep this guard — don't assume the hot path
+tolerates a missing definition, only one place (`getActiveDecisionSummaries`, for the AI
+annual-report feature) was ever made to.
+
+### Formulas are DB-backed — but only the pure-math half of FORMULAS.md
+
+FORMULAS.md §2-§7 (competitiveness/market share, volume, P&L, balance sheet, legal-risk
+probability, risk gauge) is a mix of two different kinds of content, and only one kind
+is DB-backed:
+
+- **Pure, scalar, named-input math** — e.g. `competitiveness_i = (1/price_i) * (1 +
+  wq*processingLevel_i + ...)` — 23 named formulas, each a single arithmetic expression
+  over fixed named inputs. **These live in the `Formula` table**
+  (`key`/`expression`/`description`), seeded from `server/src/engine/defaultFormulas.ts`
+  (the single source of truth both `prisma/seed.ts` and `calcEngine.test.ts`/
+  `gameEngine.test.ts` build their fixtures from — never fork this list), and are
+  editable live from `/admin`'s Formulas tab.
+- **Everything procedural/order-dependent elsewhere in FORMULAS.md** (the VAIHE A-G
+  execution order, depreciation ledger iteration §1, decision maturity/exclusion locking
+  §9-10, bankruptcy waterfall distribution §11/§16, simultaneous-purchase FIFO §14) is
+  **not** represented as data — it's control flow, loops over dynamic collections, and
+  multi-player ordering guarantees, not "a formula" in the tunable-math sense. This stays
+  as TypeScript, unchanged, and always will — don't try to make it data-driven too.
+
+`server/src/engine/formulaEngine.ts` is a small hand-rolled recursive-descent
+parser/evaluator — **deliberately not `eval`/`new Function`/`vm`**, since those can be
+escaped for arbitrary code execution, a categorically worse risk than a math typo. The
+grammar is fixed and tiny: number literals, identifiers, `+ - * /`, unary `-`,
+parentheses, and exactly two whitelisted calls, `MIN`/`MAX` — nothing else (no member
+access, no assignment, no string literals, no arbitrary function calls). If you ever
+need a new builtin (e.g. `ABS`), add it to the whitelist in `formulaEngine.ts`
+deliberately — never reach for `eval`/`Function`/`vm` instead, no matter how small the
+shortcut seems.
+
+`calcEngine.ts`'s 7 exported functions each take a `FormulaSet` (`Map<string,
+CompiledFormula>`) and call `evalNamed(formulas, 'key', context)` instead of inline
+arithmetic — a mechanical refactor, not a rebalancing; the seeded expressions match the
+old hardcoded behavior exactly. `GameLoop.loadFormulas()` mirrors `loadDecisions()`'s
+live-reload pattern (safe to call again any time, replaces the set outright) and
+`GameEngine.updateFormula()` calls it after every write, same "no restart needed" story
+as decisions/config.
+
+**The formula key set is fixed — no create/delete via `/admin`, only `PUT`.** Each of
+the 23 keys is referenced by name at a specific `calcEngine.ts` call site
+(`evalNamed(formulas, 'competitiveness', ...)` etc.) that `GameLoop` hard-depends on;
+there's no guard that could make "delete a formula" safe the way `isDecisionInUse` makes
+decision deletion safe, so the option doesn't exist at all. **Every write is validated
+twice before it reaches `GameLoop`**: `parseFormula` (real syntax check, not a regex)
+and a fixed per-key variable whitelist (`FORMULA_VARIABLES` in `validation/schemas.ts`,
+via `collectIdentifiers`) — an expression that parses fine but references a variable
+`calcEngine.ts` never supplies at that call site would otherwise throw `FormulaEvalError`
+mid-turn, for every active game, the next time it's evaluated. If you add a new formula
+or change what a call site passes into `evalNamed`, update `FORMULA_VARIABLES` in the
+same change — it must stay in sync with the actual `evalNamed` call sites or the
+whitelist silently stops protecting anything.
 
 ### JSONB game state, typed columns only for what needs querying
 
@@ -244,12 +343,27 @@ build step is needed to see changes during dev, only for production builds.
 
 - `server/src/**/*.test.ts` — Vitest, fast, no Docker. `engine/*.test.ts` (GameLoop,
   calcEngine, decisionEngine, legalEngine) needs no mocking at all — pure input/output.
-  `socket/gameEngine.test.ts` mocks Prisma + `Server` since that's where the actual DB
-  writes and socket emits happen; it also mocks `services/llmService.js` (via `vi.mock`)
-  so `getAnnualReport` tests don't hit a real network — `services/llmService.test.ts`
-  covers the actual fetch/fallback/caching logic separately, with `global.fetch` mocked
-  (no live `llm` container needed to run the suite). Use this layer for engine math,
-  decision/legal rules, validation schema logic, and room/phase lifecycle.
+  `formulaEngine.test.ts` is the security-relevant one — parser correctness plus
+  explicit checks that dangerous-looking input (`__proto__`, `constructor`, arbitrary
+  function calls) is rejected as invalid syntax, never silently evaluated. `GameLoop`
+  requires `loadFormulas()` to have been called before any turn resolves (its
+  `formulas` field defaults to an empty `Map`) — `gameLoop.test.ts`'s `beforeEach`
+  calls `gameLoop.loadFormulas(DEFAULT_FORMULA_SEEDS)` right after construction, and
+  `calcEngine.test.ts` builds one shared `DEFAULT_FORMULAS` `FormulaSet` from the same
+  seeds and passes it to every call — both exercise the *real* production formulas,
+  not a stand-in, so a bug in the seeded expressions would show up as real test
+  failures. `socket/gameEngine.test.ts` mocks Prisma + `Server` since that's where the
+  actual DB writes and socket emits happen; it also mocks `services/llmService.js` (via
+  `vi.mock`) so `getAnnualReport` tests don't hit a real network —
+  `services/llmService.test.ts` covers the actual fetch/fallback/caching logic
+  separately, with `global.fetch` mocked (no live `llm` container needed to run the
+  suite). Its `beforeEach` is `async` and calls `await engine.loadGameData()` right
+  after construction (decisions/config/formulas load from the mocked
+  `decision`/`gameConfigRow`/`formula` Prisma models, seeded from the real
+  `game_engine.json`/`game_config.json`/`defaultFormulas.ts` so existing content-
+  dependent assertions — e.g. the `getAnnualReport` "Bot Attack" tests — keep passing
+  unchanged). Use this layer for engine math, decision/legal rules, validation schema
+  logic, and room/phase lifecycle.
 - `client/src/**/*.test.ts` — Vitest, Zustand stores and pure UI utilities.
 - `tests/api/*.test.ts` — Vitest + real Postgres via testcontainers (needs Docker).
   The only layer that actually verifies socket event contracts end-to-end

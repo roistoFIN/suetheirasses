@@ -155,8 +155,12 @@ suetheirasses/
 │   │   │   ├── gameLoop.ts          # Orchestrates one full turn, per-room
 │   │   │   ├── calcEngine.ts        # P&L, balance sheet, market share, risk gauge
 │   │   │   ├── decisionEngine.ts    # Decision deployment, maturity, exclusions
-│   │   │   └── legalEngine.ts       # Deliberate lawsuit filing (see Lawsuits below)
-│   │   ├── data/                    # Runtime copies of the game's source-of-truth data
+│   │   │   ├── legalEngine.ts       # Deliberate lawsuit filing (see Lawsuits below)
+│   │   │   ├── formulaEngine.ts     # Safe expression parser/evaluator for DB-backed
+│   │   │   │                        # formulas (see Formulas below) — no eval/Function/vm
+│   │   │   └── defaultFormulas.ts   # The 23 seed formula expressions — shared by
+│   │   │                            # prisma/seed.ts and the engine test fixtures
+│   │   ├── data/                    # Seed-only now — see Decisions & Game Config below
 │   │   │   ├── game_engine.json     # 45 decisions: impacts, legal risks, exclusions
 │   │   │   └── game_config.json     # Starting values + admin-tunable variables
 │   │   ├── validation/              # Zod schemas
@@ -168,7 +172,12 @@ suetheirasses/
 │   │   └── index.ts                 # Server entry point + REST endpoints (/health, /api/room,
 │   │                                 # /api/admin/*)
 │   ├── prisma/
-│   │   ├── schema.prisma            # Database schema
+│   │   ├── schema.prisma            # Database schema (incl. Decision, GameConfigRow,
+│   │   │                            # Formula — the decision library, game config, and
+│   │   │                            # pure-math formulas, all DB-backed)
+│   │   ├── seed.ts                  # npm run db:seed — seeds Decision/GameConfigRow
+│   │   │                            # from server/src/data/*.json and Formula from
+│   │   │                            # defaultFormulas.ts (idempotent)
 │   │   └── migrations/              # Database migrations
 │   ├── .env.example                 # Environment variables template
 │   ├── .env                         # Environment variables (gitignored)
@@ -184,11 +193,8 @@ suetheirasses/
 │   ├── tsconfig.json
 │   └── package.json
 │
-├── definitionDocumentation/         # Source of truth for game design — never derive
-│   ├── FORMULAS.md                  # every formula + the per-turn calculation order
-│   ├── game_engine.json             # canonical copy of the 45-decision library
-│   ├── game_config.json             # canonical copy of starting/admin values
-│   └── WarRoomDashboard.jsx         # UI prototype (layout/interaction reference only)
+├── definitionDocumentation/         # Source of truth for game math — never derive
+│   └── FORMULAS.md                  # every formula + the per-turn calculation order
 │
 ├── tests/                           # Integration & E2E Tests
 │   ├── api/                         # Vitest interface tests (DB via testcontainers)
@@ -460,6 +466,9 @@ npm install
 cp server/.env.example server/.env
 npm run db:generate
 npm run db:migrate
+npm run db:seed   # required — the server loads the decision library + game config
+                  # from the database at startup, not from JSON directly (see
+                  # "Decisions & Game Config" below); it won't start without this
 
 # 5. Start development servers (client + server with hot reload)
 npm run dev
@@ -478,6 +487,13 @@ cd suetheirasses
 # 2. Build and start all services (PostgreSQL, server, client)
 docker-compose up -d --build
 
+# 3. Apply migrations + seed the decision library/game config against the
+# containerized Postgres — required once (the server container doesn't run
+# migrations/seed automatically on boot): from server/, pointed at the exposed
+# Postgres port, e.g.
+#   DATABASE_URL=postgresql://stita:stita_password@localhost:5432/stita_db \
+#     npx prisma migrate deploy && npm run db:seed
+#
 # The application will be available at:
 # - Frontend: http://localhost:80
 # - Backend API: http://localhost:3001
@@ -543,7 +559,9 @@ npx prisma migrate reset
 # Open Prisma Studio (database GUI)
 npm run db:studio
 
-# Seed the database with test data
+# Seed the decision library + game config from server/src/data/*.json — required
+# after a fresh migrate/reset, since GameEngine now loads both from the database,
+# not from the JSON files directly (see "Decisions & Game Config" below). Idempotent.
 npm run db:seed
 ```
 
@@ -590,8 +608,9 @@ VITE_SERVER_URL=http://localhost:3001
 ## 🎯 Game Mechanics
 
 Full detail lives in `definitionDocumentation/FORMULAS.md` (every formula and the exact
-per-turn calculation order) and `definitionDocumentation/game_engine.json` (the 45
-decisions). This section is a summary of what the server's `engine/` actually does.
+per-turn calculation order) and the `Decision` table's data (seeded from, and originally
+mirrored by, `server/src/data/game_engine.json` — see *Decisions & Game Config* below).
+This section is a summary of what the server's `engine/` actually does.
 
 ### Business Decisions (Game Loop)
 
@@ -752,11 +771,31 @@ for the architectural rationale.
 
 `/admin` is a real, independent URL — the only one in this app that isn't rendered off
 `currentPhase` state (see CLAUDE.md's *"Client: no path-based routing for game phases"*).
-It's a read-only monitoring dashboard: every in-memory room in every phase (not just
-WAITING/joinable ones, unlike Quick Play's `room:list`), each with its players' host/
-bankrupt/connected status, plus the `GameConfig` the server loaded at startup
-(`gameSettings`/`playerStartingValues`/`adminVariables`). Polls both every 5 seconds
-while open.
+It has two parts:
+
+- **Room monitoring** — every in-memory room in every phase (not just WAITING/joinable
+  ones, unlike Quick Play's `room:list`), each with its players' host/bankrupt/connected
+  status. Polled every 5 seconds while open.
+- **Decision library + game config editing** — the full 45-decision list and the
+  `GameConfig` (`gameSettings`/`playerStartingValues`/`adminVariables`) are edited as raw
+  JSON in a textarea (client-validated for parseable JSON, then server-validated against
+  a Zod schema before being written) rather than a structured form per field — the
+  decision library's `impacts` shape is an open-ended nested record, so a bespoke form
+  builder isn't worth it over textarea + real validation. Unlike the rooms table, these
+  are fetched once on login (and again right after a successful save), not polled — so
+  an in-progress edit can never be silently overwritten by a background refresh.
+- **Formulas editing** — the 23 pure-math formulas from FORMULAS.md §2-§7 (see
+  *Formulas* below), each shown as its description plus a single-line text input for
+  the expression (not a JSON textarea — these are one-line math expressions, not nested
+  objects). A parse or unknown-variable error from the server is surfaced inline on the
+  row that failed. Same fetch-once-on-auth-plus-after-save pattern as the other two tabs.
+
+The decision library, game config, and formulas are all **stored in Postgres, not static
+JSON** (see *Decisions & Game Config* and *Formulas* below) — every save here takes
+effect on the very next turn resolved anywhere in the game, no restart required. Deleting
+a decision that's currently deployed in a live game is rejected (409) rather than allowed
+to crash the next turn resolution for whoever has it active; formulas can't be deleted at
+all (see below), only retuned.
 
 Access is gated by a single shared-secret token — set `ADMIN_TOKEN` in `server/.env` (no
 default; unset disables the admin API entirely, returning 503 rather than accepting any
@@ -765,8 +804,62 @@ request). `AdminPortal.tsx` prompts for the token at runtime and keeps it in
 **never** embedded in the client bundle as a `VITE_*` env var, since those are public in
 the built JS. There's no broader auth system in this app (see *Reconnection & Session
 Resume* above for the same unauthenticated-id-pair trust model elsewhere), so this is
-deliberately the simplest thing that works: one token, no users, no expiry, no
-config-editing or room-management actions yet.
+deliberately the simplest thing that works: one token, no users, no expiry.
+
+### Decisions & Game Config (database-backed)
+
+The 45-decision library and `GameConfig` used to be static JSON files
+(`server/src/data/game_engine.json`/`game_config.json`) loaded once at server startup.
+They're now rows in Postgres (`Decision`, `GameConfigRow`) — authoritative at runtime,
+editable live from `/admin` above, with changes taking effect on the next turn resolved
+(no restart). The JSON files still exist on disk, repurposed as the **versioned seed
+source** for `npm run db:seed` (see `prisma/seed.ts`) — useful for `git diff`-able review
+of balance changes and as the disaster-recovery reset path
+(`npx prisma migrate reset && npm run db:seed` restores the default library exactly), but
+editing them directly has no effect on a running server.
+
+`GameEngine.loadGameData()` reads both tables once at startup (awaited before the server
+starts accepting connections); every admin write calls the same
+`GameLoop.loadDecisions()`/`updateConfig()` used there to live-reload the in-memory copy
+`GameLoop` actually resolves turns against. Deleting a decision is blocked while it's
+currently deployed by any non-bankrupt player, anywhere — several places in
+`GameLoop.resolveTurn` assume an active decision's definition always exists, so removing
+one still in use would otherwise crash the next turn resolution for whoever has it
+deployed.
+
+### Formulas (database-backed)
+
+`FORMULAS.md` §2-§7 — the 23 pure, scalar, named-input formulas that drive competitiveness
+and market share, volume, P&L, balance sheet, legal-risk probability, and the risk gauge
+(`competitiveness`, `revenue`, `netProfit`, `riskGauge`, etc.) — are rows in Postgres
+(`Formula`: `key`/`expression`/`description`), editable live from `/admin`'s Formulas tab,
+the same live-reload-no-restart story as decisions/config above. Everything else in
+FORMULAS.md — the per-turn execution order, the depreciation ledger, decision
+maturity/exclusion locking, the bankruptcy waterfall, simultaneous-purchase FIFO
+tie-breaking — is control flow and multi-player ordering, not tunable math, and stays as
+TypeScript permanently; it was never a candidate for this.
+
+Expressions are parsed and evaluated by `formulaEngine.ts`, a small hand-rolled
+recursive-descent parser/evaluator — **deliberately not `eval`/`new Function`/`vm`**,
+since an admin-editable string reaching any of those would be arbitrary code execution
+behind a single shared token, a categorically worse risk than a math typo. The grammar is
+fixed and tiny: number literals, identifiers, `+ - * /`, unary `-`, parentheses, and
+exactly two whitelisted calls, `MIN`/`MAX` — no member access, no assignment, no string
+literals, no arbitrary function calls, so there's no path from a formula string to
+anything beyond that AST. `calcEngine.ts`'s 7 exported functions each take a `FormulaSet`
+(`Map<string, CompiledFormula>`) and call `evalNamed(formulas, 'key', context)` instead of
+inline arithmetic — a mechanical refactor, not a rebalancing; the seeded expressions
+(`defaultFormulas.ts`, shared by `prisma/seed.ts` and the engine test fixtures) match the
+old hardcoded behavior exactly.
+
+**The formula key set is fixed — no create/delete via `/admin`, only `PUT`.** Each of the
+23 keys is referenced by name at a specific `calcEngine.ts` call site `GameLoop`
+hard-depends on; unlike decision deletion, there's no way to make removing one safe, so
+the option doesn't exist. Every write is validated twice before it reaches `GameLoop`: a
+real syntax parse (`parseFormula`) and a fixed per-key variable whitelist
+(`FORMULA_VARIABLES` in `validation/schemas.ts`) — an expression that parses fine but
+references a variable the call site never supplies would otherwise throw mid-turn, for
+every active game, the next time it's evaluated.
 
 ### Bankruptcy & Game Over (Aftermath)
 
@@ -796,6 +889,10 @@ All client inputs are validated server-side using Zod schemas before processing:
 | `digDeeperSchema` | `attackId` | Required, 1-100 characters |
 | `roomRejoinSchema` | `roomId`, `playerId` | Both required, 1-50 characters — no separate auth token; the id pair itself is the bearer credential, same trust model as every other player id already used throughout the app (no passwords anywhere) |
 | `annualReportRequestSchema` | `rivalPlayerId` | Required, 1-100 characters |
+| `decisionDefinitionSchema` | `decision`, `level`, `description`, `nature`, `offensiveAction`, `excludes`, `impacts` | Structural — mirrors `DecisionDefinition`; doesn't re-verify formula semantics, same philosophy as `submitDecisionsSchema` |
+| | `legalRisks`, `competitorsView`, `variableAmount`, `requiresTarget`, `legalRiskConditions`, `cashFlowCategory` | All optional |
+| `gameConfigSchema` | `gameSettings`, `playerStartingValues`, `adminVariables` | Strict, field-by-field (not a loose record) — every field is a fixed, known number/boolean driving a real formula, so a typo'd key is rejected, not silently ignored |
+| `formulaUpdateSchema` | `expression`, `description` | `expression` is further checked by `parseFormula` (real syntax, not a regex) and against `FORMULA_VARIABLES`'s per-key whitelist — an expression that parses fine but references a variable the target `calcEngine.ts` call site never supplies is rejected here, not at evaluation time mid-turn |
 
 ### Game Engine Architecture
 
@@ -820,18 +917,28 @@ only place that touches Prisma or Socket.IO for turn resolution:
 | `broadcastInitialSnapshot(roomId, round)` | Called once, right when `room:startGame` fires — loads active players, calls `GameLoop.getInitialSnapshot` (pure), and broadcasts the result immediately so the game room renders without delay. Also caches it for `rejoinRoom`. |
 | `broadcastRoomState(roomId, event, data)` | Broadcasts state to all players in a room |
 | `getAdminRoomsSnapshot()` | Synchronous, in-memory-only monitoring snapshot of every room in every phase (unlike `room:list`'s WAITING-only, non-full-only Quick Play view), with every player's host/bankrupt/connected status. Backs `GET /api/admin/rooms`. |
+| `loadGameData()` | Reads the `Decision`/`GameConfigRow` tables, constructs `GameLoop`, and loads the decision library — called once at startup (awaited before the server accepts connections) and never again; every later change goes through `upsertDecision`/`deleteDecision`/`updateGameConfigData` below instead |
+| `getDecisionsSnapshot()` / `getGameConfigSnapshot()` | In-memory reads backing `GET /api/admin/decisions` / `GET /api/admin/config` |
+| `upsertDecision(def, isNew)` | Create or update one decision — writes the DB row, then calls `GameLoop.loadDecisions()` again so the change is live for the next turn resolved anywhere. `isNew` picks create-must-not-exist vs. update-must-exist. |
+| `deleteDecision(name)` | Deletes a decision — but only after `isDecisionInUse` confirms no non-bankrupt player anywhere currently has it deployed (`{ reason: 'in_use' }` otherwise); `GameLoop.resolveTurn` assumes an active decision's definition always exists, so this guard is load-bearing, not a nicety |
+| `updateGameConfigData(config)` | Writes the new `GameConfig` to the DB, then calls `GameLoop.updateConfig()` to live-reload it |
+| `getFormulasSnapshot()` | In-memory read backing `GET /api/admin/formulas` |
+| `updateFormula(key, expression, description)` | Writes one formula row (404 if the key is unknown — no create), then calls `GameLoop.loadFormulas()` again so the change is live for the next turn resolved anywhere. Validation (syntax + variable whitelist) happens in `validateFormulaUpdate` before this is ever called. |
 | `loadActiveCompanyPlayers(roomId)` *(private)* | Shared DB fetch (`player.findMany` with `company` included, `bankrupt: false`) feeding `resolveGameTurn`, `broadcastInitialSnapshot`, and `digDeeper` |
 | `startHeartbeatCleanup()` *(private)* | One 10s `setInterval` sweeping two things: rooms empty for over `STALE_ROOM_THRESHOLD` (60s), and disconnected players past `RECONNECT_GRACE_PERIOD_MS` (60s) → `finalizePlayerRemoval`. Extend this interval for new periodic sweeps rather than adding a second one. |
 
 **`GameLoop`** (`server/src/engine/gameLoop.ts`) — the authoritative turn-resolution
-engine, loaded with `game_engine.json`/`game_config.json` at startup. It is a **pure
-computation engine**: no Prisma, no Socket.IO, no I/O of any kind — it takes plain player
-data in and returns plain result data out, so it can be unit-tested and reasoned about
-without mocking a database or a socket server:
+engine, loaded via `GameEngine.loadGameData()` (decisions/config now come from the
+database, not JSON — see *Decisions & Game Config* above) and live-reloaded on every
+admin edit. It is a **pure computation engine**: no Prisma, no Socket.IO, no I/O of any
+kind — it takes plain player data in and returns plain result data out, so it can be
+unit-tested and reasoned about without mocking a database or a socket server:
 
 | Method | Description |
 |--------|-------------|
-| `loadDecisions(definitions)` | Loads the 45-decision library into `DecisionEngine`/`LegalEngine` |
+| `loadDecisions(definitions)` | Loads the decision library into `DecisionEngine`/`LegalEngine` — safe to call again any time, replacing the in-memory maps outright, which is how admin decision edits take effect on the next turn with no restart |
+| `updateConfig(config)` | Replaces `gameSettings`/`playerStartingValues`/`adminVariables` in place — same mechanism as `loadDecisions`, used both for the initial DB load and every later admin config edit |
+| `loadFormulas(rows)` | Compiles each row's expression into a `FormulaSet` and replaces the in-memory set outright — same live-reload mechanism as `loadDecisions`/`updateConfig`, used for the initial DB load and every later admin formula edit. Every calc-engine call in `resolveTurn`/`getInitialSnapshot` reads from this set; it defaults to an empty `Map`, so this must be called before any turn resolves. |
 | `submitDecisions(roomId, playerId, decisions)` | Buffers one player's choices for the in-flight turn |
 | `resolveTurn(roomId, round, players: EngineDataInput[])` | Runs the full per-turn calculation (see *Business Decisions* above) and returns a `TurnResolutionOutcome`: the `turn:resolved` broadcast payload (`result`), the `Company` rows still-active players need persisted (`companyUpdates`), and the players eliminated this turn (`bankruptedPlayers`) — it does not write to the DB or emit anything itself |
 | `getInitialSnapshot(roomId, round, players: EngineDataInput[])` | Same formula pipeline as `resolveTurn`, but with zero decisions and nothing persisted — returns the `TurnResolutionResult` preview directly; the caller broadcasts it |
@@ -876,8 +983,10 @@ npm run type-check
 npm run lint
 
 # Run backend unit tests (Vitest) — engine, calcEngine, decisionEngine, legalEngine,
-# gameLoop, gameEngine, validation schemas, llmService, adminAuth middleware. No DB
-# or live LLM required (mocked Prisma; llmService's own network calls are mocked
+# formulaEngine (parser/evaluator correctness + rejection of dangerous-looking input
+# like __proto__/constructor/arbitrary calls), gameLoop, gameEngine, validation
+# schemas, llmService, adminAuth middleware. No DB or live LLM required (mocked
+# Prisma, incl. a mocked `formula` model; llmService's own network calls are mocked
 # via global.fetch).
 npm test --workspace=server
 
@@ -969,7 +1078,14 @@ docker-compose up -d --build
 | GET | `/health` | Health check |
 | GET | `/api/room/:roomId` | Get room details |
 | GET | `/api/admin/rooms` | Every in-memory room (any phase), with per-player status. Requires `x-admin-token`. See *Admin Portal* below. |
-| GET | `/api/admin/config` | The `GameConfig` (`gameSettings`/`playerStartingValues`/`adminVariables`) loaded at startup, read-only. Requires `x-admin-token`. |
+| GET | `/api/admin/decisions` | The full decision library, from the DB. Requires `x-admin-token`. |
+| POST | `/api/admin/decisions` | Create a new decision. Body validated by `decisionDefinitionSchema`; 409 if the name already exists. Requires `x-admin-token`. |
+| PUT | `/api/admin/decisions/:name` | Update an existing decision's fields (not a rename — `body.decision` must equal `:name`); 404 if unknown. Requires `x-admin-token`. |
+| DELETE | `/api/admin/decisions/:name` | Delete a decision; 409 (`reason: 'in_use'`) if it's currently deployed by an active player anywhere, 404 if unknown. Requires `x-admin-token`. |
+| GET | `/api/admin/config` | The `GameConfig` (`gameSettings`/`playerStartingValues`/`adminVariables`), from the DB. Requires `x-admin-token`. |
+| PUT | `/api/admin/config` | Replace the game config. Body validated by `gameConfigSchema`. Requires `x-admin-token`. |
+| GET | `/api/admin/formulas` | All 23 pure-math formulas (FORMULAS.md §2-§7), from the DB. Requires `x-admin-token`. See *Formulas* above. |
+| PUT | `/api/admin/formulas/:key` | Update one formula's expression/description. Body validated by `formulaUpdateSchema` — real syntax parse plus a per-key variable whitelist; 400 on either failure, 404 if the key is unknown. No create/delete — the key set is fixed. Requires `x-admin-token`. |
 
 ### WebSocket API
 

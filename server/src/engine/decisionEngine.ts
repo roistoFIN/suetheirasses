@@ -11,6 +11,7 @@ import {
   getScheduleValue,
   calculateAdjustedProbability,
 } from './calcEngine.js';
+import type { FormulaSet } from './formulaEngine.js';
 
 export interface DeployedDecision {
   id: string;
@@ -82,6 +83,7 @@ export function pickBestGround(
   elapsedYears: number,
   attackerVars: Pick<PlayerVariables, 'scrutiny' | 'legalExposureRatio'>,
   admin: AdminVariables,
+  formulas: FormulaSet,
 ): SuggestedGround | null {
   if (!def.legalRisks || def.legalRisks.length === 0) return null;
   let best: SuggestedGround | null = null;
@@ -90,7 +92,7 @@ export function pickBestGround(
     // Same formula as real trial resolution (calcEngine's calculateAdjustedProbability
     // can exceed 1 for high scrutiny/exposure defendants, which trial resolution treats
     // as a guaranteed win — clamp to [0,1] here purely for a sane percentage display.
-    const adjusted = Math.min(1, Math.max(0, calculateAdjustedProbability(base, attackerVars.scrutiny, attackerVars.legalExposureRatio ?? 0, admin)));
+    const adjusted = Math.min(1, Math.max(0, calculateAdjustedProbability(base, attackerVars.scrutiny, attackerVars.legalExposureRatio ?? 0, admin, formulas)));
     if (!best || adjusted > best.probability) {
       best = { name: risk.name, description: risk.description, probability: adjusted };
     }
