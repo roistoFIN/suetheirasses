@@ -29,12 +29,9 @@ function semaphoreLevel(p: number): 'green' | 'yellow' | 'red' {
   return 'red';
 }
 
-// ── Lawsuit grounds derivation (SueModal) — there is no fixed grounds catalog; every
-// decision's legalRisks is a potential ground the moment a target actually deploys it ──
-
-interface MinimalActiveDecisionForGrounds {
-  decisionName: string;
-}
+// ── Lawsuit grounds derivation (SueModal) — the whole decision library's legal-risk
+// catalog, not scoped to what a specific target has actually deployed, so a player can
+// knowingly guess a ground the target may or may not have actually pursued ──
 
 interface MinimalLegalRisk {
   name: string;
@@ -46,23 +43,18 @@ interface MinimalDecisionDefForGrounds {
   legalRisks?: MinimalLegalRisk[];
 }
 
-interface MinimalTarget {
-  activeDecisions: MinimalActiveDecisionForGrounds[];
-}
-
 interface DerivedGround {
   decisionName: string;
   groundName: string;
   description: string;
 }
 
-function getGroundsAgainst(target: MinimalTarget, decisions: MinimalDecisionDefForGrounds[]): DerivedGround[] {
+function getGroundsAgainst(decisions: MinimalDecisionDefForGrounds[]): DerivedGround[] {
   const grounds: DerivedGround[] = [];
-  for (const active of target.activeDecisions) {
-    const def = decisions.find((d) => d.decision === active.decisionName);
-    if (!def?.legalRisks) continue;
+  for (const def of decisions) {
+    if (!def.legalRisks) continue;
     for (const risk of def.legalRisks) {
-      grounds.push({ decisionName: active.decisionName, groundName: risk.name, description: risk.description });
+      grounds.push({ decisionName: def.decision, groundName: risk.name, description: risk.description });
     }
   }
   return grounds;
@@ -233,6 +225,69 @@ function detectNewlyResolvedCases<T extends MinimalLegalCaseForVerdict>(
     results.push({ case: c, outcome });
   }
   return results;
+}
+
+// ── "Case settled" News item trigger — my own cases resolved by negotiation, not a trial ──
+
+interface SettledCaseForMe<T> {
+  case: T;
+  role: 'plaintiff' | 'defendant';
+}
+
+function detectNewlySettledCases<T extends MinimalLegalCaseForVerdict>(
+  previousCases: T[],
+  currentCases: T[],
+  myPlayerId: string,
+): SettledCaseForMe<T>[] {
+  const previouslyResolvedIds = new Set(
+    previousCases.filter((c) => c.status === 'resolved').map((c) => c.id),
+  );
+  const results: SettledCaseForMe<T>[] = [];
+  for (const c of currentCases) {
+    if (c.status !== 'resolved' || previouslyResolvedIds.has(c.id)) continue;
+    if (c.verdict !== 'settled') continue;
+    const amPlaintiff = c.plaintiffId === myPlayerId;
+    const amDefendant = c.defendantId === myPlayerId;
+    if (!amPlaintiff && !amDefendant) continue;
+    results.push({ case: c, role: amPlaintiff ? 'plaintiff' : 'defendant' });
+  }
+  return results;
+}
+
+// ── Incoming attack hint disappears once sued over with a non-zero-probability ground ──
+
+interface MinimalIncomingAttack {
+  attackerId?: string;
+  decisionName?: string;
+  suggestedGroundName?: string;
+  successProbability?: number;
+}
+
+interface MinimalPendingLawsuit {
+  targetId: string;
+  decisionName: string;
+  groundName: string;
+}
+
+interface MinimalLegalCaseForAttack {
+  defendantId: string;
+  decisionName: string;
+  groundName: string;
+}
+
+function isAttackAlreadySuedOver(
+  attack: MinimalIncomingAttack,
+  pendingLawsuits: MinimalPendingLawsuit[],
+  myLegalCases: MinimalLegalCaseForAttack[],
+): boolean {
+  if (!attack.attackerId || !attack.decisionName || !attack.suggestedGroundName) return false;
+  if (!((attack.successProbability ?? 0) > 0)) return false;
+  const matches = (targetId: string, decisionName: string, groundName: string) =>
+    targetId === attack.attackerId && decisionName === attack.decisionName && groundName === attack.suggestedGroundName;
+  return (
+    pendingLawsuits.some((l) => matches(l.targetId, l.decisionName, l.groundName)) ||
+    myLegalCases.some((c) => matches(c.defendantId, c.decisionName, c.groundName))
+  );
 }
 
 describe('GamePhase utilities', () => {
@@ -577,41 +632,33 @@ describe('GamePhase utilities', () => {
       { decision: 'Safe Decision' }, // no legalRisks at all
     ];
 
-    it('should return no grounds for a target with no active decisions', () => {
-      const grounds = getGroundsAgainst({ activeDecisions: [] }, decisions);
+    it('should return no grounds when nothing in the library has legalRisks', () => {
+      const grounds = getGroundsAgainst([{ decision: 'Safe Decision' }]);
       expect(grounds).toEqual([]);
     });
 
-    it('should derive grounds only from decisions the target actually deployed', () => {
-      const target: MinimalTarget = { activeDecisions: [{ decisionName: 'Water Pumping' }] };
-      const grounds = getGroundsAgainst(target, decisions);
+    it('should include a ground even if no player has ever deployed the decision it comes from — guessing is allowed', () => {
+      const grounds = getGroundsAgainst(decisions);
 
-      expect(grounds).toHaveLength(1);
-      expect(grounds[0]).toEqual({
+      expect(grounds).toContainEqual({
         decisionName: 'Water Pumping',
         groundName: 'Environmental Violation',
         description: 'Sue for environmental damage',
       });
+      expect(grounds).toContainEqual({
+        decisionName: 'Buy Shares',
+        groundName: 'Securities Violation',
+        description: 'Sue for failing to disclose ownership',
+      });
     });
 
-    it('should not offer a ground for a decision the target never deployed', () => {
-      const target: MinimalTarget = { activeDecisions: [{ decisionName: 'Water Pumping' }] };
-      const grounds = getGroundsAgainst(target, decisions);
-
-      expect(grounds.some((g) => g.decisionName === 'Buy Shares')).toBe(false);
+    it('should skip a decision with no legalRisks at all', () => {
+      const grounds = getGroundsAgainst(decisions);
+      expect(grounds.some((g) => g.decisionName === 'Safe Decision')).toBe(false);
     });
 
-    it('should return no grounds for a decision with no legalRisks', () => {
-      const target: MinimalTarget = { activeDecisions: [{ decisionName: 'Safe Decision' }] };
-      const grounds = getGroundsAgainst(target, decisions);
-      expect(grounds).toEqual([]);
-    });
-
-    it('should aggregate grounds across all of the target\'s active decisions', () => {
-      const target: MinimalTarget = {
-        activeDecisions: [{ decisionName: 'Water Pumping' }, { decisionName: 'Buy Shares' }],
-      };
-      const grounds = getGroundsAgainst(target, decisions);
+    it('should aggregate grounds across the entire decision library, not just one decision', () => {
+      const grounds = getGroundsAgainst(decisions);
 
       expect(grounds).toHaveLength(2);
       expect(grounds.map((g) => g.groundName)).toEqual(
@@ -740,6 +787,112 @@ describe('GamePhase utilities', () => {
         { case: lostCurrent, outcome: 'lost' },
       ]));
       expect(result).toHaveLength(2);
+    });
+  });
+
+  describe('detectNewlySettledCases', () => {
+    const me = 'player-1';
+    const rival = 'player-2';
+
+    const negotiating = (overrides: Partial<MinimalLegalCaseForVerdict> = {}): MinimalLegalCaseForVerdict => ({
+      id: 'case-1',
+      status: 'negotiating',
+      plaintiffId: me,
+      defendantId: rival,
+      ...overrides,
+    });
+
+    it('should return nothing when there are no cases at all', () => {
+      expect(detectNewlySettledCases([], [], me)).toEqual([]);
+    });
+
+    it('should not report a case that is still negotiating', () => {
+      const stillOpen = negotiating();
+      expect(detectNewlySettledCases([stillOpen], [stillOpen], me)).toEqual([]);
+    });
+
+    it('should detect a settlement as plaintiff', () => {
+      const previous = negotiating();
+      const current = { ...previous, status: 'resolved' as const, verdict: 'settled' as const };
+      expect(detectNewlySettledCases([previous], [current], me)).toEqual([{ case: current, role: 'plaintiff' }]);
+    });
+
+    it('should detect a settlement as defendant', () => {
+      const previous = negotiating({ plaintiffId: rival, defendantId: me });
+      const current = { ...previous, status: 'resolved' as const, verdict: 'settled' as const };
+      expect(detectNewlySettledCases([previous], [current], me)).toEqual([{ case: current, role: 'defendant' }]);
+    });
+
+    it('should ignore won/lost/cancelled verdicts — not a negotiated settlement', () => {
+      const previous = negotiating({ status: 'awaiting_trial' });
+      const won = { ...previous, status: 'resolved' as const, verdict: 'won' as const };
+      const lost = { ...previous, status: 'resolved' as const, verdict: 'lost' as const };
+      const cancelled = { ...previous, status: 'resolved' as const, verdict: 'cancelled' as const };
+      expect(detectNewlySettledCases([previous], [won], me)).toEqual([]);
+      expect(detectNewlySettledCases([previous], [lost], me)).toEqual([]);
+      expect(detectNewlySettledCases([previous], [cancelled], me)).toEqual([]);
+    });
+
+    it('should ignore a case I have nothing to do with', () => {
+      const previous = negotiating({ plaintiffId: 'player-3', defendantId: 'player-4' });
+      const current = { ...previous, status: 'resolved' as const, verdict: 'settled' as const };
+      expect(detectNewlySettledCases([previous], [current], me)).toEqual([]);
+    });
+
+    it('should not re-report a case that was already resolved last turn', () => {
+      const alreadyResolved = negotiating({ status: 'resolved', verdict: 'settled' });
+      expect(detectNewlySettledCases([alreadyResolved], [alreadyResolved], me)).toEqual([]);
+    });
+  });
+
+  describe('isAttackAlreadySuedOver', () => {
+    const attacker = 'player-2';
+    const baseAttack = (overrides: Partial<MinimalIncomingAttack> = {}): MinimalIncomingAttack => ({
+      attackerId: attacker,
+      decisionName: 'Bot Attack',
+      suggestedGroundName: 'CFAA Digital Sabotage Lawsuit',
+      successProbability: 0.4,
+      ...overrides,
+    });
+
+    it('is false with no pending lawsuits and no real cases', () => {
+      expect(isAttackAlreadySuedOver(baseAttack(), [], [])).toBe(false);
+    });
+
+    it('is true once a matching lawsuit is queued (pending, not yet resolved)', () => {
+      const pending = [{ targetId: attacker, decisionName: 'Bot Attack', groundName: 'CFAA Digital Sabotage Lawsuit' }];
+      expect(isAttackAlreadySuedOver(baseAttack(), pending, [])).toBe(true);
+    });
+
+    it('is true once a matching real case already exists, regardless of its status', () => {
+      const cases = [{ defendantId: attacker, decisionName: 'Bot Attack', groundName: 'CFAA Digital Sabotage Lawsuit' }];
+      expect(isAttackAlreadySuedOver(baseAttack(), [], cases)).toBe(true);
+    });
+
+    it('is false when the queued lawsuit is against a different attacker', () => {
+      const pending = [{ targetId: 'player-3', decisionName: 'Bot Attack', groundName: 'CFAA Digital Sabotage Lawsuit' }];
+      expect(isAttackAlreadySuedOver(baseAttack(), pending, [])).toBe(false);
+    });
+
+    it('is false when the queued lawsuit is over a different decision', () => {
+      const pending = [{ targetId: attacker, decisionName: 'Some Other Decision', groundName: 'CFAA Digital Sabotage Lawsuit' }];
+      expect(isAttackAlreadySuedOver(baseAttack(), pending, [])).toBe(false);
+    });
+
+    it('is false when the queued lawsuit uses a different ground than the one suggested — a manually-picked ground doesn\'t count', () => {
+      const pending = [{ targetId: attacker, decisionName: 'Bot Attack', groundName: 'Some Other Ground' }];
+      expect(isAttackAlreadySuedOver(baseAttack(), pending, [])).toBe(false);
+    });
+
+    it('is false when the suggested ground\'s win probability is exactly 0% — not a "correct" lawsuit', () => {
+      const pending = [{ targetId: attacker, decisionName: 'Bot Attack', groundName: 'CFAA Digital Sabotage Lawsuit' }];
+      expect(isAttackAlreadySuedOver(baseAttack({ successProbability: 0 }), pending, [])).toBe(false);
+    });
+
+    it('is false before investigation level 3 — no suggested ground/probability to check yet', () => {
+      const notFullyInvestigated = baseAttack({ suggestedGroundName: undefined, successProbability: undefined });
+      const pending = [{ targetId: attacker, decisionName: 'Bot Attack', groundName: 'CFAA Digital Sabotage Lawsuit' }];
+      expect(isAttackAlreadySuedOver(notFullyInvestigated, pending, [])).toBe(false);
     });
   });
 });

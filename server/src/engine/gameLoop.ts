@@ -513,6 +513,23 @@ export class GameLoop {
           decisionName: d.definition.decision,
           elapsedYears: d.elapsedYears,
         }));
+
+        // Does the plaintiff already know these odds from fully "Dig Deeper"-investigating
+        // the underlying attack, and are they suing over its exact suggested ground? Mirrors
+        // revealAttack's own level-3 computation exactly (same instance, same attacker vars),
+        // since that's the live hint the plaintiff would have seen just before filing.
+        let plaintiffFullyInvestigated = false;
+        const attackInstance = targetCtx.engineState.activeDecisions.find(
+          d => d.definition.decision === filing.decisionName && d.targetId === ctx.playerId,
+        );
+        if (attackInstance) {
+          const level = ctx.engineState.investigations[attackInstance.id] ?? 0;
+          if (level >= MAX_INVESTIGATION_LEVEL) {
+            const best = pickBestGround(attackInstance.definition, attackInstance.elapsedYears, targetCtx.vars, this.adminVars, this.formulas);
+            plaintiffFullyInvestigated = best?.name === filing.groundName;
+          }
+        }
+
         const newCase = this.legalEngine.fileLawsuit(
           ctx.playerId,
           filing.targetId,
@@ -520,6 +537,7 @@ export class GameLoop {
           filing.groundName,
           targetActiveDecisions,
           roomId,
+          plaintiffFullyInvestigated,
         );
         if (newCase) allCases.push(newCase);
       }
@@ -892,9 +910,14 @@ export class GameLoop {
     const byId = new Map<string, { name: string; vars: PlayerVariables; engineState: CompanyEngineState }>();
     for (const p of players) {
       if (!p.company) continue;
+      let vars = this.readVariables(p.company.variables as any);
+      // Same "first turn hasn't resolved yet, Company.variables is still {}" fallback
+      // resolveTurn/getInitialSnapshot already apply — this is an instant, out-of-band
+      // action that can in principle be triggered before any turn has ever resolved.
+      if (!vars.cash && !vars.assets) vars = this.startingVars();
       byId.set(p.id, {
         name: p.name,
-        vars: this.readVariables(p.company.variables as any),
+        vars,
         engineState: this.readEngineState(p.company),
       });
     }
@@ -979,7 +1002,14 @@ export class GameLoop {
       return { success: false, reason: 'limit_reached' };
     }
 
-    const vars = this.readVariables(me.company.variables as any);
+    let vars = this.readVariables(me.company.variables as any);
+    // Same "first turn hasn't resolved yet, Company.variables is still {}" fallback
+    // resolveTurn/getInitialSnapshot already apply — filing (and guessing) a lawsuit is
+    // now a realistic round-1 action (see getGroundsAgainst's whole-library ground
+    // catalog), not just something that happens after a turn has populated real values.
+    // Without this, vars.cash is undefined here, `undefined - cost` is NaN, and the
+    // resulting Prisma company.update crashes with an invalid-argument error.
+    if (!vars.cash && !vars.assets) vars = this.startingVars();
     const cost = this.config.gameSettings.lawsuitFilingCost;
     if (vars.cash < cost) return { success: false, reason: 'insufficient_funds' };
 
@@ -1001,8 +1031,10 @@ export class GameLoop {
    * (`GameEngine.makeOffer`) must persist both `plaintiff` and `defendant` updates.
    *
    * The defendant always moves first (`offers.length === 0`); after that, only the
-   * role that did *not* make the most recent offer may respond. `amount` is bounded to
-   * `(0, stakes]` — there's no reason to offer more than what's actually at stake.
+   * role that did *not* make the most recent offer may respond. `amount` must fall
+   * within `computeOfferBracket(case_)` — the bracket that's narrowed inward by every
+   * offer so far, converging the two sides toward each other rather than letting either
+   * one drift away from what's already been offered/asked.
    */
   makeOffer(playerId: string, caseId: string, amount: number, players: EngineDataInput[]): LegalCaseActionOutcome {
     const found = this.findCaseAndParties(caseId, players);
@@ -1013,7 +1045,8 @@ export class GameLoop {
     const role = this.roleInCase(playerId, case_);
     if (!role) return { success: false, reason: 'not_a_party' };
     if (role !== this.roleOnMove(case_)) return { success: false, reason: 'not_your_turn' };
-    if (!Number.isFinite(amount) || amount <= 0 || amount > case_.stakes) {
+    const { min, max } = this.computeOfferBracket(case_);
+    if (!Number.isFinite(amount) || amount < min || amount > max) {
       return { success: false, reason: 'invalid_amount' };
     }
 
@@ -1279,6 +1312,31 @@ export class GameLoop {
     if (case_.offers.length === 0) return 'defendant';
     const lastOffer = case_.offers[case_.offers.length - 1];
     return lastOffer.by === 'plaintiff' ? 'defendant' : 'plaintiff';
+  }
+
+  /**
+   * The valid `[min, max]` range for the *next* offer on this case, regardless of which
+   * role is about to make it — negotiation only ever moves inward from the two starting
+   * anchors (0, the full stakes) toward wherever the two sides' most recent offers
+   * currently sit:
+   * - `min` is the defendant's own most recent offer (what they've committed to paying
+   *   so far) — 0 if they haven't offered yet.
+   * - `max` is the plaintiff's own most recent offer (what they've committed to
+   *   accepting so far) — the full `stakes` if they haven't offered yet.
+   *
+   * Each side's new offer can only ever tighten its own end of the bracket (a defendant
+   * offer raises `min`, a plaintiff offer lowers `max`), so the range never widens and
+   * `min <= max` always holds as long as every accepted offer was itself validated
+   * against this same bracket — see the callers below.
+   */
+  private computeOfferBracket(case_: LegalCaseData): { min: number; max: number } {
+    let min = 0;
+    let max = case_.stakes;
+    for (const offer of case_.offers) {
+      if (offer.by === 'defendant') min = offer.amount;
+      else max = offer.amount;
+    }
+    return { min, max };
   }
 
   /** Rebuilds one party's full persistable `engineState` (same serialized shape

@@ -25,12 +25,32 @@ export class LegalEngine {
 
   /**
    * File a lawsuit: plaintiff sues target over `groundName`, a legal risk attached to
-   * one of the target's actually-deployed decisions (`decisionName`). Returns null if
-   * the ground doesn't exist, or the target never deployed the cited decision — a
-   * player can only sue over something the target actually did.
+   * decision `decisionName`. Returns null only if the decision or ground name doesn't
+   * exist in the decision library at all (a malformed/tampered request — the real client
+   * only ever offers real decision+ground pairs, see GamePhase.tsx's `getGroundsAgainst`).
    *
-   * Probability scales with how long the risky decision has been active, using the
-   * same year-keyed schedule convention as decision impacts (FORMULAS §6, §9).
+   * Unlike that hard validation, whether the target *actually deployed* the cited
+   * decision does **not** gate case creation — a player can knowingly gamble on a ground
+   * the target may or may not have actually pursued (the whole-library ground catalog
+   * deliberately includes every decision in the game, not just ones a specific target has
+   * done). A guess that turns out wrong still creates a real case, just a hopeless one:
+   * `baseProbability` is forced to 0 rather than priced off a real schedule, since there's
+   * no genuine ground to argue — `resolveProbability`'s multiplication means
+   * `adjustedProbability` stays 0 at trial too, regardless of the defendant's own scrutiny/
+   * legal exposure. The plaintiff doesn't know this in advance (their side only sees the
+   * real number if `plaintiffFullyInvestigated`, which a decision the target never
+   * deployed can never satisfy — see CLAUDE.md); the defendant, who always sees the real
+   * probability, does.
+   *
+   * When the target genuinely did deploy the cited decision, probability scales with how
+   * long it's been active, using the same year-keyed schedule convention as decision
+   * impacts (FORMULAS §6, §9).
+   *
+   * `plaintiffFullyInvestigated` is computed by the caller (`GameLoop.resolveTurn`'s
+   * Step 8, which has access to both the filing player's own investigation state and
+   * the target's active decisions) and just stamped onto the resulting case here — see
+   * CLAUDE.md's case-probability-chip section for why this is persisted rather than
+   * recomputed client-side.
    */
   fileLawsuit(
     plaintiffId: string,
@@ -39,6 +59,7 @@ export class LegalEngine {
     groundName: string,
     targetActiveDecisions: TargetableDecisionInstance[],
     roomId: string,
+    plaintiffFullyInvestigated: boolean,
   ): LegalCaseData | null {
     const def = this.definitions.get(decisionName);
     if (!def?.legalRisks) return null;
@@ -47,9 +68,7 @@ export class LegalEngine {
     if (!risk) return null;
 
     const targetInstance = targetActiveDecisions.find(d => d.decisionName === decisionName);
-    if (!targetInstance) return null;
-
-    const probability = getScheduleValue(risk.probability, targetInstance.elapsedYears);
+    const probability = targetInstance ? getScheduleValue(risk.probability, targetInstance.elapsedYears) : 0;
     const stakes = Math.abs(risk.impact.schedule['default'] ?? risk.impact.schedule[1] ?? 0);
 
     return {
@@ -62,6 +81,7 @@ export class LegalEngine {
       description: risk.description,
       baseProbability: probability,
       adjustedProbability: undefined,
+      plaintiffFullyInvestigated,
       stakes,
       status: 'negotiating',
       offers: [],

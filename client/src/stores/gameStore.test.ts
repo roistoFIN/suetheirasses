@@ -515,6 +515,7 @@ describe('gameStore', () => {
       groundName: 'Environmental Violation',
       description: 'x',
       baseProbability: 0.12,
+      plaintiffFullyInvestigated: false,
       stakes: 20000,
       status: 'negotiating',
       offers: [{ by: 'defendant', amount: 10000 }],

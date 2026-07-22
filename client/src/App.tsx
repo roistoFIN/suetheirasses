@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { Box, Stack, Text, Title, Loader, Alert, Button, Container, Paper, Image } from '@mantine/core';
+import { Box, Stack, Text, Title, Loader, Alert, Button, Container, Paper, Image, Modal } from '@mantine/core';
 import { useSocketStore } from './stores/socketStore';
 import { useGameStore } from './stores/gameStore';
 import Matchmaking from './pages/Matchmaking';
@@ -49,32 +49,47 @@ const LostOverlay: React.FC<{ reason: 'bankrupt' | 'forfeit' }> = ({ reason }) =
 };
 
 /**
- * Full-screen takeover shown to every still-in-the-game player when *someone else* goes
+ * Info-window modal shown to every still-in-the-game player when *someone else* goes
  * bankrupt — see `gameStore.bankruptcyEvents` (queued, not a single value, since more than
  * one player can be eliminated the same turn) and `socketStore.ts`'s `player:bankrupt`
  * handler, which enqueues one of these for everyone except the eliminated player (they get
- * `LostOverlay` instead, never both). Checked in App.tsx ahead of the `currentPhase` switch,
- * same position as `LostOverlay` and for the same reason: if this elimination also ends the
- * game, `player:bankrupt` and `game:over`/`phase:changed` (which flips `currentPhase` to
- * AFTERMATH) arrive back-to-back in the same server-side turn resolution — without this
- * check running first, the Game Over screen would render immediately and the bankruptcy
- * message would never be seen at all.
+ * `LostOverlay` instead, never both). Rendered as an overlay *on top of* whatever `page`
+ * App.tsx is currently showing (GamePhase, GameOver, etc.) rather than replacing it — the
+ * game keeps running and stays visible underneath; only this modal needs dismissing. It
+ * used to be a full-page takeover that blanked out the entire game behind it (a real,
+ * reported issue: the game looked like it had stopped/gone blank), fixed by switching the
+ * container from a page-level `<Container>` to a `Modal`, same "info window" shape every
+ * other post-turn notification in this app already uses (see GamePhase.tsx's News item
+ * modal). This still has to be independent of the `currentPhase` switch below (not folded
+ * into GamePhase's own local News feed) for the same reason as before: if this same
+ * elimination also ends the game, `player:bankrupt` and `game:over`/`phase:changed` (which
+ * flips `currentPhase` to AFTERMATH, unmounting GamePhase) arrive back-to-back in the same
+ * turn resolution — a GamePhase-local queue would vanish right along with it unseen.
+ * Rendering this modal from top-level `gameStore` state instead means it keeps showing
+ * over the GameOver screen that phase change swaps in underneath, exactly like it did
+ * before, just without blocking the view of whichever screen is actually current.
  */
-const BankruptcyOverlay: React.FC<{ playerName: string; onDismiss: () => void }> = ({ playerName, onDismiss }) => (
-  <Container size="xs" py="xl">
-    <Paper withBorder p="xl" shadow="lg">
-      <Image src="/images/lost.png" alt="Eliminated" radius="md" mb="md" />
-      <Title order={2} ta="center" mb="xs" c="red">
+const BankruptcyModal: React.FC<{ playerName: string; onDismiss: () => void }> = ({ playerName, onDismiss }) => (
+  <Modal
+    opened
+    onClose={onDismiss}
+    size="md"
+    centered
+    title={<Text fw={700} fz="0.9rem">💀 PLAYER ELIMINATED</Text>}
+  >
+    <Stack gap="md">
+      <Image src="/images/lost.png" alt="Eliminated" radius="md" />
+      <Text ta="center" fw={700} c="red">
         {playerName.toUpperCase()} HAS GONE BANKRUPT
-      </Title>
-      <Text ta="center" c="dimmed" mb="lg">
+      </Text>
+      <Text ta="center" c="dimmed" size="sm">
         Their cash ran out and the bank came knocking — they're out of the game.
       </Text>
       <Button fullWidth color="red" onClick={onDismiss}>
         Got it
       </Button>
-    </Paper>
-  </Container>
+    </Stack>
+  </Modal>
 );
 
 /** How long a top-of-screen notification (e.g. "you were kicked") stays up before auto-dismissing. */
@@ -135,13 +150,6 @@ const App: React.FC = () => {
     return <LostOverlay reason={selfElimination.reason} />;
   }
 
-  // Checked ahead of the phase switch too — see BankruptcyOverlay's doc comment for why
-  // (it has to win over an AFTERMATH phase change that this same elimination may have
-  // triggered, or the message would never be shown at all).
-  if (bankruptcyEvents.length > 0) {
-    return <BankruptcyOverlay playerName={bankruptcyEvents[0].playerName} onDismiss={dismissBankruptcyEvent} />;
-  }
-
   // Attempting to resume a saved session (page reload, back button, brief network
   // drop) — hold off on rendering Matchmaking, which would otherwise flash for a
   // moment before the room:rejoin response arrives and currentPhase gets set.
@@ -172,6 +180,9 @@ const App: React.FC = () => {
     <>
       <NotificationBanner />
       {page}
+      {bankruptcyEvents.length > 0 && (
+        <BankruptcyModal playerName={bankruptcyEvents[0].playerName} onDismiss={dismissBankruptcyEvent} />
+      )}
     </>
   );
 };

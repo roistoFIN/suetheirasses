@@ -829,38 +829,57 @@ deliberate snowball effect that punishes concentrated risk-taking (FORMULAS §6,
 > sue over it. If you want to restore the spec-literal automatic behavior, see
 > `GameLoop`'s Step 8 and `LegalEngine.fileLawsuit`.
 
-There is no fixed catalog of lawsuit grounds. `SueModal` derives the grounds you can sue
-a given target over live, from that target's *actual* `activeDecisions` cross-referenced
-against `game:deck`'s `legalRisks` — you can only cite something the target really did.
-Filing queues `{ targetId, decisionName, groundName }` into the same pending state as
-deployed decisions (up to `gameSettings.maxLawsuitsPerPlayerPerTurn`, 3 by default) and
-submits it via `game:submitDecisions`. At turn resolution, `LegalEngine.fileLawsuit`
-re-validates that the target still has that decision active, then prices the case using
+There is no fixed catalog of lawsuit grounds — but there's also no restriction to what a
+specific target has actually done. `SueModal` derives every ground you can select from
+`game:deck`'s `legalRisks`, across the **entire decision library**, regardless of whether
+the target you're picking has ever deployed the decision it comes from. You can knowingly
+gamble on a ground you merely suspect is true, not just one you've confirmed. Filing queues
+`{ targetId, decisionName, groundName }` into the same pending state as deployed decisions
+(up to `gameSettings.maxLawsuitsPerPlayerPerTurn`, 3 by default) and submits it via
+`game:submitDecisions`. At turn resolution, `LegalEngine.fileLawsuit` checks whether the
+target actually has that decision active: if so, it prices the case using
 `getScheduleValue` against the legal risk's `probability` schedule at the target
 decision's `elapsedYears` — the longer a risky decision has been live, the higher the
-probability tier, exactly like a normal impact schedule (FORMULAS §6, §9).
+probability tier, exactly like a normal impact schedule (FORMULAS §6, §9). If not — a wrong
+guess — the case is still created (never silently dropped), just with `baseProbability`
+forced to `0`: a real, visible, but hopeless case. `fileLawsuit` still rejects a filing
+outright (no case, fee already spent) only if the decision or ground name doesn't exist in
+the library at all, which the real client never sends.
 
 Filing also costs a flat `gameSettings.lawsuitFilingCost` ($15,000 by default), shown right
 on the **SUE THEIR ASSES** button and deducted **instantly** the moment the "File" button
 is clicked in `SueModal` — a `game:fileLawsuit` round trip, same "instant, outside turn
 resolution" pattern as Dig Deeper, not something that waits for the round timer. The case
-itself is still only created/validated later, at the next turn resolution, exactly as
-described above — the fee purely gates the *act of filing*. It is **not refunded** if that
-later validation rejects the case (e.g. the target no longer has the cited decision
-deployed by the time the turn resolves), and is capped at
+itself is still only created at the next turn resolution, exactly as described above — the
+fee purely gates the *act of filing*. It is **not refunded** either way: a wrong guess
+still creates a real (if hopeless) case, so the fee was never wasted on nothing, but it's
+just as non-refundable as a correct guess that later loses at trial. Filing is capped at
 `gameSettings.maxLawsuitsPerPlayerPerTurn` same as the filings themselves, so a player can't
-rack up fee charges for lawsuits that would be silently dropped at resolution anyway.
+rack up fee charges past what a turn will actually process.
 
-A case's win probability is only ever shown to the **defendant** — their lawsuit card
-shows a colored percentage chip (green/yellow/red via `semaphoreLevel`, using
+A case's win probability is always shown to the **defendant** — their lawsuit card shows
+a colored percentage chip (green/yellow/red via `semaphoreLevel`, using
 `adjustedProbability` if the case has one, else `baseProbability`), clickable to
-`RiskBreakdownView` for the full weighted-factor breakdown. The **plaintiff** never sees a
-number for their own filed case — their card shows a gray, unclickable "Unknown" chip in
-the same spot, styled identically to the real thing so the two card layouts still line up
-visually. This used to be an "Investigate" button that opened the target's Full Filing
-report instead (redundant with the identical button already in the Competitor Intel
-panel) — replaced by product decision, since a plaintiff genuinely has no privileged
-insight into their own case's odds beyond what any rival's public filing already shows.
+`RiskBreakdownView` for the full weighted-factor breakdown. The **plaintiff** only sees
+that same chip if they earned it: filing a case after fully "Dig Deeper"-investigating the
+underlying attack (investigation level 3) and suing over its exact suggested ground reveals
+the real number to them too — otherwise their card shows a gray, unclickable "Unknown" chip
+in the same spot, styled identically to the real thing so the two card layouts still line
+up visually. This is decided once, permanently, at the moment the case is filed (not
+recomputed from the player's live attack list on every render), so it can't flicker back to
+"Unknown" later just because the underlying attacking decision matures out or its deployer
+goes bankrupt. This used to be a flat "Unknown" for every plaintiff, with a separate
+"Investigate" button that opened the target's Full Filing report — that button was removed
+by product decision as redundant with the identical button already in the Competitor Intel
+panel, and the "always Unknown" default was later relaxed for plaintiffs who did the work
+of investigating first.
+
+A wrong guess (see above) is the clearest illustration of why this split matters: the
+**defendant** always sees the true `0%` on a hopeless case filed against them — they know
+perfectly well whether they actually did the thing being alleged — while the **plaintiff**,
+who merely gambled on a hunch, still sees "Unknown," since there's no attack they could
+have investigated to have earned the real number. The suspense is real on the filer's
+side even when the outcome, to the other party, obviously isn't.
 
 `target.*` impact fields (FORMULAS §0 — the 9 fields like `target.cash`, `target.outrage`
 that route a decision's effect to the chosen target rather than the decision-maker, used
@@ -884,6 +903,17 @@ draw "this turn"). Getting a case out of `'negotiating'` works one of three ways
   `game:goToCourt` the events. Going to court doesn't draw a verdict on the spot; it just
   marks the case `awaiting_trial` — the actual probability draw happens the next time this
   room's turn resolves, same trial logic every other `awaiting_trial` case goes through.
+
+  Each new offer has to fall within a range that **narrows with every move** rather than
+  staying fixed for the whole negotiation: the defendant's opening offer can be anywhere
+  from $0 up to the full stakes; the plaintiff's first counter must be at least the
+  defendant's offer, up to the full stakes; the defendant's next offer must be at least
+  their *own* previous offer, up to the plaintiff's latest ask; and so on, alternating —
+  each side can only ever move their own end of the range inward, bracketing the two
+  sides closer together turn by turn rather than letting either one drift away from
+  what's already been offered. The slider in `NegotiationPanel` shows this live as a
+  "Range: $X – $Y" caption, and the server independently re-validates every offer against
+  the same range (`GameLoop.computeOfferBracket`) — the client's copy is just a UI guide.
 - **Leave an offer hanging.** If a turn boundary arrives with an offer still unanswered
   (nobody accepted, countered, or went to court in time), it's treated as accepted right
   there — the case settles for that offer's amount. In practice this means any negotiation
@@ -935,6 +965,14 @@ Once fully investigated (tier 3), the button disables — no further charge. The
 also disabled client-side whenever cash is below `digDeeperCost`; the server enforces the
 same rule independently, so it's never possible to Dig Deeper into bankruptcy.
 
+Once you've acted on the hint — suing the attacker over exactly the suggested ground,
+with a "correct" case (win probability above 0%) — the hint card disappears, instead of
+continuing to nag about an attack you've already addressed. This checks both a lawsuit
+still queued this turn and a real case already on the books from an earlier turn.
+Suing over a *different* ground for the same attacking decision (picked manually, not via
+SUE NOW) doesn't make the hint disappear — only the specific suggested ground counts,
+since that's the only one whose win probability the client actually has.
+
 ### Ready-Up (Instant Turn Resolution)
 
 The 120s per-round timer doesn't have to run out — a separate **Turn** box in the header
@@ -973,6 +1011,25 @@ ever lands with a genuinely empty store and no rejoin attempt underway (closing 
 was previously an infinite "Waiting for game data…" spinner on a raw refresh with no saved
 session). A failed rejoin (`REJOIN_FAILED` — expired grace period, ended game, bogus
 session) self-heals into the normal matchmaking flow by clearing the stale saved session.
+
+**A grace-period expiry landing mid-turn-resolution used to be able to freeze the whole
+room, needing every client to refresh to recover** — a real, reported bug. The heartbeat
+sweep that finalizes an expired grace period runs on its own fixed 10s interval, completely
+independent of the round timer that drives `resolveGameTurn` — so nothing stopped the two
+from landing within moments of each other whenever a disconnect happened to occur with
+somewhere around a round's worth of time left before its natural end. When they did,
+`finalizePlayerRemoval` could delete a disconnected player's `Company`/`Player` rows from
+under an *already in-flight* `resolveGameTurn` for that same room, which would then throw
+trying to persist that now-gone player's turn results, abort its entire persistence loop,
+and get silently swallowed by resolution's outer error handler — `turn:resolved` and the
+next round's timer never fire, and the room is stuck for good (the round timer that would
+have retried was already cleared before resolution started). Fixed two ways: the heartbeat
+sweep now skips finalizing a removal while `resolveGameTurn`/`forfeitGame`'s shared
+concurrency lock (`advancingRooms`) is already held for that room, retrying on its next 10s
+tick instead; and `resolveGameTurn` now isolates every player's persistence in its own
+try/catch, so one player's row unexpectedly vanishing can never abort the turn for everyone
+else in the room — the resolution, and the notification that the other player's connection
+timed out, both still land normally, no refresh required.
 
 ### Leave Game (Voluntary Forfeit)
 
@@ -1175,12 +1232,18 @@ that turn's positive income-side cash flow, oldest filing first, until the pool 
 remains — there is no fixed round limit and no score-based win condition. The eliminated
 player themselves sees the "lost" takeover described in *Leave Game* above, regardless of
 whether they left voluntarily or actually ran out of cash. Everyone else still in the game
-gets a matching full-screen "X HAS GONE BANKRUPT" takeover (same `lost.png` art), queued in
-`gameStore.bankruptcyEvents` and rendered by `App.tsx`'s `BankruptcyOverlay` ahead of the
-`currentPhase` switch — so it's shown even when this same elimination ends the game (the
-`player:bankrupt` and `game:over`/`phase:changed` broadcasts arrive back-to-back from the
-same turn resolution; without the overlay taking priority, the Game Over screen would
-render immediately and the message would never be seen).
+gets an "X HAS GONE BANKRUPT" **info-window modal** (same `lost.png` art), queued in
+`gameStore.bankruptcyEvents` and rendered by `App.tsx`'s `BankruptcyModal` as an overlay on
+top of whatever's currently on screen — the game itself keeps running and stays fully
+visible underneath (the round timer, KPIs, News feed, everyone's turn — nothing pauses or
+disappears), and dismissing the modal ("Got it" or the close button) just returns to it.
+This used to be a full-page takeover that replaced the entire screen, including a
+still-in-progress game for every survivor — a real, reported bug, since the game only
+*looked* like it had stopped. The modal still has to render independently of the
+`currentPhase` switch (not folded into GamePhase's own News feed) so it's shown even when
+this same elimination ends the game — the `player:bankrupt` and `game:over`/`phase:changed`
+broadcasts arrive back-to-back from the same turn resolution, and the modal keeps showing
+layered on top of the Game Over screen that swaps in underneath it in that case.
 
 A bankrupted player's Company row must have its real (negative) `cash` persisted, not just
 their `Player.bankrupt` flag — `GameLoop.resolveTurn` excludes bankrupted players from
@@ -1190,15 +1253,19 @@ the `bankrupt: true` flag. Skipping this left a bankrupted player's `cash` colum
 whatever positive value it had from their last still-active turn — including on the Game
 Over / Final Standings screen, which read the DB straight through `buildGameOverPayload`.
 
-### Post-Turn Info Windows (sued / lawsuit verdict / turn change)
+### News (sued / lawsuit verdict / settlement / turn change)
 
-Three events queue up a dismissible full-image modal after a turn resolves: getting
-sued, one of your own lawsuits reaching a verdict, and the round simply advancing.
-They're queued rather than each having an independent modal, specifically so a turn
-that both sues you *and* advances the round doesn't pop two modals on top of each
-other — a single `Modal` renders whatever's at the front of `GamePhase.tsx`'s
-`eventQueue` (`PostTurnEvent[]`), and **Got it** pops the front to reveal whatever's
-next, one at a time.
+Four things generate a News item after a turn resolves: getting sued, one of your own
+lawsuits reaching a trial verdict, one of your own cases settling by negotiation instead,
+and the round simply advancing. Unlike earlier versions of this feature, **none of these
+interrupt play** — each one just appends a row to the **News** box (right under the KPI
+cards), and the player clicks a row whenever they like to see the same info window this
+used to pop up automatically. Rows show a short topic ("You have been sued", "Case won",
+"Case settled", "Next turn") and which turn they're from; a brand-new row flashes red a
+few times so it doesn't go unnoticed, without demanding an immediate response the way an
+auto-popping modal did. The list appends newest-at-the-bottom and auto-scrolls to follow,
+but only while you're already scrolled near the bottom — scroll up to reread older news
+and a new arrival won't yank you back down.
 
 - **Sued** (`sued.png`) — `detectNewlySuedCases` diffs this turn's legal cases against
   last turn's to find cases newly filed against the current player (by id, so an
@@ -1206,21 +1273,25 @@ next, one at a time.
   stakes for every newly-filed case that turn.
 - **Lawsuit verdict** (`lawsuit-won.png` / `lawsuit-lost.png`) — `detectNewlyResolvedCases`
   finds cases *I'm a party to* (plaintiff or defendant) that just reached a trial
-  verdict (`status: 'resolved'`, `verdict: 'won' | 'lost'` — not `'settled'`/`'cancelled'`,
-  the bankruptcy-waterfall outcomes, which aren't a trial result and don't match the
-  "gavel drop" imagery). The `won`/`lost` label is from **my own perspective**, not the
-  raw `verdict` field — a defendant's case resolving `'lost'` (the plaintiff lost) is a
-  *win* for that defendant, so the outcome is flipped for whichever role I actually
-  have in the case, with role-aware copy for all four win/lose × plaintiff/defendant
-  combinations ("You received $X from…", "You paid $X to…", etc.).
-- **Turn change** (`turn-change.png`) — every round after the first (round 1 is the
-  initial game start, not a change from anything) queues one of these the moment the
+  verdict (`status: 'resolved'`, `verdict: 'won' | 'lost'`). The `won`/`lost` label is
+  from **my own perspective**, not the raw `verdict` field — a defendant's case resolving
+  `'lost'` (the plaintiff lost) is a *win* for that defendant, so the outcome is flipped
+  for whichever role I actually have in the case, with role-aware copy for all four
+  win/lose × plaintiff/defendant combinations ("You received $X from…", "You paid $X
+  to…", etc.).
+- **Case settled** — `detectNewlySettledCases` finds cases *I'm a party to* that resolved
+  via `verdict: 'settled'` instead of a trial (negotiation — see *Lawsuits* above; not
+  `'cancelled'`, the bankruptcy-waterfall outcome, which isn't a settlement either side
+  negotiated). Shows who paid whom the settled amount, same role-aware framing as the
+  verdict item.
+- **Next turn** (`turn-change.png`) — every round after the first (round 1 is the
+  initial game start, not a change from anything) gets one of these the moment the
   round number advances.
 
-Both detection functions are pure and unit-tested independently of any live turn cycle
-(`GamePhase.utils.test.ts`), and the effect that drives them is guarded against React
-18 StrictMode's dev-only double-invocation via a `useRef` — see CLAUDE.md for why that
-guard exists and what broke before it did.
+All three detection functions are pure and unit-tested independently of any live turn
+cycle (`GamePhase.utils.test.ts`), and the effect that drives them is guarded against
+React 18 StrictMode's dev-only double-invocation via a `useRef` — see CLAUDE.md for why
+that guard exists and what broke before it did.
 
 ---
 
@@ -1284,7 +1355,7 @@ only place that touches Prisma or Socket.IO for turn resolution:
 | `getFormulasSnapshot()` | In-memory read backing `GET /api/admin/formulas` |
 | `updateFormula(key, expression, description)` | Writes one formula row (404 if the key is unknown — no create), then calls `GameLoop.loadFormulas()` again so the change is live for the next turn resolved anywhere. Validation (syntax + variable whitelist) happens in `validateFormulaUpdate` before this is ever called. |
 | `loadActiveCompanyPlayers(roomId)` *(private)* | Shared DB fetch (`player.findMany` with `company` included, `bankrupt: false`) feeding `resolveGameTurn`, `broadcastInitialSnapshot`, and `digDeeper` |
-| `startHeartbeatCleanup()` *(private)* | One 10s `setInterval` sweeping two things: rooms empty for over `STALE_ROOM_THRESHOLD` (60s), and disconnected players past `RECONNECT_GRACE_PERIOD_MS` (60s) → `finalizePlayerRemoval`. Extend this interval for new periodic sweeps rather than adding a second one. |
+| `startHeartbeatCleanup()` *(private)* | One 10s `setInterval` sweeping two things: rooms empty for over `STALE_ROOM_THRESHOLD` (60s), and disconnected players past `RECONNECT_GRACE_PERIOD_MS` (60s) → `finalizePlayerRemoval`, skipped for a room whose turn is currently resolving (`advancingRooms`) and retried on the next tick instead — see *Reconnection & Session Resume* above. Extend this interval for new periodic sweeps rather than adding a second one. |
 
 **`GameLoop`** (`server/src/engine/gameLoop.ts`) — the authoritative turn-resolution
 engine, loaded via `GameEngine.loadGameData()` (decisions/config now come from the
@@ -1347,8 +1418,13 @@ npm run lint
 # a lawsuit persisted into both the plaintiff's and defendant's own engineState
 # doesn't get double-counted when reconstructed on a later turn, and a regression test
 # that a case forced to trial by the negotiation timeout resolves in the same turn it
-# crosses the threshold, plus the makeOffer/acceptOffer/goToCourt turn-taking rules and
-# Step 8b's stale-offer-auto-settle/no-offer-cap fallbacks), gameEngine (incl.
+# crosses the threshold, plus the makeOffer/acceptOffer/goToCourt turn-taking rules,
+# the offer-bracket-narrows-with-each-move regression suite, Step 8b's
+# stale-offer-auto-settle/no-offer-cap fallbacks, the plaintiffFullyInvestigated
+# describe block covering all branches of the stamped-at-filing-time flag that reveals
+# a plaintiff's own case odds, and legalEngine's fileLawsuit tests confirming a wrong
+# guess against a target's undeployed decision still creates a real, 0%-probability
+# case rather than silently dropping the filing), gameEngine (incl.
 # toggleReady, forfeitGame's ready-interaction, promoteNewHostIfNeeded, leaveRoom,
 # buildRoomSnapshot, joinRoom's kickedNames rejection, and makeOffer/acceptOffer's
 # two-party Company-row persistence + two-socket game:legalCaseUpdate emit), validation
@@ -1361,8 +1437,11 @@ npm run lint
 npm test --workspace=server
 
 # Run frontend unit tests (Vitest) — Zustand stores, GamePhase utilities (incl.
-# detectNewlySuedCases and detectNewlyResolvedCases, the pure diffs behind the
-# sued/lawsuit-verdict post-turn info windows)
+# detectNewlySuedCases, detectNewlyResolvedCases, and detectNewlySettledCases, the pure
+# diffs behind the sued/verdict/settlement News items; isAttackAlreadySuedOver, which
+# hides an incoming-attack hint once sued over with a correct/non-zero-probability case;
+# and getGroundsAgainst, confirming the SUE THEIR ASSES ground list is the whole decision
+# library's legal-risk catalog, not scoped to any one target's actual deployed decisions)
 npm --workspace=client exec vitest run
 
 # Run API interface tests (Vitest + real PostgreSQL via testcontainers)

@@ -160,6 +160,7 @@ function makeCase(overrides: Partial<LegalCaseData> = {}): LegalCaseData {
     description: 'Sue for environmental damage',
     baseProbability: 0.12,
     adjustedProbability: undefined,
+    plaintiffFullyInvestigated: false,
     stakes: 20000,
     status: 'negotiating',
     offers: [],
@@ -686,8 +687,11 @@ describe('GameLoop', () => {
       expect(['won', 'lost']).toContain(aliceCase3?.verdict);
     });
 
-    it('should not create a case when the cited decision was never deployed by the target', () => {
-      // Alice deploys nothing risky; Bob tries to sue her over a decision she never made
+    it('should still create a case — a hopeless, 0%-probability one — when the cited decision was never deployed by the target (a guess)', () => {
+      // Alice deploys nothing risky; Bob guesses (wrongly) that she did — the SUE THEIR
+      // ASSES modal offers the whole decision library's grounds, not just what a target
+      // actually did, so this must still be a real, visible (if unwinnable) case, not a
+      // silently-dropped filing.
       gameLoop.submitDecisions('room-1', 'player-2', {
         strategic: [], operational: [],
         lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
@@ -696,7 +700,73 @@ describe('GameLoop', () => {
       const outcome = gameLoop.resolveTurn('room-1', 1, twoPlayers());
 
       const aliceCases = outcome.result.players.find((p) => p.playerId === 'player-1')?.legalCases;
-      expect(aliceCases).toEqual([]);
+      expect(aliceCases).toHaveLength(1);
+      expect(aliceCases![0].baseProbability).toBe(0);
+    });
+
+    describe('plaintiffFullyInvestigated (persisted at filing time)', () => {
+      // Bot Attack targets whoever `targetId` names and carries exactly one legal
+      // ground ('CFAA Digital Sabotage Lawsuit') — Alice deploys it against Bob.
+      const withBotAttack = (investigations: Record<string, number> = {}) => makePlayers([
+        {
+          id: 'player-1', name: 'Alice',
+          engineState: { activeDecisions: [{ id: 'attack-1', definitionName: 'Bot Attack', deployedYear: 1, elapsedYears: 0, isMatured: false, targetId: 'player-2' }] },
+        },
+        { id: 'player-2', name: 'Bob', engineState: { investigations } },
+      ]);
+
+      it('should stamp plaintiffFullyInvestigated true when the victim dug all the way in before suing over the matching ground', () => {
+        gameLoop.submitDecisions('room-1', 'player-2', {
+          strategic: [], operational: [],
+          lawsuits: [{ targetId: 'player-1', decisionName: 'Bot Attack', groundName: 'CFAA Digital Sabotage Lawsuit' }],
+        });
+
+        const outcome = gameLoop.resolveTurn('room-1', 1, withBotAttack({ 'attack-1': 3 }));
+
+        const bobCase = outcome.result.players.find((p) => p.playerId === 'player-2')?.legalCases[0];
+        expect(bobCase?.plaintiffFullyInvestigated).toBe(true);
+      });
+
+      it('should leave plaintiffFullyInvestigated false when the victim never dug at all', () => {
+        gameLoop.submitDecisions('room-1', 'player-2', {
+          strategic: [], operational: [],
+          lawsuits: [{ targetId: 'player-1', decisionName: 'Bot Attack', groundName: 'CFAA Digital Sabotage Lawsuit' }],
+        });
+
+        const outcome = gameLoop.resolveTurn('room-1', 1, withBotAttack());
+
+        const bobCase = outcome.result.players.find((p) => p.playerId === 'player-2')?.legalCases[0];
+        expect(bobCase?.plaintiffFullyInvestigated).toBe(false);
+      });
+
+      it('should leave plaintiffFullyInvestigated false when the victim dug in but not all the way (level 2)', () => {
+        gameLoop.submitDecisions('room-1', 'player-2', {
+          strategic: [], operational: [],
+          lawsuits: [{ targetId: 'player-1', decisionName: 'Bot Attack', groundName: 'CFAA Digital Sabotage Lawsuit' }],
+        });
+
+        const outcome = gameLoop.resolveTurn('room-1', 1, withBotAttack({ 'attack-1': 2 }));
+
+        const bobCase = outcome.result.players.find((p) => p.playerId === 'player-2')?.legalCases[0];
+        expect(bobCase?.plaintiffFullyInvestigated).toBe(false);
+      });
+
+      it('should leave plaintiffFullyInvestigated false when suing over a different decision instance than the one investigated', () => {
+        // Fully investigated 'attack-1', but files against a decision that isn't
+        // actually targeting them at all (Water Pumping has no targetId concept).
+        gameLoop.submitDecisions('room-1', 'player-1', {
+          strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+        });
+        gameLoop.submitDecisions('room-1', 'player-2', {
+          strategic: [], operational: [],
+          lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
+        });
+
+        const outcome = gameLoop.resolveTurn('room-1', 1, withBotAttack({ 'attack-1': 3 }));
+
+        const bobCase = outcome.result.players.find((p) => p.playerId === 'player-2')?.legalCases[0];
+        expect(bobCase?.plaintiffFullyInvestigated).toBe(false);
+      });
     });
   });
 
@@ -1117,10 +1187,72 @@ describe('GameLoop', () => {
       expect(outcome).toEqual({ success: false, reason: 'invalid_amount' });
     });
 
-    it('rejects a zero or negative amount', () => {
-      const outcome = gameLoop.makeOffer('player-1', 'case-1', 0, playersWithCase(makeCase()));
+    it('rejects a negative amount', () => {
+      const outcome = gameLoop.makeOffer('player-1', 'case-1', -1, playersWithCase(makeCase()));
 
       expect(outcome).toEqual({ success: false, reason: 'invalid_amount' });
+    });
+
+    it('allows exactly 0 as the opening offer — the bracket floor is inclusive', () => {
+      const outcome = gameLoop.makeOffer('player-1', 'case-1', 0, playersWithCase(makeCase()));
+
+      expect(outcome.success).toBe(true);
+    });
+
+    describe('offer bracket narrows with each move (regression)', () => {
+      // The valid range for the NEXT offer is always [defendant's own latest offer (0 if
+      // none), plaintiff's own latest offer (stakes if none)] — narrowing inward on every
+      // move rather than staying fixed at (0, stakes] for the whole negotiation. See
+      // GameLoop.computeOfferBracket's doc comment for the full reasoning.
+      const stakes = 20000;
+
+      it('bounds the defendant\'s opening offer to [0, stakes]', () => {
+        expect(gameLoop.makeOffer('player-1', 'case-1', -1, playersWithCase(makeCase({ stakes }))).success).toBe(false);
+        expect(gameLoop.makeOffer('player-1', 'case-1', stakes + 1, playersWithCase(makeCase({ stakes }))).success).toBe(false);
+        expect(gameLoop.makeOffer('player-1', 'case-1', 0, playersWithCase(makeCase({ stakes }))).success).toBe(true);
+        expect(gameLoop.makeOffer('player-1', 'case-1', stakes, playersWithCase(makeCase({ stakes }))).success).toBe(true);
+      });
+
+      it('bounds the plaintiff\'s first counter to [defendant\'s offer, stakes]', () => {
+        const case_ = makeCase({ stakes, offers: [{ by: 'defendant', amount: 8000 }] });
+        expect(gameLoop.makeOffer('player-2', 'case-1', 7999, playersWithCase(case_)).success).toBe(false);
+        expect(gameLoop.makeOffer('player-2', 'case-1', stakes + 1, playersWithCase(case_)).success).toBe(false);
+        expect(gameLoop.makeOffer('player-2', 'case-1', 8000, playersWithCase(case_)).success).toBe(true);
+        expect(gameLoop.makeOffer('player-2', 'case-1', stakes, playersWithCase(case_)).success).toBe(true);
+      });
+
+      it('bounds the defendant\'s second offer to [their own first offer, the plaintiff\'s counter] — NOT [0, stakes]', () => {
+        const case_ = makeCase({
+          stakes,
+          offers: [
+            { by: 'defendant', amount: 8000 },
+            { by: 'plaintiff', amount: 15000 },
+          ],
+        });
+        // Below the defendant's own first offer — rejected even though it's still > 0.
+        expect(gameLoop.makeOffer('player-1', 'case-1', 7999, playersWithCase(case_)).success).toBe(false);
+        // Above the plaintiff's counter — rejected even though it's still <= stakes.
+        expect(gameLoop.makeOffer('player-1', 'case-1', 15001, playersWithCase(case_)).success).toBe(false);
+        // Anywhere between the two latest offers is valid.
+        expect(gameLoop.makeOffer('player-1', 'case-1', 8000, playersWithCase(case_)).success).toBe(true);
+        expect(gameLoop.makeOffer('player-1', 'case-1', 12000, playersWithCase(case_)).success).toBe(true);
+        expect(gameLoop.makeOffer('player-1', 'case-1', 15000, playersWithCase(case_)).success).toBe(true);
+      });
+
+      it('bounds the plaintiff\'s second counter to [the defendant\'s latest offer, the plaintiff\'s own first counter]', () => {
+        const case_ = makeCase({
+          stakes,
+          offers: [
+            { by: 'defendant', amount: 8000 },
+            { by: 'plaintiff', amount: 15000 },
+            { by: 'defendant', amount: 10000 },
+          ],
+        });
+        expect(gameLoop.makeOffer('player-2', 'case-1', 9999, playersWithCase(case_)).success).toBe(false);
+        expect(gameLoop.makeOffer('player-2', 'case-1', 15001, playersWithCase(case_)).success).toBe(false);
+        expect(gameLoop.makeOffer('player-2', 'case-1', 10000, playersWithCase(case_)).success).toBe(true);
+        expect(gameLoop.makeOffer('player-2', 'case-1', 15000, playersWithCase(case_)).success).toBe(true);
+      });
     });
 
     it('rejects an offer on a case that has already left negotiation', () => {

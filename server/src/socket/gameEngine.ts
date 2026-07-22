@@ -353,21 +353,29 @@ export class GameEngine {
    */
   private async persistKpiSnapshots(players: PlayerTurnResult[], round: number): Promise<void> {
     for (const p of players) {
-      await this.prisma.kpiSnapshot.upsert({
-        where: { playerId_round: { playerId: p.playerId, round } },
-        create: {
-          playerId: p.playerId,
-          round,
-          variables: p.variables as any,
-          derived: p.derived as any,
-          riskGauge: p.riskGauge,
-        },
-        update: {
-          variables: p.variables as any,
-          derived: p.derived as any,
-          riskGauge: p.riskGauge,
-        },
-      });
+      try {
+        await this.prisma.kpiSnapshot.upsert({
+          where: { playerId_round: { playerId: p.playerId, round } },
+          create: {
+            playerId: p.playerId,
+            round,
+            variables: p.variables as any,
+            derived: p.derived as any,
+            riskGauge: p.riskGauge,
+          },
+          update: {
+            variables: p.variables as any,
+            derived: p.derived as any,
+            riskGauge: p.riskGauge,
+          },
+        });
+      } catch (err) {
+        // Same isolation as resolveGameTurn's per-player persistence loops above — a
+        // player's row disappearing mid-resolution (grace-period race) must not abort
+        // KPI history for the rest of the room, nor the turn:resolved broadcast that
+        // follows this call.
+        console.error(`[persistKpiSnapshots] Failed to persist KPI snapshot for player ${p.playerId}, round ${round}:`, err);
+      }
     }
   }
 
@@ -513,6 +521,13 @@ export class GameEngine {
 
       for (const [playerId, { roomId, disconnectedAt }] of this.disconnectedPlayers.entries()) {
         if (now - disconnectedAt > this.RECONNECT_GRACE_PERIOD_MS) {
+          // A GAME_PHASE turn resolution for this same room may be in flight right now
+          // (the round timer runs independently of this sweep, so the two can land at
+          // almost the same moment) — see finalizePlayerRemoval's doc comment for why
+          // deleting this player's DB rows out from under it is unsafe. Skip this player
+          // for now and let the next 10s tick retry; `disconnectedPlayers` isn't touched,
+          // so nothing about their grace period is lost, just delayed a few seconds.
+          if (this.advancingRooms.has(roomId)) continue;
           console.log(`[Heartbeat] Finalizing removal of player ${playerId} (no reconnect within ${this.RECONNECT_GRACE_PERIOD_MS}ms)`);
           this.finalizePlayerRemoval(roomId, playerId).catch((err) => {
             console.error(`[Heartbeat] Failed to finalize removal of player ${playerId}:`, err);
@@ -813,19 +828,35 @@ export class GameEngine {
 
       // Persist bankruptcies first (matches GameLoop's original in-loop ordering),
       // then still-active players' updated engine state, then broadcast the turn.
+      //
+      // Each player's persistence is isolated in its own try/catch: a player's Company/
+      // Player rows can vanish out from under this loop if they disconnected and their
+      // reconnect grace period happened to expire mid-resolution — the heartbeat sweep
+      // now skips finalizing a removal while this room is already resolving (see
+      // startHeartbeatCleanup), but that only closes the common direction of the race,
+      // not every possible one, so this loop stays defensive regardless. Without this,
+      // a single missing row throws (Prisma P2025), aborts the whole loop, and the
+      // outer catch swallows it — meaning `turn:resolved`/`phase:changed` never fire at
+      // all and the room is left with no running timer, stuck until every client
+      // manually refreshes. One player's missing row must never take the rest of the
+      // room down with it.
       for (const bankrupted of outcome.bankruptedPlayers) {
-        await this.prisma.player.update({
-          where: { id: bankrupted.playerId },
-          data: { bankrupt: true },
-        });
-        // Bankrupted players are deliberately excluded from outcome.companyUpdates (see
-        // BankruptedPlayer.finalCash doc comment) — their negative cash has to be persisted
-        // here instead, or the DB (and anything reading it later, e.g. buildGameOverPayload's
-        // final-standings cash column) keeps showing their last still-active positive balance.
-        await this.prisma.company.update({
-          where: { playerId: bankrupted.playerId },
-          data: { cash: bankrupted.finalCash },
-        });
+        try {
+          await this.prisma.player.update({
+            where: { id: bankrupted.playerId },
+            data: { bankrupt: true },
+          });
+          // Bankrupted players are deliberately excluded from outcome.companyUpdates (see
+          // BankruptedPlayer.finalCash doc comment) — their negative cash has to be persisted
+          // here instead, or the DB (and anything reading it later, e.g. buildGameOverPayload's
+          // final-standings cash column) keeps showing their last still-active positive balance.
+          await this.prisma.company.update({
+            where: { playerId: bankrupted.playerId },
+            data: { cash: bankrupted.finalCash },
+          });
+        } catch (err) {
+          console.error(`[resolveGameTurn] Failed to persist bankruptcy for player ${bankrupted.playerId} (room ${roomId}):`, err);
+        }
         this.io.to(roomId).emit(ServerEvents.PLAYER_BANKRUPT, {
           playerId: bankrupted.playerId,
           playerName: bankrupted.playerName,
@@ -833,14 +864,18 @@ export class GameEngine {
       }
 
       for (const update of outcome.companyUpdates) {
-        await this.prisma.company.update({
-          where: { playerId: update.playerId },
-          data: {
-            cash: update.cash,
-            variables: update.variables as any,
-            engineState: update.engineState as any,
-          },
-        });
+        try {
+          await this.prisma.company.update({
+            where: { playerId: update.playerId },
+            data: {
+              cash: update.cash,
+              variables: update.variables as any,
+              engineState: update.engineState as any,
+            },
+          });
+        } catch (err) {
+          console.error(`[resolveGameTurn] Failed to persist company update for player ${update.playerId} (room ${roomId}):`, err);
+        }
       }
 
       await this.persistKpiSnapshots(outcome.result.players, round);

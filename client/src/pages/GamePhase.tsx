@@ -25,10 +25,13 @@ import {
 // Types & Constants
 // ============================================================
 //
-// Note: there is no fixed catalog of lawsuit grounds — every decision's `legalRisks`
-// in game_engine.json is a potential ground the moment someone actually deploys that
-// decision. See getGroundsAgainst() near SueModal, which derives grounds live from a
-// target's real activeDecisions instead of a hardcoded list.
+// Note: there is no separate, hand-maintained catalog of lawsuit grounds — every
+// decision's `legalRisks` in the (admin-editable, DB-backed) decision library is a
+// selectable ground in the SUE THEIR ASSES modal, for every decision in the game, not
+// just ones a specific target has actually deployed. See getGroundsAgainst() near
+// SueModal: a player can knowingly guess a ground the target may or may not have
+// actually pursued — a wrong guess still costs the filing fee (not refunded) but
+// produces no case, exactly the risk/reward FORMULAS.md's spec implies is possible.
 
 /** Maps the 4 top KPI cards + Threat Level's `drillDown.type` to the KpiSnapshotPoint field their history/prediction graph should read — see KpiHistoryGraph. Rival drill-downs ('rival'/'rival-field') deliberately have no entry: rivals read `field`/`label` straight off `drillDown` instead (see RivalFieldView / RivalFullReportView), since a rival has no single "top" field the way each own-KPI type does. */
 const OWN_KPI_DRILLDOWN_FIELD: Record<string, { field: string; label: string }> = {
@@ -164,17 +167,73 @@ export function detectNewlyResolvedCases(
   return results;
 }
 
+/** One of my own cases (plaintiff or defendant) that resolved by settlement (accepting an
+ * offer, or a stale offer auto-settling at a turn boundary — see CLAUDE.md's negotiation
+ * section) since the last turn, rather than a trial verdict. */
+export interface SettledCaseForMe {
+  case: LegalCaseData;
+  role: 'plaintiff' | 'defendant';
+}
+
 /**
- * A dismissible full-image "info window" queued up after a turn resolves — sued,
- * a lawsuit verdict, or the round simply advancing. Shown one at a time (never
- * stacked/overlapping) via a single Modal keyed off the front of the queue; "Got it"
- * pops the front and reveals whatever's next, so a turn that both files a lawsuit
- * against you and advances the round doesn't show two modals on top of each other.
+ * Cases I'm a party to that resolved via `verdict: 'settled'` (negotiation, not a trial —
+ * see `detectNewlyResolvedCases` for the won/lost trial-verdict counterpart, and why
+ * 'cancelled' — the bankruptcy-waterfall outcome — isn't covered by either: that's
+ * surfaced via the separate bankruptcy takeover, not a settlement the player negotiated).
+ * Drives the "Case settled" News item. Pure/exported for the same reason as
+ * detectNewlySuedCases.
+ */
+export function detectNewlySettledCases(
+  previousCases: LegalCaseData[],
+  currentCases: LegalCaseData[],
+  myPlayerId: string,
+): SettledCaseForMe[] {
+  const previouslyResolvedIds = new Set(
+    previousCases.filter((c) => c.status === 'resolved').map((c) => c.id),
+  );
+  const results: SettledCaseForMe[] = [];
+  for (const c of currentCases) {
+    if (c.status !== 'resolved' || previouslyResolvedIds.has(c.id)) continue;
+    if (c.verdict !== 'settled') continue;
+    const amPlaintiff = c.plaintiffId === myPlayerId;
+    const amDefendant = c.defendantId === myPlayerId;
+    if (!amPlaintiff && !amDefendant) continue;
+    results.push({ case: c, role: amPlaintiff ? 'plaintiff' : 'defendant' });
+  }
+  return results;
+}
+
+/**
+ * The content of one "info window" — sued, a lawsuit verdict, a negotiated settlement, or
+ * the round simply advancing. Each one is wrapped into a `NewsItem` (below) and appended
+ * to the News box's list rather than popping up automatically — see the News box's own
+ * doc comment for why this replaced the old auto-popping single-Modal queue.
  */
 type PostTurnEvent =
   | { type: 'sued'; cases: LegalCaseData[] }
   | { type: 'verdict'; outcome: 'won' | 'lost'; cases: LegalCaseData[] }
+  | { type: 'settlement'; cases: SettledCaseForMe[] }
   | { type: 'turnChange'; round: number };
+
+/** One entry in the News box — a `PostTurnEvent` plus the round it was published in and a
+ * stable id (for React's list key and, just as importantly, so a genuinely NEW row's
+ * mount-triggered CSS flash animation never replays for an already-seen row on a later
+ * re-render — see `NewsRow`). */
+interface NewsItem {
+  id: string;
+  round: number;
+  event: PostTurnEvent;
+}
+
+/** Short label shown for each News row — same wording the old modal titles used, minus the emoji. */
+function newsTopic(event: PostTurnEvent): string {
+  switch (event.type) {
+    case 'sued': return 'You have been sued';
+    case 'verdict': return event.outcome === 'won' ? 'Case won' : 'Case lost';
+    case 'settlement': return 'Case settled';
+    case 'turnChange': return 'Next turn';
+  }
+}
 
 // ============================================================
 // Styles — war-room dashboard aesthetic (stamps, thick borders, shadows),
@@ -398,21 +457,29 @@ export default function GamePhase() {
   const [decisionDeckModalOpen, setDecisionDeckModalOpen] = useState(false);
   // Set when a player jumps into the Sue flow via a fully-investigated attack's
   // "SUE NOW" shortcut — pre-fills SueModal's target + ground, still requires the
-  // player's own "QUEUE LAWSUIT" confirmation click.
-  const [sueSuggestion, setSueSuggestion] = useState<{ targetId: string; groundName: string } | null>(null);
+  // player's own "QUEUE LAWSUIT" confirmation click. decisionName disambiguates the
+  // prefill match against the now target-independent, whole-library ground catalog
+  // (see getGroundsAgainst) — two different decisions could in principle share an
+  // identically-named ground, since the admin-editable decision library has no
+  // uniqueness constraint on legal-risk names.
+  const [sueSuggestion, setSueSuggestion] = useState<{ targetId: string; decisionName: string; groundName: string } | null>(null);
   const [riskInfoCase, setRiskInfoCase] = useState<LegalCaseData | null>(null);
   const [loading, setLoading] = useState(true);
   const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
-  // Post-turn "info window" queue (sued / lawsuit verdict / turn change) — see
-  // PostTurnEvent's doc comment. Shown one at a time; "Got it" pops the front.
-  const [eventQueue, setEventQueue] = useState<PostTurnEvent[]>([]);
+  // News feed (sued / lawsuit verdict / settlement / turn change) — see NewsItem's doc
+  // comment. Never auto-pops a modal; accumulates here and the player clicks a row to
+  // open its info window (newsModalItem below), for the sake of not interrupting play.
+  const [newsItems, setNewsItems] = useState<NewsItem[]>([]);
+  // The News row currently clicked open, if any — replaces the old auto-shown "current
+  // event" modal entirely; nothing sets this except a click on a News row.
+  const [newsModalItem, setNewsModalItem] = useState<NewsItem | null>(null);
   // Ready state for the in-flight turn — authoritative from the server (game:readyUpdate),
   // not optimistic local state, so it can never drift from what every other player sees.
   const [readyPlayerIds, setReadyPlayerIds] = useState<string[]>([]);
   const [activePlayerCount, setActivePlayerCount] = useState(0);
   // Guards the turn-sync effect below against React 18 StrictMode's dev-only double
   // invocation of effects with no cleanup — without this, the same `turnResults` object
-  // gets processed twice, and setEventQueue's append (non-idempotent by nature) ends up
+  // gets processed twice, and setNewsItems' append (non-idempotent by nature) ends up
   // adding the same event twice, producing a duplicate React key.
   const processedTurnResultsRef = useRef<TurnResolutionResult | null>(null);
   // The last round an info window was shown for — round 1 (initial game start) never
@@ -470,25 +537,35 @@ export default function GamePhase() {
       // form — the ref-guard above already guarantees this effect body runs at most
       // once per genuinely new turnResults, and updater callbacks are explicitly *not*
       // guaranteed single-invocation by React (StrictMode intentionally double-invokes
-      // them in dev to catch impure updaters) — setEventQueue's append below is exactly
+      // them in dev to catch impure updaters) — setNewsItems' append below is exactly
       // the kind of non-idempotent side effect that bit us when it lived in one.
       setPrevData(myData);
-      // Detect lawsuits filed against me, and any of my own cases whose verdict just
-      // came in, since the last turn — myData is null on the very first snapshot
-      // (nothing to have happened yet), so this only ever fires for genuinely new
-      // events appearing in a resolved turn.
+      // Detect lawsuits filed against me, any of my own cases whose verdict just came
+      // in, and any of my own cases that settled by negotiation, since the last turn —
+      // myData is null on the very first snapshot (nothing to have happened yet), so
+      // this only ever fires for genuinely new events appearing in a resolved turn.
+      // Tagged with turnResults.round (the round that JUST resolved, when these events
+      // actually happened) — NOT the `round` state variable, which by this point may
+      // already reflect the round phase:changed just advanced to (see the "must be keyed
+      // on round, not turnResults?.round" fix elsewhere in this file for why the two can
+      // differ within the same turn transition).
       if (myData) {
         const newlySued = detectNewlySuedCases(myData.legalCases, myPlayer.legalCases, player.id);
         const newlyResolved = detectNewlyResolvedCases(myData.legalCases, myPlayer.legalCases, player.id);
+        const newlySettled = detectNewlySettledCases(myData.legalCases, myPlayer.legalCases, player.id);
         const won = newlyResolved.filter((r) => r.outcome === 'won').map((r) => r.case);
         const lost = newlyResolved.filter((r) => r.outcome === 'lost').map((r) => r.case);
         const newEvents: PostTurnEvent[] = [
           ...(newlySued.length > 0 ? [{ type: 'sued', cases: newlySued } as const] : []),
           ...(won.length > 0 ? [{ type: 'verdict', outcome: 'won', cases: won } as const] : []),
           ...(lost.length > 0 ? [{ type: 'verdict', outcome: 'lost', cases: lost } as const] : []),
+          ...(newlySettled.length > 0 ? [{ type: 'settlement', cases: newlySettled } as const] : []),
         ];
         if (newEvents.length > 0) {
-          setEventQueue((prev) => [...prev, ...newEvents]);
+          setNewsItems((prev) => [
+            ...prev,
+            ...newEvents.map((event) => ({ id: crypto.randomUUID(), round: turnResults.round, event })),
+          ]);
         }
       }
       setMyData(myPlayer);
@@ -503,10 +580,8 @@ export default function GamePhase() {
     // ref-guard above (not this dependency array) is what gates re-execution.
   }, [turnResults, player]);
 
-  // "Turn change" info window — every round after the first (round 1 is the initial
-  // game start, not a change from anything). Queued alongside sued/verdict events
-  // above so a turn that both files a lawsuit and advances the round shows one
-  // modal at a time instead of two stacked on top of each other.
+  // "Next turn" News item — every round after the first (round 1 is the initial game
+  // start, not a change from anything).
   useEffect(() => {
     if (lastAnnouncedRoundRef.current === null) {
       lastAnnouncedRoundRef.current = round;
@@ -514,7 +589,7 @@ export default function GamePhase() {
     }
     if (round !== lastAnnouncedRoundRef.current) {
       lastAnnouncedRoundRef.current = round;
-      setEventQueue((prev) => [...prev, { type: 'turnChange', round }]);
+      setNewsItems((prev) => [...prev, { id: crypto.randomUUID(), round, event: { type: 'turnChange', round } }]);
     }
   }, [round]);
 
@@ -578,8 +653,8 @@ export default function GamePhase() {
   // does), so each active instance is looked back up by name to bucket it.
   const activeStrategicCount = myData.activeDecisions.filter((d) => decisions.find((def) => def.decision === d.decisionName)?.level === 'Strategic').length + pending.strategic.length;
   const activeOperationalCount = myData.activeDecisions.filter((d) => decisions.find((def) => def.decision === d.decisionName)?.level === 'Operational').length + pending.operational.length;
-  const currentEvent = eventQueue[0];
-  const dismissCurrentEvent = () => setEventQueue((q) => q.slice(1));
+  const currentEvent = newsModalItem?.event ?? null;
+  const dismissCurrentEvent = () => setNewsModalItem(null);
 
   return (
     <div style={gpStyles.dashboard}>
@@ -616,6 +691,9 @@ export default function GamePhase() {
         <KpiCard label="REVENUE" value={fmt(derived.revenue)} trend={computeTrend(derived.revenue, prevData?.derived.revenue)} onClick={() => setDrillDown({ type: 'revenue', data: myData })} />
         <KpiCard label="STOCK VALUE" value={fmt(derived.stockValue)} trend={computeTrend(derived.stockValue, prevData?.derived.stockValue)} onClick={() => setDrillDown({ type: 'shares', data: myData })} />
       </Flex>
+
+      {/* ── News ───────────────────────────────────────── */}
+      <NewsBox items={newsItems} onSelect={setNewsModalItem} />
 
       {/* ── Two-column layout: Decisions | Legal ──────── */}
       <Flex wrap="wrap" gap="md">
@@ -658,10 +736,12 @@ export default function GamePhase() {
                 cash={vars.cash}
                 digDeeperCost={gameSettings?.digDeeperCost ?? 10000}
                 socket={socket}
-                onSueNow={(targetId, groundName) => {
-                  setSueSuggestion({ targetId, groundName });
+                onSueNow={(targetId, decisionName, groundName) => {
+                  setSueSuggestion({ targetId, decisionName, groundName });
                   setSueModalOpen(true);
                 }}
+                pendingLawsuits={pending.lawsuits}
+                myLegalCases={myLegalCases}
               />
               <Button variant="filled" color="red" onClick={() => setSueModalOpen(true)} style={{ ...boldStyle }}>
                 SUE THEIR ASSES (${(gameSettings?.lawsuitFilingCost ?? 0).toLocaleString()})
@@ -743,6 +823,7 @@ export default function GamePhase() {
           pending={pending}
           onSubmitPending={submitPending}
           prefillTargetId={sueSuggestion?.targetId}
+          prefillDecisionName={sueSuggestion?.decisionName}
           prefillGroundName={sueSuggestion?.groundName}
           cash={vars.cash}
           socket={socket}
@@ -781,9 +862,11 @@ export default function GamePhase() {
         centered
         title={
           <Text style={{ ...boldStyle, fontSize: '0.9rem' }}>
+            {newsModalItem && `TURN ${newsModalItem.round} — `}
             {currentEvent?.type === 'sued' && "⚖️ YOU'VE BEEN SUED"}
             {currentEvent?.type === 'verdict' && (currentEvent.outcome === 'won' ? '🏆 CASE WON' : '💩 CASE LOST')}
-            {currentEvent?.type === 'turnChange' && `🔔 TURN ${currentEvent.round}`}
+            {currentEvent?.type === 'settlement' && '🤝 CASE SETTLED'}
+            {currentEvent?.type === 'turnChange' && `🔔 NEXT TURN`}
           </Text>
         }
       >
@@ -803,7 +886,7 @@ export default function GamePhase() {
               ))}
             </Stack>
             <Button fullWidth onClick={dismissCurrentEvent}>
-              Got it
+              Close
             </Button>
           </Stack>
         )}
@@ -840,7 +923,34 @@ export default function GamePhase() {
               })}
             </Stack>
             <Button fullWidth onClick={dismissCurrentEvent}>
-              Got it
+              Close
+            </Button>
+          </Stack>
+        )}
+
+        {currentEvent?.type === 'settlement' && (
+          <Stack gap="md">
+            <Stack gap="xs">
+              {currentEvent.cases.map(({ case: c, role }) => {
+                const opponentName = playerNames.get(role === 'plaintiff' ? c.defendantId : c.plaintiffId) ?? 'Unknown';
+                const lastOffer = c.offers[c.offers.length - 1]?.amount ?? c.stakes;
+                const outcomeLine = role === 'plaintiff'
+                  ? `Settled — you received ${fmt(lastOffer)} from ${opponentName}`
+                  : `Settled — you paid ${fmt(lastOffer)} to ${opponentName}`;
+                return (
+                  <Box key={c.id} style={{ borderLeft: '3px solid var(--mantine-color-yellow-6)', paddingLeft: 8 }}>
+                    <Text size="sm" fw={600}>
+                      {role === 'plaintiff' ? `You sued ${opponentName}` : `${opponentName} sued you`} over "{c.decisionName}"
+                    </Text>
+                    <Text size="sm" c="dimmed">
+                      Ground: {c.groundName} — {outcomeLine}
+                    </Text>
+                  </Box>
+                );
+              })}
+            </Stack>
+            <Button fullWidth onClick={dismissCurrentEvent}>
+              Close
             </Button>
           </Stack>
         )}
@@ -852,7 +962,7 @@ export default function GamePhase() {
               Turn {currentEvent.round} has begun.
             </Text>
             <Button fullWidth onClick={dismissCurrentEvent}>
-              Got it
+              Close
             </Button>
           </Stack>
         )}
@@ -885,6 +995,96 @@ function KpiCard({ label, value, trend, negative, onClick }: KpiCardProps) {
         <TrendIcon trend={trend} size={16} />
       </Flex>
     </Box>
+  );
+}
+
+// ============================================================
+// Sub-components — News
+// ============================================================
+
+interface NewsBoxProps {
+  items: NewsItem[];
+  onSelect: (item: NewsItem) => void;
+}
+
+/**
+ * A persistent, scrollable feed of everything that's happened this game (being sued, a
+ * lawsuit verdict, a negotiated settlement, a new turn starting) — replaces the old
+ * behavior of auto-popping a "Got it"-dismissed Modal the instant each event happened.
+ * By design, nothing here interrupts play: an event just appends a row, and the player
+ * clicks it (any time, in any order) to see the same info window that used to show
+ * automatically. Newest rows append at the bottom; the list auto-scrolls to follow new
+ * arrivals, but only while the player is already at (or very near) the bottom — if
+ * they've scrolled up to reread older news, a new arrival doesn't yank them back down
+ * (the `stickToBottomRef` + `onScroll` distance check below is the whole mechanism).
+ */
+function NewsBox({ items, onSelect }: NewsBoxProps) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
+
+  const handleScroll = () => {
+    const el = listRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = distanceFromBottom < 40;
+  };
+
+  useEffect(() => {
+    if (stickToBottomRef.current && listRef.current) {
+      listRef.current.scrollTop = listRef.current.scrollHeight;
+    }
+  }, [items.length]);
+
+  return (
+    <SectionCard title="News">
+      {items.length === 0 ? (
+        <Text c="dimmed" size="sm">No news yet</Text>
+      ) : (
+        <div
+          ref={listRef}
+          onScroll={handleScroll}
+          style={{ maxHeight: 220, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6, paddingRight: 4 }}
+        >
+          {items.map((item) => (
+            <NewsRow key={item.id} item={item} onClick={() => onSelect(item)} />
+          ))}
+        </div>
+      )}
+    </SectionCard>
+  );
+}
+
+interface NewsRowProps {
+  item: NewsItem;
+  onClick: () => void;
+}
+
+/** One News row — flashes red a few times right when it first mounts (i.e. the instant
+ * it's added; existing rows never remount on a later re-render since `NewsBox` only ever
+ * appends, so the `news-flash` animation naturally never replays for an already-seen
+ * row) to catch the eye without demanding an immediate response the way the old
+ * auto-popup Modal did. */
+function NewsRow({ item, onClick }: NewsRowProps) {
+  return (
+    <Flex
+      justify="space-between"
+      align="center"
+      onClick={onClick}
+      style={{
+        padding: '6px 10px',
+        border: '2px solid #333',
+        borderRadius: 6,
+        cursor: 'pointer',
+        background: '#fff',
+        animation: 'news-flash 0.6s ease-in-out 3',
+      }}
+      title="Click for details"
+    >
+      <Text size="sm" style={{ textDecoration: 'underline', textDecorationStyle: 'dotted', textUnderlineOffset: 3 }}>
+        {newsTopic(item.event)}
+      </Text>
+      <Text size="xs" c="dimmed" style={boldStyle}>TURN {item.round}</Text>
+    </Flex>
   );
 }
 
@@ -1357,12 +1557,15 @@ function CaseCard({ caseData, myPlayerId, playerNames, onRiskInfo, negotiationPe
   const isDefendant = getCaseRole(caseData, myPlayerId) === 'defendant';
   const opponentName = getOpponentName(caseData, myPlayerId, playerNames);
 
-  // Calculate display probability for defendant cases
+  // The defendant always sees the odds. The plaintiff only sees them if they fully
+  // "Dig Deeper"-investigated the underlying attack before suing over its exact
+  // suggested ground — server-stamped onto the case at filing time, see CLAUDE.md.
+  const knowsOdds = isDefendant || caseData.plaintiffFullyInvestigated;
   let displayProb = caseData.baseProbability;
-  if (isDefendant && caseData.adjustedProbability !== undefined) {
+  if (caseData.adjustedProbability !== undefined) {
     displayProb = caseData.adjustedProbability;
   }
-  const sem = isDefendant ? semaphoreLevel(displayProb) : null;
+  const sem = knowsOdds ? semaphoreLevel(displayProb) : null;
 
   return (
     <div style={gpStyles.caseCard}>
@@ -1373,14 +1576,14 @@ function CaseCard({ caseData, myPlayerId, playerNames, onRiskInfo, negotiationPe
           <Text style={{ ...boldStyle, fontSize: '0.95rem' }}>{opponentName}</Text>
           <Text size="xs" c="dimmed">{caseData.decisionName} — {caseData.groundName}</Text>
         </Stack>
-        {isDefendant && sem && (
+        {knowsOdds && sem && (
           <Box style={gpStyles.semaphoreChip(sem)} onClick={() => onRiskInfo(caseData)}>
             <Box h={8} w={8} style={{ background: semColors[sem].bg, borderRadius: '50%' }} />
             <Text style={{ fontWeight: 900 }}>{Math.round(displayProb * 100)}%</Text>
           </Box>
         )}
-        {!isDefendant && (
-          <Box style={gpStyles.semaphoreChip('gray', false)} title="You don't know the odds on a case you filed — only the defendant sees a probability.">
+        {!knowsOdds && (
+          <Box style={gpStyles.semaphoreChip('gray', false)} title="You don't know the odds on a case you filed — dig deeper to the end on the underlying attack before suing to reveal them.">
             <Box h={8} w={8} style={{ background: semColors.gray.bg, borderRadius: '50%' }} />
             <Text style={{ fontWeight: 900 }}>Unknown</Text>
           </Box>
@@ -1442,8 +1645,28 @@ const CASE_ACTION_ERROR_COPY: Record<string, string> = {
   not_a_party: "You're not a party to this case.",
   not_your_turn: "It's not your turn to act on this case yet.",
   no_offer_to_accept: "There's no offer to accept yet.",
-  invalid_amount: 'Enter an amount between $1 and the full stakes.',
+  invalid_amount: "That's outside the current negotiating range — someone may have just made a new offer, refreshing it.",
 };
+
+/**
+ * The valid `[min, max]` range for the next offer on this case — hand-kept in sync with
+ * the server's own `GameLoop.computeOfferBracket` (same "duplicate small pure logic
+ * client-side" convention `GamePhase.utils.test.ts` already uses, rather than importing
+ * server internals into the client). `min` is the defendant's own most recent offer (0
+ * if they haven't offered yet); `max` is the plaintiff's own most recent offer (the full
+ * stakes if they haven't offered yet) — the bracket only ever narrows inward as each side
+ * offers, never widens. The server is the actual authority here; this only drives the
+ * slider's bounds so the UI doesn't let a player drag to a value the server would reject.
+ */
+function computeOfferBracket(caseData: LegalCaseData): { min: number; max: number } {
+  let min = 0;
+  let max = caseData.stakes;
+  for (const offer of caseData.offers) {
+    if (offer.by === 'defendant') min = offer.amount;
+    else max = offer.amount;
+  }
+  return { min, max };
+}
 
 interface NegotiationPanelProps {
   caseData: LegalCaseData;
@@ -1467,15 +1690,18 @@ function NegotiationPanel({ caseData, myPlayerId, socket }: NegotiationPanelProp
   // recent offer is the one currently allowed to counter or accept. Going to court is
   // never turn-gated — either party can end negotiation at any time.
   const isMyTurnToRespond = lastOffer === null ? role === 'defendant' : lastOffer.by !== role;
+  const { min: offerMin, max: offerMax } = computeOfferBracket(caseData);
 
-  const [amount, setAmount] = useState(lastOffer?.amount ?? Math.round(caseData.stakes * 0.5));
+  const [amount, setAmount] = useState(() => Math.round((offerMin + offerMax) / 2));
   const [submitting, setSubmitting] = useState<CaseActionKind | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  // Re-seed the slider whenever a new offer actually lands (not on every render) — a
-  // counter starts from exactly what's currently on the table.
+  // Re-seed the slider whenever a new offer actually lands (not on every render) — the
+  // bracket narrows with each move, so the middle of the CURRENT range is a better
+  // starting suggestion for a new counter than the previous offer's exact value (which
+  // is now often sitting right at one edge of the new range, not a useful midpoint).
   useEffect(() => {
-    setAmount(lastOffer?.amount ?? Math.round(caseData.stakes * 0.5));
+    setAmount(Math.round((offerMin + offerMax) / 2));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [caseData.offers.length]);
 
@@ -1522,9 +1748,12 @@ function NegotiationPanel({ caseData, myPlayerId, socket }: NegotiationPanelProp
               {lastOffer ? 'YOUR COUNTER' : 'YOUR OPENING OFFER'}
             </Text>
             <Flex align="center" gap="sm">
-              <Slider flex={1} min={Math.min(500, caseData.stakes)} max={caseData.stakes} step={500} value={amount} onChange={setAmount} color="#dc2626" disabled={submitting !== null} />
+              <Slider flex={1} min={offerMin} max={offerMax} step={500} value={amount} onChange={setAmount} color="#dc2626" disabled={submitting !== null} />
               <Text style={{ ...boldStyle, fontSize: '0.8rem', minWidth: 70, textAlign: 'right' }}>{fmt(amount)}</Text>
             </Flex>
+            <Text size="xs" c="dimmed" style={{ fontStyle: 'italic', marginTop: 4 }}>
+              Range: {fmt(offerMin)} – {fmt(offerMax)}
+            </Text>
           </div>
           <Flex gap="sm">
             {lastOffer && (
@@ -1597,19 +1826,56 @@ function QueuedLawsuitCard({ entry, targetName, onRemove }: QueuedLawsuitCardPro
 // Sub-components — Incoming Attack Hints
 // ============================================================
 
+/**
+ * Whether the player has already sued the attacker over exactly the ground this attack's
+ * hint card suggests, with a "correct" (non-zero win probability) case — once true, the
+ * hint should stop nagging the player about an attack they've already acted on. Only ever
+ * true from investigationLevel 3 onward: `suggestedGroundName`/`successProbability` don't
+ * exist below that, and neither does the "SUE NOW" affordance this is meant to track the
+ * outcome of. Deliberately scoped to the exact suggested ground, not "any lawsuit against
+ * this attacker over this decision" — a manually-picked *different* ground for the same
+ * attacking decision (via SueModal's own ground picker, not the SUE NOW shortcut) isn't
+ * recognized as addressing this specific hint, since computing that ground's own win
+ * probability client-side would mean re-implementing the admin-editable, DB-backed
+ * formula evaluation this app deliberately keeps server-only (see CLAUDE.md's "Formulas
+ * are DB-backed" section).
+ *
+ * Checks both `pendingLawsuits` (queued this turn, not yet resolved into a real case) and
+ * `myLegalCases` (a real case already created from a prior turn's filing, any status) —
+ * whichever the current game state actually has, since `pending.lawsuits` is cleared the
+ * moment a real `LegalCaseData` exists.
+ */
+function isAttackAlreadySuedOver(
+  attack: IncomingAttackInfo,
+  pendingLawsuits: SubmittedDecisions['lawsuits'],
+  myLegalCases: LegalCaseData[],
+): boolean {
+  if (!attack.attackerId || !attack.decisionName || !attack.suggestedGroundName) return false;
+  if (!((attack.successProbability ?? 0) > 0)) return false;
+  const matches = (targetId: string, decisionName: string, groundName: string) =>
+    targetId === attack.attackerId && decisionName === attack.decisionName && groundName === attack.suggestedGroundName;
+  return (
+    pendingLawsuits.some((l) => matches(l.targetId, l.decisionName, l.groundName)) ||
+    myLegalCases.some((c) => matches(c.defendantId, c.decisionName, c.groundName))
+  );
+}
+
 interface IncomingAttackHintsProps {
   attacks: IncomingAttackInfo[];
   cash: number;
   digDeeperCost: number;
   socket: Socket | null;
-  onSueNow: (targetId: string, groundName: string) => void;
+  onSueNow: (targetId: string, decisionName: string, groundName: string) => void;
+  pendingLawsuits: SubmittedDecisions['lawsuits'];
+  myLegalCases: LegalCaseData[];
 }
 
-function IncomingAttackHints({ attacks, cash, digDeeperCost, socket, onSueNow }: IncomingAttackHintsProps) {
-  if (attacks.length === 0) return null;
+function IncomingAttackHints({ attacks, cash, digDeeperCost, socket, onSueNow, pendingLawsuits, myLegalCases }: IncomingAttackHintsProps) {
+  const visibleAttacks = attacks.filter((a) => !isAttackAlreadySuedOver(a, pendingLawsuits, myLegalCases));
+  if (visibleAttacks.length === 0) return null;
   return (
     <Stack gap={6}>
-      {attacks.map((attack) => (
+      {visibleAttacks.map((attack) => (
         <AttackHintCard key={attack.attackId} attack={attack} cash={cash} digDeeperCost={digDeeperCost} socket={socket} onSueNow={onSueNow} />
       ))}
     </Stack>
@@ -1621,7 +1887,7 @@ function AttackHintCard({ attack, cash, digDeeperCost, socket, onSueNow }: {
   cash: number;
   digDeeperCost: number;
   socket: Socket | null;
-  onSueNow: (targetId: string, groundName: string) => void;
+  onSueNow: (targetId: string, decisionName: string, groundName: string) => void;
 }) {
   const fullyInvestigated = attack.investigationLevel >= 3;
   const canAfford = cash >= digDeeperCost;
@@ -1651,7 +1917,7 @@ function AttackHintCard({ attack, cash, digDeeperCost, socket, onSueNow }: {
             fullWidth
             mt={6}
             leftSection={<IconGavel size={12} />}
-            onClick={() => onSueNow(attack.attackerId!, attack.suggestedGroundName!)}
+            onClick={() => onSueNow(attack.attackerId!, attack.decisionName!, attack.suggestedGroundName!)}
           >
             SUE NOW
           </Button>
@@ -2450,22 +2716,26 @@ function RivalFieldView({ rival, field, label, socket }: RivalFieldViewProps) {
 // Sue Modal
 // ============================================================
 
-/** A ground you can actually sue someone over — derived from a decision the target
- * really deployed, never a fixed catalog (there's no fixed catalog; every decision's
- * legalRisks in game_engine.json is a potential ground once someone has done it). */
+/** A ground a player can choose to sue someone over. Deliberately the *entire* legal-risk
+ * catalog across every decision in the game — not filtered down to what the target has
+ * actually deployed — so a player can gamble on a ground the target may or may not have
+ * actually pursued; a wrong guess still costs the filing fee (see SueModal's `handleFile`)
+ * but simply produces no case at the next turn resolution (`LegalEngine.fileLawsuit`
+ * already returns null when the target never deployed the cited decision — this was
+ * already the exact validation a real, deliberate guess needs, it just wasn't reachable
+ * from the UI before). */
 interface DerivedGround {
   decisionName: string;
   groundName: string;
   description: string;
 }
 
-function getGroundsAgainst(target: PlayerTurnResult, decisions: DecisionDefinition[]): DerivedGround[] {
+function getGroundsAgainst(decisions: DecisionDefinition[]): DerivedGround[] {
   const grounds: DerivedGround[] = [];
-  for (const active of target.activeDecisions) {
-    const def = decisions.find((d) => d.decision === active.decisionName);
-    if (!def?.legalRisks) continue;
+  for (const def of decisions) {
+    if (!def.legalRisks) continue;
     for (const risk of def.legalRisks) {
-      grounds.push({ decisionName: active.decisionName, groundName: risk.name, description: risk.description });
+      grounds.push({ decisionName: def.decision, groundName: risk.name, description: risk.description });
     }
   }
   return grounds;
@@ -2486,13 +2756,17 @@ interface SueModalProps {
   onSubmitPending: (next: SubmittedDecisions) => void;
   /** Pre-select a target + ground — set via a fully-investigated attack's "SUE NOW" shortcut. */
   prefillTargetId?: string;
+  /** Disambiguates prefillGroundName against the whole-library ground catalog (see
+   * getGroundsAgainst) — two different decisions could in principle share an identically
+   * named ground. */
+  prefillDecisionName?: string;
   prefillGroundName?: string;
   /** This player's current cash — used to disable filing (and explain why) when the flat filing fee isn't affordable. */
   cash: number;
   socket: Socket | null;
 }
 
-function SueModal({ competitors, decisions, gameSettings, pending, onSubmitPending, prefillTargetId, prefillGroundName, cash, socket }: SueModalProps) {
+function SueModal({ competitors, decisions, gameSettings, pending, onSubmitPending, prefillTargetId, prefillDecisionName, prefillGroundName, cash, socket }: SueModalProps) {
   const [query, setQuery] = useState('');
   const [selectedGround, setSelectedGround] = useState<DerivedGround | null>(null);
   const [targetRival, setTargetRival] = useState<string>('');
@@ -2500,7 +2774,7 @@ function SueModal({ competitors, decisions, gameSettings, pending, onSubmitPendi
   const [fileError, setFileError] = useState<string | null>(null);
 
   const target = competitors.find((c) => c.playerId === targetRival) ?? null;
-  const grounds = target ? getGroundsAgainst(target, decisions) : [];
+  const grounds = target ? getGroundsAgainst(decisions) : [];
   const q = query.trim().toLowerCase();
   const results = q === '' ? grounds : grounds.filter((g) => g.groundName.toLowerCase().includes(q) || g.description.toLowerCase().includes(q));
 
@@ -2512,10 +2786,10 @@ function SueModal({ competitors, decisions, gameSettings, pending, onSubmitPendi
     if (!prefillGroundName) return;
     const prefillTarget = competitors.find((c) => c.playerId === prefillTargetId);
     if (!prefillTarget) return;
-    const match = getGroundsAgainst(prefillTarget, decisions).find((g) => g.groundName === prefillGroundName);
+    const match = getGroundsAgainst(decisions).find((g) => g.decisionName === prefillDecisionName && g.groundName === prefillGroundName);
     if (match) setSelectedGround(match);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prefillTargetId, prefillGroundName]);
+  }, [prefillTargetId, prefillDecisionName, prefillGroundName]);
 
   const maxLawsuits = gameSettings?.maxLawsuitsPerPlayerPerTurn ?? Infinity;
   const atLimit = pending.lawsuits.length >= maxLawsuits;
@@ -2610,7 +2884,7 @@ function SueModal({ competitors, decisions, gameSettings, pending, onSubmitPendi
             </div>
           </Stack>
           <Text size="xs" c="dimmed">
-            {grounds.length === 0 ? `${target.playerName} hasn't made any risky decisions yet — nothing to sue over.` : `${results.length} match${results.length === 1 ? '' : 'es'}`}
+            {grounds.length === 0 ? 'No legal grounds are configured for this game.' : `${results.length} match${results.length === 1 ? '' : 'es'} — guessing wrong still costs the filing fee`}
           </Text>
 
           {/* Results list */}
@@ -2677,7 +2951,7 @@ function SueModal({ competitors, decisions, gameSettings, pending, onSubmitPendi
 }
 
 // ============================================================
-// CSS animation for urgent timer pulse
+// CSS animations — urgent timer pulse, News row flash
 // ============================================================
 
 const styleTag = document.createElement('style');
@@ -2685,6 +2959,10 @@ styleTag.textContent = `
   @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }
+  }
+  @keyframes news-flash {
+    0%, 100% { background-color: #fff; }
+    50% { background-color: #fecaca; }
   }
 `;
 if (!document.querySelector('[data-gamephase-styles]')) {

@@ -127,7 +127,7 @@ describe('LegalEngine', () => {
   describe('fileLawsuit', () => {
     it('should create a case when the target actually deployed the cited decision', () => {
       const targetActive = [{ decisionName: 'Buy Shares', elapsedYears: 0 }];
-      const result = engine.fileLawsuit('player-2', 'player-1', 'Buy Shares', 'Securities Violation', targetActive, 'room-1');
+      const result = engine.fileLawsuit('player-2', 'player-1', 'Buy Shares', 'Securities Violation', targetActive, 'room-1', false);
 
       expect(result).not.toBeNull();
       expect(result?.groundName).toBe('Securities Violation');
@@ -135,7 +135,7 @@ describe('LegalEngine', () => {
 
     it('should return null for a decision without legal risks', () => {
       const targetActive = [{ decisionName: 'Safe Decision', elapsedYears: 0 }];
-      const result = engine.fileLawsuit('player-2', 'player-1', 'Safe Decision', 'Anything', targetActive, 'room-1');
+      const result = engine.fileLawsuit('player-2', 'player-1', 'Safe Decision', 'Anything', targetActive, 'room-1', false);
 
       expect(result).toBeNull();
     });
@@ -146,70 +146,79 @@ describe('LegalEngine', () => {
 
     it('should set the decision-maker as defendant and the suer as plaintiff', () => {
       const targetActive = [{ decisionName: 'Water Pumping', elapsedYears: 0 }];
-      const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1');
+      const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1', false);
 
       expect(result?.defendantId).toBe('player-1');
       expect(result?.plaintiffId).toBe('player-2');
     });
 
-    it('should return null when the target never deployed the cited decision', () => {
+    it('should still create a case — a hopeless, 0%-probability one — when the target never deployed the cited decision (a wrong guess)', () => {
       const targetActive = [{ decisionName: 'Safe Decision', elapsedYears: 0 }];
-      const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1');
+      const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1', false);
 
-      expect(result).toBeNull();
+      expect(result).not.toBeNull();
+      expect(result?.groundName).toBe('Environmental Violation');
+      expect(result?.baseProbability).toBe(0);
+    });
+
+    it('should still set real stakes for a wrong-guess case, unaffected by there being no real target instance to price elapsedYears against', () => {
+      const targetActive: { decisionName: string; elapsedYears: number }[] = [];
+      const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1', false);
+
+      expect(result?.stakes).toBe(22050);
     });
 
     it('should return null for an unknown ground name', () => {
       const targetActive = [{ decisionName: 'Water Pumping', elapsedYears: 0 }];
-      const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Made Up Ground', targetActive, 'room-1');
+      const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Made Up Ground', targetActive, 'room-1', false);
 
       expect(result).toBeNull();
     });
 
     it('should return null for an unknown decision name', () => {
-      const result = engine.fileLawsuit('player-2', 'player-1', 'Nonexistent Decision', 'Anything', [], 'room-1');
+      const result = engine.fileLawsuit('player-2', 'player-1', 'Nonexistent Decision', 'Anything', [], 'room-1', false);
 
       expect(result).toBeNull();
     });
 
     it('should use the year-1 probability schedule when the decision was just deployed (elapsedYears=0)', () => {
       const targetActive = [{ decisionName: 'Water Pumping', elapsedYears: 0 }];
-      const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1');
+      const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1', false);
 
       expect(result?.baseProbability).toBeCloseTo(0.06, 4);
     });
 
     it('should use the year-2 probability schedule after one turn has elapsed', () => {
       const targetActive = [{ decisionName: 'Water Pumping', elapsedYears: 1 }];
-      const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1');
+      const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1', false);
 
       expect(result?.baseProbability).toBeCloseTo(0.12, 4);
     });
 
     it('should fall through to the default probability once past the explicit schedule', () => {
       const targetActive = [{ decisionName: 'Water Pumping', elapsedYears: 5 }];
-      const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1');
+      const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1', false);
 
       expect(result?.baseProbability).toBeCloseTo(0.18, 4);
     });
 
     it('should set correct stakes from the impact schedule', () => {
       const targetActive = [{ decisionName: 'Water Pumping', elapsedYears: 0 }];
-      const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1');
+      const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1', false);
 
       expect(result?.stakes).toBe(22050);
     });
 
     it('should set correct stakes for default-only impacts', () => {
       const targetActive = [{ decisionName: 'Buy Shares', elapsedYears: 0 }];
-      const result = engine.fileLawsuit('player-2', 'player-1', 'Buy Shares', 'Securities Violation', targetActive, 'room-1');
+      const result = engine.fileLawsuit('player-2', 'player-1', 'Buy Shares', 'Securities Violation', targetActive, 'room-1', false);
 
       expect(result?.stakes).toBe(45000);
     });
 
     it('should set correct metadata on the case', () => {
       const targetActive = [{ decisionName: 'Water Pumping', elapsedYears: 0 }];
-      const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1');
+      const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1', false);
 
       expect(result?.defendantId).toBe('player-1');
       expect(result?.plaintiffId).toBe('player-2');
@@ -222,14 +231,22 @@ describe('LegalEngine', () => {
       expect(result?.verdict).toBeUndefined();
       expect(result?.adjustedProbability).toBeUndefined();
       expect(result?.createdAt).toBeInstanceOf(Date);
+      expect(result?.plaintiffFullyInvestigated).toBe(false);
     });
 
     it('should generate unique case IDs across separate filings', () => {
       const targetActive = [{ decisionName: 'Water Pumping', elapsedYears: 0 }];
-      const first = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1');
-      const second = engine.fileLawsuit('player-3', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1');
+      const first = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1', false);
+      const second = engine.fileLawsuit('player-3', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1', false);
 
       expect(first?.id).not.toBe(second?.id);
+    });
+
+    it('should stamp plaintiffFullyInvestigated as true when the caller passes true', () => {
+      const targetActive = [{ decisionName: 'Water Pumping', elapsedYears: 0 }];
+      const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1', true);
+
+      expect(result?.plaintiffFullyInvestigated).toBe(true);
     });
   });
 

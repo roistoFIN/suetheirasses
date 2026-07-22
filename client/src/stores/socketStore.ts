@@ -203,9 +203,9 @@ export const useSocketStore = create<SocketState>((set, get) => ({
         setSelfEliminationReason('bankrupt');
       } else {
         // Someone else's elimination — everyone still in the game gets a "X has gone
-        // bankrupt" takeover (see App.tsx's BankruptcyOverlay), queued so it's shown even
-        // if this same elimination ends the game (game:over/phase:changed follow right
-        // after this same event).
+        // bankrupt" info-window modal, overlaid on top of the still-running game (see
+        // App.tsx's BankruptcyModal), queued so it's shown even if this same elimination
+        // ends the game (game:over/phase:changed follow right after this same event).
         enqueueBankruptcyEvent({ playerId: data.playerId, playerName: data.playerName });
       }
     });

@@ -816,6 +816,52 @@ describe('GameEngine', () => {
 
       localEngine.stop();
     });
+
+    it('defers finalizing removal while this room\'s turn is already resolving, then finalizes it once that resolution finishes (regression — the race this app used to have no protection against)', async () => {
+      vi.useFakeTimers();
+      const localIo = createMockIo();
+      const localPrisma = createMockPrisma();
+      const localEngine = new GameEngine(localIo, localPrisma);
+      await localEngine.loadGameData();
+
+      const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await localEngine.createRoom(creator);
+      await localEngine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+      roomState.room.status = RoomStatus.GAME_PHASE;
+      roomState.room.currentPhaseRound = 1;
+
+      // Bob disconnects (network hiccup, backgrounded tab, whatever) — his grace
+      // period starts now.
+      await localEngine.markPlayerDisconnected('socket-2');
+
+      // Block resolveGameTurn's per-player persistence mid-flight, so it stays inside
+      // its advancingRooms-held critical section for as long as this test needs —
+      // simulating the round timer independently firing at almost the same moment
+      // Bob's grace period is about to expire.
+      let releaseUpdate: () => void = () => {};
+      const blocker = new Promise<void>((resolve) => { releaseUpdate = resolve; });
+      (localPrisma.company.update as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        await blocker;
+        return {};
+      });
+
+      const turnPromise = localEngine.resolveGameTurn(roomState.room.id);
+
+      // Cross both the 10s heartbeat tick and the 60s grace-period deadline while
+      // resolveGameTurn is still stuck mid-flight (advancingRooms still holds this room).
+      await vi.advanceTimersByTimeAsync(70_000);
+      expect(localPrisma.player.delete).not.toHaveBeenCalled();
+
+      // Let resolveGameTurn finish and release the lock.
+      releaseUpdate();
+      await turnPromise;
+
+      // The next heartbeat tick (10s later) now finds the lock free and finalizes it.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(localPrisma.player.delete).toHaveBeenCalled();
+
+      localEngine.stop();
+    });
   });
 
   describe('rejoinRoom', () => {
@@ -1279,6 +1325,50 @@ describe('GameEngine', () => {
 
       // Only one resolution should have gone through — round advances by exactly 1
       expect(roomState.room.currentPhaseRound).toBe(2);
+    });
+
+    it('should still complete and broadcast the turn even if one player\'s row disappeared mid-resolution (regression — a heartbeat-sweep/resolveGameTurn race)', async () => {
+      // Simulates a player whose reconnect grace period expired (their Company/Player
+      // rows deleted by finalizePlayerRemoval) at almost the exact moment this room's
+      // turn was already resolving — a real race this app used to have no protection
+      // against at all. Before the fix, one player's Prisma "record not found" here
+      // would throw, abort the whole persistence loop, and the outer catch would
+      // swallow it silently — turn:resolved/phase:changed never fire, the round timer
+      // (already cleared by the caller) never restarts, and the room is stuck until
+      // every client manually refreshes. Each player's persistence must be isolated.
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+      roomState.room.status = RoomStatus.GAME_PHASE;
+      roomState.room.currentPhaseRound = 1;
+
+      const bobId = Array.from(roomState.players.values()).find((p) => p.name === 'Bob')!.id;
+
+      const realUpdate = (mockPrisma.company.update as ReturnType<typeof vi.fn>).getMockImplementation();
+      (mockPrisma.company.update as ReturnType<typeof vi.fn>).mockImplementation((args: any) => {
+        if (args.where.playerId === bobId) {
+          return Promise.reject(new Error('P2025: Record to update not found (simulated concurrent deletion)'));
+        }
+        return realUpdate ? realUpdate(args) : Promise.resolve({});
+      });
+
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await expect(engine.resolveGameTurn(roomState.room.id)).resolves.not.toThrow();
+
+      // The room still fully resolved and looped into round 2 — Bob's missing row
+      // didn't take the rest of the turn down with it.
+      expect(roomState.room.status).toBe(RoomStatus.GAME_PHASE);
+      expect(roomState.room.currentPhaseRound).toBe(2);
+      expect(roomState.timerValue).toBe(PHASE_TIMERS[RoomStatus.GAME_PHASE]);
+
+      const turnResolvedCalls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (call: [string, ...unknown[]]) => call[0] === ServerEvents.TURN_RESOLVED,
+      );
+      expect(turnResolvedCalls).toHaveLength(1);
+
+      expect(consoleErrorSpy).toHaveBeenCalled();
+      consoleErrorSpy.mockRestore();
     });
   });
 

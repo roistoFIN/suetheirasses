@@ -139,7 +139,29 @@ attacked you" hint + progressive "Dig Deeper" reveal (see README's *Attack Aware
 Dig Deeper* section) — never derive one of these without the other; they read the same
 `targetId`.
 
-### Never broadcast `roomState.room` directly — its embedded `players` array goes stale the moment a second player joins
+### An incoming-attack hint disappears once sued over — but only for its own suggested ground, never a manually-picked one
+
+`server/src/engine/gameLoop.ts`'s `buildIncomingAttacks` rebuilds the incoming-attacks
+list fresh every turn purely from "is there still another active player whose still-active
+`target.*`-bearing decision targets me" — it has no concept of "already sued," and doesn't
+need one. Instead, `GamePhase.tsx`'s `isAttackAlreadySuedOver` filters the list
+client-side, hiding an attack's hint card once the player has sued the attacker over
+*exactly* the ground the card itself suggested (`attack.suggestedGroundName`, only
+populated at `investigationLevel >= 3`), with a "correct" (win probability `> 0`,
+`attack.successProbability`) case — checking both `pending.lawsuits` (queued this turn,
+not yet a real case) and `myData.legalCases` (a real case from a prior turn's filing, any
+status), since `pending.lawsuits` for it is cleared the moment the real case exists.
+
+Deliberately **not** "any lawsuit against this attacker over this decision" — a manually
+picked *different* ground for the same attacking decision (via `SueModal`'s own ground
+picker, not the "SUE NOW" shortcut) doesn't hide the card, because that ground's own win
+probability isn't known client-side without re-implementing the admin-editable, DB-backed
+formula evaluation (`adjustedProbability`, `pickBestGround`) this app deliberately keeps
+server-only — see *"Formulas are DB-backed"* below. If you ever want manually-picked
+grounds to count too, that means either sending the client every ground's probability (not
+just the suggested one) or accepting a look-alike client-side approximation; don't
+silently assume "any matching decisionName" is equivalent to "a correct lawsuit" the way
+`attack.suggestedGroundName` specifically is.
 
 `RoomState.room` (`Room`, the shared type) carries its own embedded `players: Player[]`
 array — but that array is only ever populated once, from the single founding player
@@ -365,6 +387,69 @@ active player ready, `forfeitGame` returns `{ triggerImmediateResolution: true }
 *caller* — after `forfeitGame`'s `try/finally` has already released the lock — is the one
 that calls `resolveGameTurn`. Follow this same "return a flag, let the caller trigger it"
 shape for any other early-resolution path that itself needs to run inside `advancingRooms`.
+
+### `finalizePlayerRemoval` used to be the one room/player mutation that ignored `advancingRooms` entirely — a real, reported bug that froze the whole room and needed a manual refresh
+
+`resolveGameTurn` and `forfeitGame` both hold `advancingRooms` for their entire duration
+specifically because they mutate overlapping room/player state and must never interleave
+(see above). `finalizePlayerRemoval` — the heartbeat sweep's "a disconnected player's grace
+period expired, actually delete their `Company`/`Player` rows now" cleanup — mutates the
+exact same state (it deletes a player wholesale) but used to run on its own fixed 10s
+`setInterval` tick with **no relationship to that lock at all**. The round timer that drives
+`resolveGameTurn` runs on a completely independent clock, so nothing prevented a player's
+60s grace-period deadline from landing within moments of an already-in-flight turn
+resolution for that same room — not a rare edge case, just "whichever round happens to have
+somewhere around a round's worth of time left when the disconnect occurs," reported as
+happening "sometimes" during real two-tab local testing (background-tab throttling in one
+browser window is exactly the kind of thing that produces a real disconnect at an
+unpredictable point in the round).
+
+When the two landed together, `finalizePlayerRemoval` would delete the disconnected
+player's DB rows out from under `resolveGameTurn`'s own persistence loop for that same
+player (its `dbPlayers` snapshot was read moments earlier, before the deletion, so
+`GameLoop.resolveTurn` still produced a `companyUpdates`/`bankruptedPlayers` entry for
+them). The subsequent `prisma.company.update({ where: { playerId } })` for a row that no
+longer existed threw (Prisma `P2025`, record not found) — uncaught, since neither
+persistence loop wrapped individual players in their own try/catch — which aborted the
+*entire* loop and propagated up to `resolveGameTurn`'s outer `catch (error) {
+console.error(...) }`. That catch swallows the error without emitting `turn:resolved` or
+`phase:changed` and without restarting the round timer (already cleared by the timer's own
+tick handler *before* calling `resolveGameTurn`) — the room was left with no running timer
+and no way to progress, for every player in it, until someone manually refreshed (which
+forces a fresh `room:rejoin` re-sync, the only reason a refresh appeared to "fix" it). The
+survivor would see this happen at almost the same moment as the entirely-correct
+`ROOM_PLAYER_LEFT` "X's connection timed out" notification, since both stem from the same
+grace-period-expiry event landing during resolution — hence "empty window + a disconnect
+notification" reading as one single broken moment.
+
+Fixed two ways, deliberately not just one:
+- **`startHeartbeatCleanup`'s sweep loop now skips finalizing a player whose room is
+  currently in `advancingRooms`**, leaving their `disconnectedPlayers` entry untouched so
+  the very next 10s tick retries once the in-flight resolution has released the lock — the
+  same "defer, don't fight over it" instinct `forfeitGame`'s "return a flag" pattern above
+  already established for this exact lock, just applied to the sweep's caller instead of a
+  socket handler. This closes the dominant direction of the race (a resolution already
+  running when the sweep fires), which is by far the likelier ordering — a turn resolution
+  can hold the lock for a non-trivial stretch (sequential per-player DB writes, KPI
+  snapshot persistence), while `finalizePlayerRemoval`'s own work is a single small
+  transaction.
+- **`resolveGameTurn`'s per-player persistence loops (`bankruptedPlayers`, `companyUpdates`)
+  and `persistKpiSnapshots` now wrap each player's writes in their own try/catch**, logging
+  and moving on rather than letting one player's missing row abort the turn for the entire
+  room. This is the belt-and-suspenders half: even if some *other* cause ever makes a
+  player's row disappear mid-resolution (not just this specific race — any future one), the
+  turn still fully resolves and broadcasts for everyone else. Don't reintroduce a bare
+  `await this.prisma.company.update(...)` in either loop without this isolation — a single
+  missing row must never be able to take the rest of the room down with it.
+
+`gameEngine.test.ts` has regression coverage for both halves: one test in the
+`finalizePlayerRemoval` heartbeat-sweep describe block blocks a `resolveGameTurn` call
+mid-flight (a controlled promise held open across `advanceTimersByTimeAsync`), asserts
+`player.delete` is *not* called while the lock is held even past the grace-period deadline,
+then asserts it *is* called on the very next tick once the lock is released; another in the
+`resolveGameTurn` describe block makes `company.update` reject for one specific player
+mid-turn and asserts the turn still fully resolves and broadcasts `turn:resolved` for the
+room regardless.
 
 ### A decision deployed this turn must not also be advanced this same turn — Step 1 and Step 2 need to agree on "which decisions existed before this turn started"
 
@@ -778,20 +863,37 @@ build step is needed to see changes during dev, only for production builds.
   confirm `roomState.room.players` is still stale at length 1 while the snapshot is
   correct at length 2) — that's the regression guard for the "host shown as a plain
   player" bug; its `promoteNewHostIfNeeded`/`leaveRoom` tests cover host reassignment.
-  `gameLoop.test.ts` also has a regression test threading 3 sequential `resolveTurn`
+  Its `finalizePlayerRemoval` heartbeat-sweep describe block and its own
+  `resolveGameTurn` describe block each have a regression test for the two-part fix to
+  the grace-period/turn-resolution race documented above (a blocked-mid-flight
+  `resolveGameTurn` defers the sweep's finalization until the lock is free; a rejected
+  `company.update` for one player doesn't abort the rest of the room's turn) — extend
+  those, not just the happy path, if you touch `advancingRooms` or either persistence
+  loop again. `gameLoop.test.ts` also has a regression test threading 3 sequential `resolveTurn`
   calls to prove a case forced to trial by the negotiation timeout (`turnsNegotiating`
   reaching `negotiationPeriodTurns`) resolves to a verdict the same turn it crosses the
   threshold — see *Deliberate deviations from the design spec* above for why this test
-  exists (the trial-resolution loop was dead code before this fix).
+  exists (the trial-resolution loop was dead code before this fix). Its
+  `plaintiffFullyInvestigated` describe block covers all four branches of that stamped-
+  at-filing-time flag (fully dug in + correct ground → true; never dug → false; dug but
+  not to level 3 → false; fully dug on one decision instance but suing over an unrelated,
+  non-targeting one → false) — see *A case's probability chip is defendant-only, unless
+  the plaintiff earned it* above. `legalEngine.test.ts`'s `fileLawsuit` describe block and
+  `gameLoop.test.ts`'s "should still create a case ... when the cited decision was never
+  deployed by the target (a guess)" test are the regression coverage for the wrong-guess-
+  still-creates-a-0%-case behavior described in *SUE THEIR ASSES offers the whole decision
+  library's grounds* above — extend those, not just the "target actually did it" happy
+  path, if you touch `fileLawsuit` again.
 - `client/src/**/*.test.ts` — Vitest, Zustand stores and pure UI utilities.
   `GamePhase.utils.test.ts` deliberately duplicates small pure functions out of
   `GamePhase.tsx` (`fmt`, `getGroundsAgainst`, `detectNewlySuedCases`,
-  `detectNewlyResolvedCases`, etc.) rather than importing them, to keep this test file
-  lightweight (no Mantine/tabler-icons import chain) — keep any duplicated copy in sync
-  with the real implementation by hand if you change one side. `detectNewlyResolvedCases`
-  is covered from both plaintiff and defendant perspectives, including the verdict-flip
-  case (a `'lost'` verdict is a *win* for the defendant) — see *Post-turn info windows*
-  above.
+  `detectNewlyResolvedCases`, `detectNewlySettledCases`, etc.) rather than importing them,
+  to keep this test file lightweight (no Mantine/tabler-icons import chain) — keep any
+  duplicated copy in sync with the real implementation by hand if you change one side.
+  `detectNewlyResolvedCases`/`detectNewlySettledCases` are each covered from both
+  plaintiff and defendant perspectives, including the verdict-flip case (a `'lost'`
+  verdict is a *win* for the defendant) — see *Post-turn events are a passive, clickable
+  News feed* above.
 - `tests/api/*.test.ts` — Vitest + real Postgres via testcontainers (needs Docker).
   The only layer that actually verifies socket event contracts end-to-end
   (`game:submitDecisions`, `turn:resolved`, `game:over`) against a real Prisma schema.
@@ -816,6 +918,67 @@ FORMULAS.md doesn't model a negotiation phase at all — a filed case just resol
 probability draw. This codebase's richer `'negotiating'` status, with a real settlement
 negotiation flow on top (offer/counter/accept/go-to-court — see *"Settlement negotiation"*
 below), is a further addition beyond spec.
+
+### SUE THEIR ASSES offers the whole decision library's grounds, not just a target's actual ones — guessing wrong still creates a real (hopeless) case
+
+`GamePhase.tsx`'s `getGroundsAgainst` used to derive the ground list from the *target's*
+own `activeDecisions` — a player could only ever select something the target had
+genuinely, verifiably done. By explicit product decision this is deliberately no longer
+scoped to a target at all: it now returns every `legalRisks` entry across the *entire*
+decision library, for every decision in the game, regardless of who (if anyone) has
+actually deployed it. A player can knowingly gamble on a ground the target may or may not
+have actually pursued — sue on a hunch, not just on confirmed intel.
+
+`LegalEngine.fileLawsuit` had to change to make this meaningful rather than a trap: it used
+to `return null` (no case at all) when the target never deployed the cited decision — that
+behavior is what a wrong guess would have silently hit before, wasting the filing fee for
+literally nothing. Now, when `targetActiveDecisions` has no matching instance,
+`fileLawsuit` still creates a real `LegalCaseData`, just with `baseProbability` forced to
+`0` instead of priced off a real schedule — there's no genuine ground to argue, so it's a
+hopeless case, not a nonexistent one. `resolveProbability`'s multiplication
+(`baseProbability * (1 + ...)`) means `adjustedProbability` stays `0` at trial time too,
+regardless of the defendant's own scrutiny/legal exposure — a wrong guess can never
+accidentally win. `fileLawsuit` still returns `null` for a genuinely malformed request (an
+unknown decision or ground name entirely outside the library) — that's tampering, not
+guessing; the real client only ever offers real decision+ground pairs.
+
+The existing `plaintiffFullyInvestigated` mechanism (see *A case's probability chip is
+defendant-only, unless the plaintiff earned it* above) already does exactly the right
+thing here with zero further changes needed: a wrong guess can never satisfy
+`plaintiffFullyInvestigated` (there's no real attacking decision instance targeting the
+plaintiff to have investigated in the first place), so the plaintiff's own card shows
+"Unknown" — they don't know it's hopeless. The **defendant** always sees the real number
+(here, a plain `0%`), since they know perfectly well whether they actually did the thing
+being alleged. This is the literal mechanic the user described: *"the one who sued doesn't
+know this, but the defendant does."*
+
+The `SueModal`'s "SUE NOW" shortcut (pre-fills a suggested ground from a fully-investigated
+attack) now needs a `decisionName` alongside the `groundName` it already passed, purely to
+disambiguate the prefill match against this now-target-independent, whole-library catalog
+— two different decisions could in principle share an identically-named ground, since the
+admin-editable decision library has no uniqueness constraint on legal-risk names (`onSueNow`'s
+signature gained a `decisionName` parameter; `sueSuggestion` state gained a `decisionName`
+field alongside `targetId`/`groundName`).
+
+**A separate, previously-latent bug surfaced by this change, fixed alongside it:**
+`chargeLawsuitFilingFee` (and `digDeeper`) read `Company.variables` directly via
+`readVariables` without the same "first turn hasn't resolved yet" fallback `resolveTurn`
+and `getInitialSnapshot` already apply (`if (!vars.cash && !vars.assets) vars =
+this.startingVars();` — `Company.variables` defaults to `{}` in the DB until the very
+first turn actually resolves and populates it). Filing a lawsuit during round 1, before
+any turn has ever resolved, used to read `vars.cash` as `undefined`, compute `newCash =
+undefined - cost` = `NaN`, and crash the subsequent `prisma.company.update()` call with an
+invalid-argument error (surfaced client-side as `INVALID_FILE_LAWSUIT`). This was
+essentially unreachable before — the old target-scoped ground list was always empty in
+round 1 anyway, since nobody has deployed anything yet, so "file a lawsuit before round 1
+resolves" was never a realistic thing to do. The whole-library catalog makes guessing in
+round 1 an explicitly encouraged, realistic action, so this fallback had to be added to
+`chargeLawsuitFilingFee` (and, defensively, to `digDeeper`, which has the identical
+`readVariables` pattern even though it's not independently reachable pre-round-1, since an
+attack can't exist to dig into before a turn has deployed one) to match `resolveTurn`'s.
+`findCaseAndParties` (used by `makeOffer`/`acceptOffer`/`goToCourt`) was deliberately left
+alone — a case can only exist after a turn has already resolved at least once, so its
+identical `readVariables` call is provably never reachable with unpopulated variables.
 
 ### Settlement negotiation — a sixth exception to `resolveTurn`, plus a Step 8b fallback for whatever it doesn't resolve
 
@@ -881,6 +1044,33 @@ same-turn settlement is just as real an income line for the §16 bankruptcy pool
 branches; the `makeOffer`/`acceptOffer`/`goToCourt` suites cover the live-negotiation
 turn-taking rules directly.
 
+**The valid offer range narrows inward with every move — it's not a fixed `(0, stakes]`
+for the whole negotiation.** `GameLoop.computeOfferBracket(case_)` (private, called from
+`makeOffer`'s validation) returns `{ min, max }`: `min` is the *defendant's* own most
+recent offer (0 if they haven't offered yet), `max` is the *plaintiff's* own most recent
+offer (the full `stakes` if they haven't offered yet). Concretely, across a negotiation:
+the defendant's opening offer is bounded `[0, stakes]`; the plaintiff's first counter is
+bounded `[defendant's offer, stakes]`; the defendant's next offer is bounded
+`[their own previous offer, the plaintiff's latest offer]`; and so on, alternating —
+each side's new offer can only ever tighten *its own* end of the bracket (a defendant
+offer raises `min`, a plaintiff offer lowers `max`), never the other side's, so the range
+only ever narrows or holds, never widens, and `min <= max` always holds as an invariant
+as long as every accepted offer was itself validated against this same bracket. This
+was a real, reported bug before the bracket existed: `makeOffer` only ever checked
+`0 < amount <= stakes` for every offer regardless of negotiation history, so a player
+could counter-offer *outside* what had already been offered/asked (e.g. the defendant
+lowballing back below their own prior offer, or the plaintiff asking for more than they'd
+already said they'd accept) — the whole point of a converging negotiation. The client's
+`NegotiationPanel` mirrors this exact bracket in a same-named `computeOfferBracket`
+function (hand-kept in sync, same "duplicate small pure logic client-side" convention
+`GamePhase.utils.test.ts` already uses) purely to set the slider's bounds and the visible
+"Range: $X – $Y" caption — the server is still the actual authority; a stale client-side
+bracket (e.g. the other party just moved) just surfaces as an `invalid_amount` rejection,
+handled the same way any other `makeOffer` failure is. `gameLoop.test.ts`'s `"offer
+bracket narrows with each move (regression)"` suite walks the bracket through four
+consecutive moves, asserting both the accepted boundary values and the values just
+outside them are rejected at each step.
+
 ### A `LegalCaseData` lives in two players' `engineState` at once — dedupe by id when reconstructing `allCases`
 
 A filed case is persisted into **both** the plaintiff's and the defendant's own
@@ -897,24 +1087,45 @@ prevent this (`gameLoop.ts`'s Step 7) — keep that dedup if you ever touch how 
 is assembled; `gameLoop.test.ts`'s "should not duplicate a case across turns" regression
 test resolves 3 turns in a row and asserts the count stays at 1 the whole way.
 
-### A case's probability chip is defendant-only — the plaintiff's side is a deliberately unclickable "Unknown", not a second data source
+### A case's probability chip is defendant-only, unless the plaintiff earned it by fully investigating before filing
 
 `CaseCard`'s header shows a colored percentage chip (`semaphoreLevel(displayProb)`,
-`displayProb` = `adjustedProbability` if the case has one, else `baseProbability`) only
-when `isDefendant` — a real number a defendant genuinely has visibility into, per
-FORMULAS §6/§9. For the *plaintiff*'s own copy of the same `LegalCaseData` (remember,
-per the section above, one case lives in both parties' `engineState`), there's
-deliberately no equivalent number to show — a plaintiff has no special insight into their
-own filed case's odds beyond what any rival's public filing already reveals, so showing
-one would either fabricate false precision or (worse) leak the same `adjustedProbability`
-math the defendant sees, which was never meant to be plaintiff-visible. The plaintiff
-side renders a `semColors.gray`-styled chip reading "Unknown" instead, via
-`gpStyles.semaphoreChip('gray', false)` — the second `clickable` argument (default
-`true`, only ever passed `false` here) drops the `cursor: pointer` styling, since there's
-no `RiskBreakdownView` to open for a probability that doesn't exist. This replaced an
-earlier "Investigate" button that opened the target's Full Filing report — removed by
-product decision as redundant (the identical Full Filing button already exists in the
-Competitor Intel panel for every rival, case or no case) rather than fixed in place.
+`displayProb` = `adjustedProbability` if the case has one, else `baseProbability`) when
+`knowsOdds` is true — a real number the defendant always genuinely has visibility into,
+per FORMULAS §6/§9, and one the *plaintiff* only earns by having fully "Dig Deeper"-
+investigated (investigation level `MAX_INVESTIGATION_LEVEL`, i.e. 3) the underlying
+attack before suing over its exact suggested ground (see the *Attack Awareness & Dig
+Deeper* section — the same suggested-ground concept `pickBestGround` computes there).
+Otherwise the plaintiff side renders a `semColors.gray`-styled chip reading "Unknown"
+instead, via `gpStyles.semaphoreChip('gray', false)` — the second `clickable` argument
+(default `true`, only ever passed `false` here) drops the `cursor: pointer` styling,
+since there's no `RiskBreakdownView` to open for a probability the player hasn't earned.
+This replaced an earlier "Investigate" button that opened the target's Full Filing
+report — removed by product decision as redundant (the identical Full Filing button
+already exists in the Competitor Intel panel for every rival, case or no case) rather
+than fixed in place; suing over a decision that never targeted the plaintiff at all (no
+"attack" concept applies, e.g. a general risky decision like Water Pumping) always stays
+"Unknown", since there's nothing to have investigated.
+
+**Why this is stamped server-side (`LegalCaseData.plaintiffFullyInvestigated`) at filing
+time, not recomputed client-side from `incomingAttacks` on every render:** a purely
+client-side check ("does an attack in my current `incomingAttacks` list match this case's
+decision/ground at investigation level 3") would regress back to "Unknown" mid-case if the
+underlying attacking decision instance later disappeared from that list — it matures out,
+or its deployer goes bankrupt — even though the plaintiff genuinely knew the odds at the
+moment they filed. `GameLoop.resolveTurn`'s Step 8 filing loop computes this once, at the
+exact moment a case is created (it has both the filing player's own
+`ctx.engineState.investigations` and the target's `activeDecisions` in scope there), via
+the same `pickBestGround` computation `revealAttack` already uses for the live hint —
+looking up the target's active decision instance matching `filing.decisionName` **and**
+`targetId === ` the filing player (so an unrelated, non-targeting decision never
+qualifies), requiring investigation level `>= MAX_INVESTIGATION_LEVEL` on that exact
+instance id, and requiring `pickBestGround`'s pick to match `filing.groundName` exactly (a
+manually-chosen alternate ground on a multi-ground decision doesn't count, mirroring the
+same scoping decision in *An incoming-attack hint disappears once sued over*). The
+resulting boolean is then persisted into the case exactly like every other
+`LegalCaseData` field (both parties' `engineState.legalCases`) and never recomputed —
+permanent for the life of the case, immune to the attack info disappearing later.
 
 ### React `setState` updater callbacks must be pure — StrictMode will call them twice in dev
 
@@ -930,49 +1141,90 @@ guarded by a `useRef` against StrictMode's dev-only double-invocation of the *ef
 moving the array-append `setState` call out of any updater entirely. If you add another
 effect that accumulates into array state based on a diff against the previous value, do
 the diffing and the accumulating `setState` call in the effect body directly — never
-inside another `setState`'s updater callback. `suedCases` has since been generalized into
-`eventQueue` (see the next section) but the same rule applies to every push into it.
+inside another `setState`'s updater callback. `suedCases` has since been generalized first
+into `eventQueue`, now into `newsItems` (see the next section) but the same rule applies
+to every push into it.
 
-### Post-turn info windows are one unified, dismiss-gated `PostTurnEvent` queue, not one modal per event type
+### Post-turn events are a passive, clickable News feed — nothing auto-pops a modal anymore
 
-Being sued, a lawsuit reaching a verdict, and a new round starting can all happen off the
-same `resolveTurn` call, and each has its own art/copy (`sued.png`, `lawsuit-won.png` /
-`lawsuit-lost.png`, `turn-change.png`). Rather than one boolean-gated `Modal` per event
-type (which would either stack overlapping modals or silently clobber one with another in
-the same render), `GamePhase.tsx` models all three as a single discriminated union,
-`PostTurnEvent = { type: 'sued'; cases } | { type: 'verdict'; outcome; cases } | { type:
-'turnChange'; round }`, appended to one `eventQueue` array. Exactly one `Modal` renders
-`eventQueue[0]`; its "Got it" button calls `dismissCurrentEvent` (`setEventQueue((q) =>
-q.slice(1))`) rather than closing anything — the next queued event, if any, is simply
-whatever's now at index 0. Dismissal is manual-only (no auto-timeout, no click-outside-to-
-dismiss) by product decision, uniformly across all three event types. If you add a fourth
-post-turn event type, extend the `PostTurnEvent` union and the queue-population effect(s)
-— don't give it its own separate `Modal`/boolean state, or it can stack on top of this one.
+Being sued, a lawsuit reaching a verdict (or settling by negotiation), and a new round
+starting can all happen off the same `resolveTurn` call, and each has its own art/copy
+(`sued.png`, `lawsuit-won.png`/`lawsuit-lost.png`, `turn-change.png` — settlement has no
+dedicated art, text-only). `GamePhase.tsx` models all four as a single discriminated
+union, `PostTurnEvent = { type: 'sued'; cases } | { type: 'verdict'; outcome; cases } |
+{ type: 'settlement'; cases } | { type: 'turnChange'; round }`. This **used to** drive a
+single auto-opening `Modal` off the front of a dismiss-to-advance `eventQueue` (each
+event interrupted play the instant it happened); it now instead wraps every event into a
+`NewsItem { id, round, event }` and appends it to `newsItems`, rendered as a scrollable
+**News** box (`NewsBox`/`NewsRow`, right under the KPI cards) — nothing pops up
+automatically anymore. The same info-window `Modal` still exists and still renders the
+exact same per-type content it always did, but it's now driven by `newsModalItem` (which
+row, if any, the player clicked) rather than the queue's front — clicking a `NewsRow`
+opens it, closing just clears `newsModalItem`, and there's no more "pop the queue and
+reveal what's next" dismissal chain since nothing needs to auto-advance. If you add a
+fifth post-turn event type, extend the `PostTurnEvent` union and give it a `newsTopic`
+case and a modal-content branch — don't reintroduce a separate auto-popping `Modal`/
+boolean for it, or you've reintroduced the exact interruption this replaced.
 
-Two detector functions populate the queue, both pure and both unit-tested via duplicated
+`NewsItem.round` is `turnResults.round` for sued/verdict/settlement (the round that
+*just* resolved, when the event actually happened — not the `round` state variable, which
+by the time this effect runs may already reflect the round `phase:changed` just advanced
+to; see the "must be keyed on `round`, not `turnResults?.round`" fix elsewhere in this
+file for the general version of this same gotcha) — but `round` itself (the new round) for
+`turnChange`, since that event is literally *about* the round changing. `NewsRow` flashes
+red a few times (`news-flash` keyframes, alongside the pre-existing `pulse` one) purely by
+relying on normal React/CSS semantics, not JS-tracked "is this new" state: `NewsBox` only
+ever *appends* to `newsItems` (existing rows are never reordered or removed), so with a
+stable `key={item.id}` React never remounts an existing row's DOM node — the animation
+naturally only ever plays once, right when a row is first mounted, and never replays on a
+later re-render of the same row. The list auto-scrolls to the newest item on append, but
+only if the player was already scrolled at (or very near) the bottom — `NewsBox`'s
+`stickToBottomRef` + a scroll-distance check is the whole mechanism, so a player who's
+scrolled up to reread older news doesn't get yanked back down by a new arrival.
+
+Three detector functions populate the feed, all pure and all unit-tested via duplicated
 copies in `GamePhase.utils.test.ts` (see *Test layers* below): `detectNewlySuedCases`
-(pre-existing) and `detectNewlyResolvedCases`, added alongside the negotiation-timeout fix
-above since a case can now actually reach `'resolved'` in live play. `detectNewlyResolved
-Cases` returns each case already flipped to the *querying player's own* perspective as an
-`outcome: 'won' | 'lost'` — `LegalCaseData.verdict` itself is plaintiff-centric (`'won'`
-means the plaintiff won), so a defendant's own win/loss is the verdict's logical inverse;
-downstream UI (the verdict modal body's `outcomeLine` text) never re-derives this, it just
-reads `outcome` directly. A separate `useEffect` keyed on `round` (from `gameStore`, not
-part of the turn-sync effect above) enqueues `turnChange` events, skipping the very first
-render via a `lastAnnouncedRoundRef` null-check — round 1 is the initial game start, not a
-change from anything.
+(pre-existing), `detectNewlyResolvedCases` (added alongside the negotiation-timeout fix,
+since a case can actually reach `'resolved'` with a trial `verdict` in live play), and
+`detectNewlySettledCases` (added alongside the News feed, for a case resolved by
+negotiation instead — `verdict: 'settled'`; deliberately still excludes `'cancelled'`, the
+bankruptcy-waterfall outcome, which isn't a settlement the player negotiated). Both
+`detectNewlyResolvedCases` and `detectNewlySettledCases` return each case already flipped
+to the *querying player's own* perspective (`outcome: 'won' | 'lost'`, or `role:
+'plaintiff' | 'defendant'`) — `LegalCaseData.verdict` itself is plaintiff-centric, so a
+defendant's own win/loss (or which side paid whom in a settlement) is the logical inverse;
+downstream UI never re-derives this, it just reads the already-flipped field.
 
-**Deliberately not a fourth `PostTurnEvent` type:** the "someone else went bankrupt"
-takeover lives outside this queue entirely — in `gameStore.bankruptcyEvents` and
-`App.tsx`'s `BankruptcyOverlay`, checked ahead of the `currentPhase` switch, the same
-position as the existing `selfElimination`/`LostOverlay` check. `eventQueue` is local
+**Deliberately not a `PostTurnEvent`/News item:** the "someone else went bankrupt" notice
+lives outside this feed entirely — in `gameStore.bankruptcyEvents` and `App.tsx`'s
+`BankruptcyModal`, rendered as an overlay alongside whatever `page` the `currentPhase`
+switch produces, not folded into `GamePhase`'s local `newsItems`. `newsItems` is local
 `GamePhase` state, so it (correctly) disappears the moment `GamePhase` unmounts — fine for
-sued/verdict/turnChange, since the game is still going whenever those fire. A bankruptcy
-can end the game outright, in which case `currentPhase` flips to AFTERMATH and `GamePhase`
-unmounts almost immediately (the `player:bankrupt` and `game:over`/`phase:changed`
-broadcasts arrive back-to-back from the same turn resolution) — anything queued in
-`GamePhase`'s own local state would vanish unseen right along with it. Promoting it to
-`gameStore` (a top-level, phase-independent App.tsx check) instead of `eventQueue` is what
-makes it survive that transition. If you add another post-turn notice that must be visible
-even when it's the thing that ends the game, follow this same pattern, not the
-`PostTurnEvent` one.
+sued/verdict/settlement/turnChange, since the game is still going whenever those fire. A
+bankruptcy can end the game outright, in which case `currentPhase` flips to AFTERMATH and
+`GamePhase` unmounts almost immediately (the `player:bankrupt` and `game:over`/
+`phase:changed` broadcasts arrive back-to-back from the same turn resolution) — anything
+queued in `GamePhase`'s own local state would vanish unseen right along with it. Promoting
+it to `gameStore` (top-level, phase-independent state read directly in `App.tsx`) instead
+of the News feed is what makes it survive that transition — `BankruptcyModal` renders
+whether `page` is `GamePhase` or the `GameOver` screen that same elimination may have just
+swapped in underneath. If you add another post-turn notice that must be visible even when
+it's the thing that ends the game, follow this same pattern, not the News-feed one.
+
+**`BankruptcyModal` is a `Modal` overlay, not a full-page takeover — a real, reported bug
+had it blanking out the entire running game.** It used to be a page-level `<Container>`
+returned from an early `if (bankruptcyEvents.length > 0) return <BankruptcyOverlay .../>`
+check in `App.tsx`, positioned *ahead of* the `currentPhase` switch — which meant it fully
+replaced whatever was on screen, including a still-in-progress `GamePhase` for every
+surviving player, the instant anyone else went bankrupt. From a surviving player's point of
+view the game appeared to stop dead and show nothing but this notice, even though the round
+timer, their own KPIs, and everyone else's turn were all still very much live underneath.
+Fixed by changing the container from `<Container>` to a Mantine `Modal` and rendering it
+*alongside* `page` in the final return (`{page}{bankruptcyEvents.length > 0 && <BankruptcyModal .../>}`)
+instead of returning it early — `page` (whatever `currentPhase` currently resolves to) keeps
+rendering underneath, dimmed by the modal's overlay backdrop exactly like every other
+"info window" in this app (the News item modal, `SueModal`, etc.), and the running game is
+visible and interactive again the instant the notice is dismissed. The reasoning for why
+this has to stay a top-level `gameStore` check rather than a `GamePhase`-local News item is
+unchanged (see above) — only the *rendering* changed, from "instead of the page" to "on top
+of the page."

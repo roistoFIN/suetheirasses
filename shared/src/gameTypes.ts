@@ -253,6 +253,13 @@ export interface LegalCaseData {
   description: string;
   baseProbability: number;
   adjustedProbability?: number;
+  /** True if, at the moment of filing, the plaintiff had fully "Dig Deeper"-investigated
+   * (investigation level 3) the underlying attack and sued over its exact suggested
+   * ground — see CLAUDE.md's case-probability-chip section. Stamped once at filing time
+   * and never recomputed afterward, so it can't regress even if the underlying attacking
+   * decision later matures out or its deployer goes bankrupt. Gates whether the plaintiff
+   * (not just the defendant) sees `baseProbability`/`adjustedProbability` client-side. */
+  plaintiffFullyInvestigated: boolean;
   stakes: number;
   status: 'negotiating' | 'awaiting_trial' | 'resolved';
   /** Settlement offer history — a single neutral list, identical for both parties (this
