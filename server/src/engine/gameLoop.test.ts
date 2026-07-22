@@ -738,7 +738,10 @@ describe('GameLoop', () => {
       const outcome2 = gameLoop.resolveTurn('room-1', 2, players);
 
       expect(outcome2.result.players[0].activeDecisions[0].decisionName).toBe('New Factory');
-      expect(outcome2.result.players[0].activeDecisions[0].elapsedYears).toBe(2);
+      // Deployed turn 1 (elapsedYears 0, its one deployment-year impact already applied
+      // in Step 1) then advanced exactly once at turn 2 — not twice (see the
+      // "double-applying its own impact" regression test below for why this used to be 2).
+      expect(outcome2.result.players[0].activeDecisions[0].elapsedYears).toBe(1);
     });
 
     it('should include updated variables in the returned company updates', () => {
@@ -787,7 +790,10 @@ describe('GameLoop', () => {
 
       const outcome1 = gameLoop.resolveTurn('room-1', 1, twoPlayers());
       expect(outcome1.result.players[0].activeDecisions).toHaveLength(1);
-      expect(outcome1.result.players[0].activeDecisions[0].elapsedYears).toBe(1);
+      // Just deployed this same turn — Step 1 already applied its one deployment-year
+      // impact; it must NOT also be advanced by Step 2 in the same turn (that was the
+      // "double-applying its own impact" bug — see the regression test below).
+      expect(outcome1.result.players[0].activeDecisions[0].elapsedYears).toBe(0);
 
       // Turn 2: no new decisions, but existing ones advance.
       // The engine state (including activeDecisions) is persisted to the DB after turn 1
@@ -800,7 +806,41 @@ describe('GameLoop', () => {
 
       const outcome2 = gameLoop.resolveTurn('room-1', 2, players);
       expect(outcome2.result.players[0].activeDecisions).toHaveLength(1);
-      expect(outcome2.result.players[0].activeDecisions[0].elapsedYears).toBe(2);
+      // First real advance — turn 2 is the first turn this decision existed BEFORE
+      // Step 1 ran, so this is the first time Step 2 is allowed to touch it.
+      expect(outcome2.result.players[0].activeDecisions[0].elapsedYears).toBe(1);
+    });
+
+    it('does not double-apply a decision\'s own impact in the same turn it is deployed (regression)', () => {
+      // Real, reported bug: Step 1 (processNewDecisions) already applies a newly
+      // deployed decision's deployment-year impact (elapsedYears 0) directly to
+      // ctx.vars and pushes the instance into activeDecisions; Step 2
+      // (advanceAndApply) used to then process ALL activeDecisions unconditionally,
+      // including the one Step 1 had just pushed — incrementing its elapsedYears to
+      // 1 and applying its impact AGAIN, all within the deployment turn itself.
+      // 'Bot Attack' has only a flat `cash: -12000` self-effect with no per-year
+      // schedule (single 'default' key), so a double-application shows up as an
+      // unmistakable -24000 instead of -12000. Isolated via a baseline run with no
+      // decision deployed at all, exactly like the negotiation Step 8b tests above —
+      // diffing out everything else a turn's P&L/balance-sheet math also moves.
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [], operational: [{ name: 'Bot Attack', targetId: 'player-2' }], lawsuits: [],
+      });
+      const outcome = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+
+      // Baseline: identical fixture, different (submission-free) room, no decision
+      // deployed at all — isolates exactly Bot Attack's cash effect from everything
+      // else a turn's P&L/balance-sheet math also moves, same technique the
+      // negotiation Step 8b tests above use.
+      const baselineOutcome = gameLoop.resolveTurn('room-2', 1, twoPlayers());
+
+      const aliceCash = outcome.result.players.find(p => p.playerId === 'player-1')!.variables.cash;
+      const aliceBaselineCash = baselineOutcome.result.players.find(p => p.playerId === 'player-1')!.variables.cash;
+
+      expect(aliceBaselineCash - aliceCash).toBeCloseTo(12000, 5);
+      // And the instance itself must still be at elapsedYears 0 after its own deployment turn.
+      const alice = outcome.result.players.find(p => p.playerId === 'player-1')!;
+      expect(alice.activeDecisions.find(d => d.decisionName === 'Bot Attack')?.elapsedYears).toBe(0);
     });
 
     it('should clear submissions after turn resolution', () => {

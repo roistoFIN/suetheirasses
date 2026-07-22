@@ -333,25 +333,44 @@ export class GameLoop {
     }
 
     // ── Step 1 — Process newly submitted decisions ─────────────
+    // Snapshot how many decisions were already active BEFORE this turn's new
+    // submissions get deployed — Step 2 must only advance/re-apply THOSE, never
+    // the ones Step 1 is about to push. A decision deployed this same turn
+    // already gets its one deployment-year impact applied right here in Step 1
+    // (processNewDecisions → applyImpactsForYear, elapsedYears=0); if Step 2 also
+    // advanced it, its impact would apply a second time in the same turn it was
+    // deployed (see CLAUDE.md's "A decision deployed this turn was double-
+    // applying its own impact" section — a real, reproduced bug this snapshot
+    // fixes, not a hypothetical).
+    const preTurnActiveCount = new Map<string, number>();
+    for (const [pid, ctx] of ctxs) {
+      preTurnActiveCount.set(pid, ctx.engineState.activeDecisions.length);
+    }
+
     for (const [, ctx] of ctxs) {
       if (!ctx.submittedDecisions) continue;
       this.processNewDecisions(ctx, round);
     }
 
-    // ── Step 2 — Advance all active decisions by one year ──────
+    // ── Step 2 — Advance pre-existing active decisions by one year ──────
     // Extract absolute schedule deltas directly from impact application (FORMULAS §4-§5)
     const absDeltasMap = new Map<string, { revenueDelta: number; financeCostDelta: number; taxCostDelta: number; receivablesDelta: number; cashDelta: number }>();
     const varsList: PlayerVariables[] = [];
     const targetImpactQueue: TargetImpactResult[] = [];
     for (const [pid, ctx] of ctxs) {
+      // Only the decisions present before Step 1 ran get advanced — anything Step 1
+      // just pushed is appended (unadvanced, still at elapsedYears 0) after.
+      const existingCount = preTurnActiveCount.get(pid) ?? 0;
+      const preExisting = ctx.engineState.activeDecisions.slice(0, existingCount);
+      const justDeployed = ctx.engineState.activeDecisions.slice(existingCount);
       const result = this.decisionEngine.advanceAndApply(
         pid,
         ctx.vars,
-        ctx.engineState.activeDecisions,
+        preExisting,
         round,
       );
       ctx.vars = result.updatedVars;
-      ctx.engineState.activeDecisions = result.updatedActiveDecisions;
+      ctx.engineState.activeDecisions = [...result.updatedActiveDecisions, ...justDeployed];
 
       // Merge newly created depreciation entries into the ledger
       for (const entry of result.newDepreciationEntries) {

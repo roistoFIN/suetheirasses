@@ -264,6 +264,27 @@ own (only `DecisionDefinition` does), each active instance has to be looked back
 this lookup at all, since `pending.strategic`/`pending.operational` are already
 bucket-keyed by construction.
 
+**The `pending`-reset effect must be keyed on `round`, not `turnResults?.round`** — a real,
+reproduced bug (not just theoretical) where a decision made exactly once showed up twice
+in "Active Decisions" for one extra turn after it resolved, looking like duplication that
+compounded turn after turn. Root cause: `turn:resolved`'s `round` field is the round that
+*just finished* (`GameEngine.resolveGameTurn` captures `round` from
+`roomState.room.currentPhaseRound` *before* incrementing it, then stamps that pre-increment
+value onto `outcome.result`), while the *separate* `phase:changed` broadcast — sent right
+after, once the round is actually incremented — carries the *new* round. Both events write
+into the same `gameStore.round` field, but `handleTurnResolved` also stores the whole
+payload as `turnResults`, so `turnResults.round` freezes at the just-finished round until
+the *next* turn resolves — always one round behind whatever `round` (kept current by
+`phase:changed`) actually shows. Gating the reset effect on `turnResults?.round` meant it
+only ever cleared stale `pending` entries one full round late: right after a decision
+resolved into `myData.activeDecisions`, its `QueuedDecisionCard` was still sitting there
+too, since the dependency hadn't changed yet from the client's point of view. Fixed by
+keying the effect on `round` instead — the same value the pre-existing "turn changed" event
+announcer effect right above it already correctly uses for exactly this reason. If you add
+another effect that needs to react to "a new round has started," use `round`, never
+`turnResults?.round` — the latter is one turn stale by design (it's *whatever last turn's
+snapshot said*, not "now").
+
 ### The Decision Deck lives in its own modal (MAKE IMPORTANT DECISIONS), not a standalone panel
 
 `DecisionDeckView` (filter chips, the queued-count line, every `DecisionCard`) used to
@@ -344,6 +365,43 @@ active player ready, `forfeitGame` returns `{ triggerImmediateResolution: true }
 *caller* — after `forfeitGame`'s `try/finally` has already released the lock — is the one
 that calls `resolveGameTurn`. Follow this same "return a flag, let the caller trigger it"
 shape for any other early-resolution path that itself needs to run inside `advancingRooms`.
+
+### A decision deployed this turn must not also be advanced this same turn — Step 1 and Step 2 need to agree on "which decisions existed before this turn started"
+
+A real, reported bug (not hypothetical): deploying a decision and looking at its effect on
+the turn it resolved showed roughly double the expected cash/asset movement. Root cause —
+Step 1 (`processNewDecisions`) and Step 2 (`advanceAndApply`) both touch
+`ctx.engineState.activeDecisions`, and used to disagree about which instances Step 2 was
+allowed to touch:
+
+- **Step 1** deploys each newly submitted decision (`DecisionEngine.deploy`, which starts
+  it at `elapsedYears: 0`), pushes the new instance into `ctx.engineState.activeDecisions`,
+  and immediately applies its deployment-year impact (`applyImpactsForYear(ctx.vars, ...,
+  elapsedYears=0, ...)` — the schedule's `"1"` key, e.g. `cash: { 1: -30000, ... }`).
+- **Step 2** advances *every* decision in `ctx.engineState.activeDecisions` by one year
+  (`elapsedYears++`) and re-applies its impact at the new `elapsedYears`. Since Step 1 had
+  already pushed the brand-new instance into that same array, Step 2 picked it up too —
+  incrementing its `elapsedYears` from 0 to 1 and applying the `"2"` (or `"default"`)
+  schedule key *again*, all within the turn it was just deployed. A decision selected
+  exactly once ended up with its impact applied twice in that turn: once via Step 1's
+  deployment-year application, once via Step 2 treating it as "already active, advance it."
+
+Fixed by snapshotting `ctx.engineState.activeDecisions.length` for every player **before**
+Step 1 runs, then in Step 2 splitting each player's array into the pre-existing prefix
+(passed to `advanceAndApply`, which is the only portion allowed to advance/re-apply) and
+the just-deployed suffix (appended back, untouched, still at `elapsedYears: 0`) — see the
+`preTurnActiveCount` map in `resolveTurn`. A decision's `elapsedYears` is now `0` for the
+whole turn it's deployed (its one Step 1 application is everything that turn), and only
+becomes `1` at the *next* turn's Step 2, the first time it's genuinely "already active
+coming into the turn." `gameLoop.test.ts`'s `"does not double-apply a decision's own
+impact in the same turn it is deployed (regression)"` test guards this directly (isolates
+Bot Attack's flat `-12000` self-cash effect against a submission-free baseline room,
+diffing out everything else a turn's P&L also moves — same isolation technique the
+negotiation Step 8b tests use); `"should advance active decisions across turns"` and the
+persistence round-trip test both had their `elapsedYears` expectations corrected from the
+old (buggy) `1`/`2` to the now-correct `0`/`1`. If you touch Step 1/Step 2 again, keep this
+invariant: Step 2 must only ever advance decisions that existed *before* Step 1 ran this
+same call.
 
 ### A bankrupted player's Company row needs its negative cash written explicitly — it's not in `companyUpdates`
 

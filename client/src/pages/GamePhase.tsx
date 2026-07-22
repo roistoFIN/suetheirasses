@@ -519,10 +519,18 @@ export default function GamePhase() {
   }, [round]);
 
   // A new round means the server already cleared last turn's submissions — reset
-  // local pending state so stale QUEUED badges don't linger on the new turn.
+  // local pending state so stale QUEUED badges don't linger on the new turn. Keyed on
+  // `round` (from `phase:changed`), NOT `turnResults?.round`: `turn:resolved`'s `round`
+  // field is the round that just finished resolving (captured before GameEngine
+  // increments `currentPhaseRound`), while `phase:changed`'s `round` is the new round
+  // now starting — the two are one apart, and `phase:changed` always arrives second for
+  // the same turn. Gating on `turnResults?.round` used to fire this reset one full round
+  // late, so a decision that had just resolved into `myData.activeDecisions` still had
+  // its stale QUEUED entry sitting alongside it in "Active Decisions" for one extra turn
+  // — a real, reproduced bug, not just a cosmetic lag.
   useEffect(() => {
     setPending({ strategic: [], operational: [], lawsuits: [] });
-  }, [turnResults?.round]);
+  }, [round]);
 
   // Timer countdown — sync with server updates
   useEffect(() => {
