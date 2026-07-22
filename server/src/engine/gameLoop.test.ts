@@ -492,13 +492,22 @@ describe('GameLoop', () => {
     });
 
     it('should surface an incomingAttacks entry for the victim, un-investigated by default', () => {
+      // Three active players (not the usual twoPlayers() fixture) specifically to stay
+      // OUT of the heads-up shortcut below — see effectiveInvestigationLevel's doc
+      // comment — so this covers the plain, un-shortcut "nothing revealed below level 1"
+      // baseline that still applies whenever more than one other player could be the
+      // attacker.
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [],
         operational: [{ name: 'Bot Attack', targetId: 'player-2' }],
         lawsuits: [],
       });
 
-      const outcome = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+      const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
+        { id: 'player-1', name: 'Alice' },
+        { id: 'player-2', name: 'Bob' },
+        { id: 'player-3', name: 'Carol' },
+      ]));
       const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
       const bob = outcome.result.players.find((p) => p.playerId === 'player-2')!;
 
@@ -509,6 +518,28 @@ describe('GameLoop', () => {
       expect(bob.incomingAttacks[0].attackerName).toBeUndefined();
       // Alice isn't being attacked by anyone.
       expect(alice.incomingAttacks).toHaveLength(0);
+    });
+
+    it('should reveal the attacker\'s identity for free in a heads-up (2-active-player) game — there is no one else it could be', () => {
+      // With only one other active player, level 1's only content (who attacked me) is
+      // never actually ambiguous, so it's surfaced without spending a dig — see
+      // effectiveInvestigationLevel's doc comment in gameLoop.ts.
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [],
+        operational: [{ name: 'Bot Attack', targetId: 'player-2' }],
+        lawsuits: [],
+      });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+      const bob = outcome.result.players.find((p) => p.playerId === 'player-2')!;
+
+      expect(bob.incomingAttacks).toHaveLength(1);
+      expect(bob.incomingAttacks[0].investigationLevel).toBe(1);
+      expect(bob.incomingAttacks[0].attackerId).toBe('player-1');
+      expect(bob.incomingAttacks[0].attackerName).toBe('Alice');
+      // Level 2 content (what the decision is/does) still isn't free — that's what the
+      // first paid dig is for.
+      expect(bob.incomingAttacks[0].decisionName).toBeUndefined();
     });
   });
 
@@ -706,13 +737,19 @@ describe('GameLoop', () => {
 
     describe('plaintiffFullyInvestigated (persisted at filing time)', () => {
       // Bot Attack targets whoever `targetId` names and carries exactly one legal
-      // ground ('CFAA Digital Sabotage Lawsuit') — Alice deploys it against Bob.
+      // ground ('CFAA Digital Sabotage Lawsuit') — Alice deploys it against Bob. Carol is
+      // a third, otherwise-uninvolved active player included purely to keep this fixture
+      // OUT of the heads-up investigation shortcut (effectiveInvestigationLevel) — the
+      // "dug in but not all the way (level 2)" test below specifically needs level 2 to
+      // still mean "not fully investigated," which only holds with more than one other
+      // active player in the game.
       const withBotAttack = (investigations: Record<string, number> = {}) => makePlayers([
         {
           id: 'player-1', name: 'Alice',
           engineState: { activeDecisions: [{ id: 'attack-1', definitionName: 'Bot Attack', deployedYear: 1, elapsedYears: 0, isMatured: false, targetId: 'player-2' }] },
         },
         { id: 'player-2', name: 'Bob', engineState: { investigations } },
+        { id: 'player-3', name: 'Carol' },
       ]);
 
       it('should stamp plaintiffFullyInvestigated true when the victim dug all the way in before suing over the matching ground', () => {
@@ -930,7 +967,11 @@ describe('GameLoop', () => {
     // Builds a fixture where player-1 has one persisted Bot Attack decision instance
     // targeting player-2 — bypasses a full resolveTurn cycle since digDeeper only
     // needs cash + engineState, letting each test set up cash/investigation state
-    // directly for the exact scenario under test.
+    // directly for the exact scenario under test. A third, otherwise-uninvolved active
+    // player (Carol) is included specifically so this describe block's byId.size is 3,
+    // NOT 2 — keeping it OUT of the heads-up shortcut (effectiveInvestigationLevel) so
+    // these tests exercise the plain, un-shortcut 1-2-3 progression. The heads-up
+    // (exactly 2 active players) shortcut has its own dedicated describe block below.
     const ATTACK_ID = 'attack-1';
     function makeAttackFixture(overrides: { victimCash?: number; victimInvestigations?: Record<string, number> } = {}): EngineDataInput[] {
       return makePlayers([
@@ -951,6 +992,7 @@ describe('GameLoop', () => {
           variables: makeVars({ cash: overrides.victimCash ?? 100000 }),
           engineState: { investigations: overrides.victimInvestigations ?? {} },
         },
+        { id: 'player-3', name: 'Carol' },
       ]);
     }
 
@@ -1051,9 +1093,12 @@ describe('GameLoop', () => {
 
       // Simulate GameEngine persisting the dig, then a normal turn resolving afterward —
       // regression guard for readEngineState/Step-12 dropping unknown engineState keys.
+      // Carol stays in the roster here too, for the same "stay out of the heads-up
+      // shortcut" reason makeAttackFixture includes her.
       const players = makePlayers([
         { id: 'player-1', name: 'Alice', engineState: { activeDecisions: [{ id: ATTACK_ID, definitionName: 'Bot Attack', deployedYear: 1, elapsedYears: 0, isMatured: true, targetId: 'player-2' }] } },
         { id: 'player-2', name: 'Bob', cash: digOutcome.newCash, engineState: digOutcome.engineStateUpdate },
+        { id: 'player-3', name: 'Carol' },
       ]);
 
       const turnOutcome = gameLoop.resolveTurn('room-1', 2, players);
@@ -1063,6 +1108,66 @@ describe('GameLoop', () => {
       const bob = turnOutcome.result.players.find((p) => p.playerId === 'player-2')!;
       expect(bob.incomingAttacks[0].investigationLevel).toBe(1);
       expect(bob.incomingAttacks[0].attackerName).toBe('Alice');
+    });
+  });
+
+  describe('digDeeper — heads-up (exactly 2 active players)', () => {
+    // Same Bot Attack fixture as the digDeeper describe block above, minus Carol — with
+    // only one other active player, who attacked me is never actually in question, so
+    // investigation effectively starts one tier ahead (see effectiveInvestigationLevel's
+    // doc comment in gameLoop.ts). This means only 2 paid digs are ever needed here, not
+    // 3, and the raw persisted level this describe block reaches maxes out at 2.
+    const ATTACK_ID = 'attack-1';
+    function makeHeadsUpFixture(overrides: { victimInvestigations?: Record<string, number> } = {}): EngineDataInput[] {
+      return makePlayers([
+        {
+          id: 'player-1',
+          name: 'Alice',
+          engineState: {
+            activeDecisions: [
+              { id: ATTACK_ID, definitionName: 'Bot Attack', deployedYear: 1, elapsedYears: 0, isMatured: true, targetId: 'player-2' },
+            ],
+          },
+        },
+        {
+          id: 'player-2',
+          name: 'Bob',
+          variables: makeVars({ cash: 100000 }),
+          engineState: { investigations: overrides.victimInvestigations ?? {} },
+        },
+      ]);
+    }
+
+    it('dig 1 skips straight to the decision name and effect summary — identity was already free', () => {
+      const outcome = gameLoop.digDeeper('player-2', ATTACK_ID, makeHeadsUpFixture());
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.attack.investigationLevel).toBe(2);
+      expect(outcome.attack.attackerId).toBe('player-1');
+      expect(outcome.attack.attackerName).toBe('Alice');
+      expect(outcome.attack.decisionName).toBe('Bot Attack');
+      expect(outcome.attack.effectSummary).toContain('Outrage');
+      expect(outcome.attack.suggestedGroundName).toBeUndefined();
+      // The persisted RAW level still only advances by 1 per dig, same as always — it's
+      // only what gets revealed for a given raw level that shifts in a heads-up game.
+      expect(outcome.engineStateUpdate.investigations[ATTACK_ID]).toBe(1);
+    });
+
+    it('dig 2 adds the suggested lawsuit ground and a success probability', () => {
+      const outcome = gameLoop.digDeeper('player-2', ATTACK_ID, makeHeadsUpFixture({ victimInvestigations: { [ATTACK_ID]: 1 } }));
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.attack.investigationLevel).toBe(3);
+      expect(outcome.attack.suggestedGroundName).toBe('CFAA Digital Sabotage Lawsuit');
+      expect(outcome.attack.successProbability).toBeGreaterThan(0);
+    });
+
+    it('dig 3 fails — already fully investigated after only 2 paid digs, no charge', () => {
+      const outcome = gameLoop.digDeeper('player-2', ATTACK_ID, makeHeadsUpFixture({ victimInvestigations: { [ATTACK_ID]: 2 } }));
+
+      expect(outcome).toEqual({ success: false, reason: 'already_fully_investigated' });
     });
   });
 

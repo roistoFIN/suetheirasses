@@ -180,8 +180,10 @@ suetheirasses/
 │   │   └── images/                  # Static assets served as-is (Vite public/ convention)
 │   │       ├── hero.png             # Landing page hero art
 │   │       ├── sued.png             # "sued" post-turn info window art
-│   │       ├── lawsuit-won.png      # "lawsuit verdict: won" post-turn info window art
+│   │       ├── lawsuit-won.png      # "lawsuit verdict: won as plaintiff" (collected a payout) News art
 │   │       ├── lawsuit-lost.png     # "lawsuit verdict: lost" post-turn info window art
+│   │       ├── defender-won.png     # "lawsuit verdict: won as defendant" (case dismissed) News art
+│   │       ├── settlement-proposal.png # "case settled" post-turn info window art
 │   │       ├── turn-change.png      # "turn change" post-turn info window art
 │   │       └── lost.png             # "lost" takeover art (bankrupt/forfeit)
 │   ├── src/
@@ -947,7 +949,7 @@ The client shows a hint next to the SUE THEIR ASSES button — *"Somebody did so
 you"* — with a **🔍 Dig Deeper** button. Each click emits `game:digDeeper` and costs
 `gameSettings.digDeeperCost` ($10,000 by default), deducted **instantly** via
 `GameEngine.digDeeper`/`GameLoop.digDeeper` — a genuinely out-of-band mutation, not routed
-through the normal turn-resolution cycle (see CLAUDE.md's *"Two exceptions to
+through the normal turn-resolution cycle (see CLAUDE.md's *"Four exceptions to
 'everything happens in resolveTurn'"*). Investigation unlocks progressively, tracked per
 attack instance in `Company.engineState.investigations`:
 
@@ -964,6 +966,18 @@ attack instance in `Company.engineState.investigations`:
 Once fully investigated (tier 3), the button disables — no further charge. The button is
 also disabled client-side whenever cash is below `digDeeperCost`; the server enforces the
 same rule independently, so it's never possible to Dig Deeper into bankruptcy.
+
+**Heads-up (2-active-player) games skip tier 1 for free.** With only one other player
+still standing, "who attacked me" was never actually ambiguous — paying to learn it is a
+wasted dig, not real investigation. `GameLoop.effectiveInvestigationLevel` bumps the
+persisted investigation level up by one tier whenever exactly 2 players are active, so the
+attacker's identity is visible immediately with zero digs, the first paid dig jumps
+straight to tier 2 (what the decision does), and the second paid dig reaches tier 3
+(suggested ground + odds) — only 2 paid digs total instead of 3. The persisted level
+itself still just counts up by 1 per dig; only what a given level reveals shifts. If the
+game later has more than 2 active players again, the normal 3-tier ladder applies as
+usual — this is re-evaluated from the current active-player count on every call, not
+locked in once a game goes heads-up.
 
 Once you've acted on the hint — suing the attacker over exactly the suggested ground,
 with a "correct" case (win probability above 0%) — the hint card disappears, instead of
@@ -1271,19 +1285,22 @@ and a new arrival won't yank you back down.
   last turn's to find cases newly filed against the current player (by id, so an
   existing case is never re-reported). Shows the plaintiff, decision, ground, and
   stakes for every newly-filed case that turn.
-- **Lawsuit verdict** (`lawsuit-won.png` / `lawsuit-lost.png`) — `detectNewlyResolvedCases`
-  finds cases *I'm a party to* (plaintiff or defendant) that just reached a trial
-  verdict (`status: 'resolved'`, `verdict: 'won' | 'lost'`). The `won`/`lost` label is
-  from **my own perspective**, not the raw `verdict` field — a defendant's case resolving
-  `'lost'` (the plaintiff lost) is a *win* for that defendant, so the outcome is flipped
-  for whichever role I actually have in the case, with role-aware copy for all four
-  win/lose × plaintiff/defendant combinations ("You received $X from…", "You paid $X
-  to…", etc.).
-- **Case settled** — `detectNewlySettledCases` finds cases *I'm a party to* that resolved
-  via `verdict: 'settled'` instead of a trial (negotiation — see *Lawsuits* above; not
-  `'cancelled'`, the bankruptcy-waterfall outcome, which isn't a settlement either side
-  negotiated). Shows who paid whom the settled amount, same role-aware framing as the
-  verdict item.
+- **Lawsuit verdict** (`lawsuit-won.png` / `defender-won.png` / `lawsuit-lost.png`) —
+  `detectNewlyResolvedCases` finds cases *I'm a party to* (plaintiff or defendant) that
+  just reached a trial verdict (`status: 'resolved'`, `verdict: 'won' | 'lost'`). The
+  `won`/`lost` label is from **my own perspective**, not the raw `verdict` field — a
+  defendant's case resolving `'lost'` (the plaintiff lost) is a *win* for that defendant,
+  so the outcome is flipped for whichever role I actually have in the case, with
+  role-aware copy for all four win/lose × plaintiff/defendant combinations ("You received
+  $X from…", "You paid $X to…", etc.). The art goes one step further than the text: a win
+  as **plaintiff** (a real payout) shows `lawsuit-won.png`, while a win as **defendant**
+  (the case was dismissed, no money changes hands) shows the distinct `defender-won.png` —
+  picked by checking whether every case in this turn's won-bundle has me as defendant.
+- **Case settled** (`settlement-proposal.png`) — `detectNewlySettledCases` finds cases
+  *I'm a party to* that resolved via `verdict: 'settled'` instead of a trial (negotiation
+  — see *Lawsuits* above; not `'cancelled'`, the bankruptcy-waterfall outcome, which isn't
+  a settlement either side negotiated). Shows who paid whom the settled amount, same
+  role-aware framing as the verdict item.
 - **Next turn** (`turn-change.png`) — every round after the first (round 1 is the
   initial game start, not a change from anything) gets one of these the moment the
   round number advances.

@@ -323,6 +323,33 @@ Since `game:submitDecisions` is full-replacement (see above), every one of these
 locations independently calling `submitPending` with a locally-filtered copy of `pending`
 is exactly as correct as the two that already existed.
 
+### Dig Deeper's investigation ladder skips the free "who did this" tier in a heads-up (2-active-player) game
+
+`GameLoop.revealAttack`'s three investigation tiers (level 1: attacker identity, level 2:
+decision name/description/effect, level 3: suggested ground + win probability) assume the
+attacker's identity is genuinely unknown at level 0. That's false the moment only 2 active
+players remain — there is exactly one other player left, so "who attacked me" was never
+actually in question, and making the player spend a real dig to learn it is a wasted step,
+not real investigation. `GameLoop.effectiveInvestigationLevel(rawLevel, activePlayerCount)`
+is the fix: whenever `activePlayerCount === 2`, it returns `rawLevel + 1` (capped at
+`MAX_INVESTIGATION_LEVEL`) instead of `rawLevel` unchanged — every caller that turns a
+persisted investigation level into revealed content or a "fully investigated" check
+(`buildIncomingAttacks`, `digDeeper`, and Step 8's `plaintiffFullyInvestigated` stamp) runs
+the raw, persisted level through this first. The **persisted** level in
+`engineState.investigations` is still a plain `+1`-per-dig counter, identical to the
+non-heads-up case — only what a given raw level *reveals* shifts. Concretely, in a heads-up
+game: level-1 content (attacker identity) is visible with zero digs and zero raw level; the
+first paid dig jumps straight to level-2 content (what the decision is/does); the second
+paid dig reaches level-3 content (suggested ground + probability) and is the last one
+needed — a raw level of 2 is already "fully investigated" in a heads-up game, not 3.
+`activePlayerCount` must always count every still-active player, the investigating player
+included (i.e. "2" means "just me and one attacker") — `playersStillActive.length` /
+`byId.size` / `ctxs.size` at each of this method's three call sites, matching how
+`loadActiveCompanyPlayers` counts elsewhere. If the game later drops back above 2 active
+players (not currently possible — eliminations only ever reduce the count), nothing needs
+to change: the shortcut is evaluated fresh from the current active count on every call, not
+latched once.
+
 ### Four exceptions to "everything happens in resolveTurn": Dig Deeper, reconnection, forfeit, and lawsuit filing fees
 
 Almost every gameplay effect only ever happens inside the turn-timer-driven
@@ -597,6 +624,34 @@ handler checks `payload.playerId === targetPlayerId` before applying a response,
 stale reply for a since-closed graph can never flash the wrong player's numbers into a
 still-open one. If you add a third place `KpiHistoryGraph` can be nested, keep this check;
 don't assume "the only listener for `game:kpiHistoryResult`" is safe to skip it.
+
+### `gpStyles.stamp` badges (QUEUED, INSTANT, xT, MATURED, PLAINTIFF/DEFENDANT) — overriding a Mantine `Badge`'s border without also taking over its centering breaks vertical centering
+
+`gpStyles.stamp(tone)` is the shared inline-style object behind every small bordered
+label-badge in `GamePhase.tsx` — decision cards' `QUEUED`/`INSTANT`/`xT`/`✓ MATURED`, and
+`CaseCard`'s `PLAINTIFF`/`DEFENDANT` — always rendered through Mantine's `<Badge
+style={gpStyles.stamp(...)}>`. It used to just set `display: 'inline-block'` plus its own
+`border`/`padding`/`fontSize` — a real, reported bug where the label text visually
+overlapped the bottom border, on every one of these badges at once (they all share this
+one style function). Root cause: Mantine's `Badge` sets its own fixed `height`/
+`line-height` from its own stylesheet, sized for Mantine's *default*, much thinner border —
+our custom 3px border plus 2px padding eats into that fixed height without adjusting it,
+and once `display` isn't a flex/grid value, leftover vertical space collects unevenly above
+the text (block-layout text is top-anchored within its line box) rather than splitting
+evenly — measured live as an 8px gap above the label vs. a 1px gap below, i.e. the label's
+own bottom edge sitting inside the 3px border stroke. Fixed by making `stamp()` take over
+centering explicitly rather than trying to rebalance the height/line-height/padding math by
+hand: `display: 'inline-flex'`, `alignItems: 'center'`, `justifyContent: 'center'`,
+`height: 'auto'`, `lineHeight: 1` — flexbox centers the label regardless of whatever fixed
+height Mantine's own stylesheet still applies underneath. If you add another `gpStyles.*`
+helper that overrides a Mantine component's border/padding, check whether it also needs to
+take over that component's centering the same way — a thicker border is exactly the kind
+of change that silently breaks Mantine's own default vertical centering.
+`gpStyles.filterChip` (the ALL/STRATEGIC/OPERATIONAL filter pills) and
+`gpStyles.semaphoreChip` (the case-probability chip) weren't affected — neither overrides
+`display` or uses as thick a border, so neither fights Mantine's own centering (or, for
+`semaphoreChip`, isn't a `Badge` in the first place — it's a plain `Box` with its own
+`display: 'flex'` from the start).
 
 ### Trend arrows (up/down/no-change) are computed client-side, from whatever the client already has in memory — no new server data
 
@@ -1149,8 +1204,8 @@ to every push into it.
 
 Being sued, a lawsuit reaching a verdict (or settling by negotiation), and a new round
 starting can all happen off the same `resolveTurn` call, and each has its own art/copy
-(`sued.png`, `lawsuit-won.png`/`lawsuit-lost.png`, `turn-change.png` — settlement has no
-dedicated art, text-only). `GamePhase.tsx` models all four as a single discriminated
+(`sued.png`, `lawsuit-won.png`/`lawsuit-lost.png`/`defender-won.png`,
+`settlement-proposal.png`, `turn-change.png`). `GamePhase.tsx` models all four as a single discriminated
 union, `PostTurnEvent = { type: 'sued'; cases } | { type: 'verdict'; outcome; cases } |
 { type: 'settlement'; cases } | { type: 'turnChange'; round }`. This **used to** drive a
 single auto-opening `Modal` off the front of a dismiss-to-advance `eventQueue` (each
@@ -1194,6 +1249,23 @@ to the *querying player's own* perspective (`outcome: 'won' | 'lost'`, or `role:
 'plaintiff' | 'defendant'`) — `LegalCaseData.verdict` itself is plaintiff-centric, so a
 defendant's own win/loss (or which side paid whom in a settlement) is the logical inverse;
 downstream UI never re-derives this, it just reads the already-flipped field.
+
+**The 'verdict' modal's art distinguishes a plaintiff's payout from a defendant's
+dismissal, not just win/lose.** `lawsuit-won.png` depicts collecting a large payout — right
+for winning *as plaintiff*, but wrong for winning *as defendant* (a dismissal, no money
+changes hands). `defender-won.png` was added specifically for that second case. Since one
+'verdict' `PostTurnEvent` bundles every case that resolved `'won'` for me this *same* turn
+(`won`/`lost` are split into separate events by `detectNewlyResolvedCases`'s grouping, but
+not further split by role), the image is chosen by checking whether *every* case in the
+bundle has me as defendant (`currentEvent.cases.every((c) => c.plaintiffId !== player?.id)`)
+— the overwhelmingly common case, since winning as both plaintiff and defendant in the same
+turn is a rare coincidence. A hypothetical mixed bundle falls back to the plaintiff-payout
+art rather than picking arbitrarily; this hasn't needed anything more precise in practice.
+`lawsuit-lost.png` is unaffected — no equivalent role split exists for a *loss*, since no
+second art asset was ever commissioned for it. The 'settlement' modal (previously
+text-only) now leads with `settlement-proposal.png` the same way every other News modal
+does — no role split there, since a settlement is a mutual, negotiated event rather than
+one side unilaterally winning or losing.
 
 **Deliberately not a `PostTurnEvent`/News item:** the "someone else went bankrupt" notice
 lives outside this feed entirely — in `gameStore.bankruptcyEvents` and `App.tsx`'s

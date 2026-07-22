@@ -523,7 +523,8 @@ export class GameLoop {
           d => d.definition.decision === filing.decisionName && d.targetId === ctx.playerId,
         );
         if (attackInstance) {
-          const level = ctx.engineState.investigations[attackInstance.id] ?? 0;
+          const rawLevel = ctx.engineState.investigations[attackInstance.id] ?? 0;
+          const level = this.effectiveInvestigationLevel(rawLevel, ctxs.size);
           if (level >= MAX_INVESTIGATION_LEVEL) {
             const best = pickBestGround(attackInstance.definition, attackInstance.elapsedYears, targetCtx.vars, this.adminVars, this.formulas);
             plaintiffFullyInvestigated = best?.name === filing.groundName;
@@ -941,8 +942,14 @@ export class GameLoop {
     const targetImpacts = this.decisionEngine.getTargetImpacts(attacker.decision.definition.impacts);
     if (targetImpacts.size === 0) return { success: false, reason: 'invalid_attack' };
 
+    // byId's size is every active (non-bankrupt) player in the room, target included —
+    // 2 means a heads-up game, where digDeeper's next raw level should skip straight to
+    // level-2 content (see effectiveInvestigationLevel's doc comment).
+    const activePlayerCount = byId.size;
     const currentLevel = me.engineState.investigations[attackId] ?? 0;
-    if (currentLevel >= MAX_INVESTIGATION_LEVEL) return { success: false, reason: 'already_fully_investigated' };
+    if (this.effectiveInvestigationLevel(currentLevel, activePlayerCount) >= MAX_INVESTIGATION_LEVEL) {
+      return { success: false, reason: 'already_fully_investigated' };
+    }
 
     const cost = this.config.gameSettings.digDeeperCost;
     if (me.vars.cash < cost) return { success: false, reason: 'insufficient_funds' };
@@ -952,7 +959,7 @@ export class GameLoop {
     const newInvestigations = { ...me.engineState.investigations, [attackId]: newLevel };
 
     const attackerVars = byId.get(attacker.id)!.vars;
-    const attack = this.revealAttack(attacker.id, attacker.name, attacker.decision, newLevel, attackerVars);
+    const attack = this.revealAttack(attacker.id, attacker.name, attacker.decision, this.effectiveInvestigationLevel(newLevel, activePlayerCount), attackerVars);
 
     return {
       success: true,
@@ -1376,11 +1383,27 @@ export class GameLoop {
         if (d.targetId !== pid) continue;
         const targetImpacts = this.decisionEngine.getTargetImpacts(d.definition.impacts);
         if (targetImpacts.size === 0) continue;
-        const level = myInvestigations[d.id] ?? 0;
+        const rawLevel = myInvestigations[d.id] ?? 0;
+        const level = this.effectiveInvestigationLevel(rawLevel, attackerCtxIds.length);
         attacks.push(this.revealAttack(attackerId, attackerCtx.playerName, d, level, attackerCtx.vars));
       }
     }
     return attacks;
+  }
+
+  /**
+   * In a heads-up game (exactly 2 active players), investigation level 1's only content —
+   * the attacker's identity — is never actually ambiguous: there's only one other active
+   * player, so it's obvious who it was without spending a dig on it. Callers pass a raw,
+   * persisted investigation level (0-2 in a heads-up game, since level 3 becomes reachable
+   * one dig earlier) through here to get the level that should actually be revealed/checked
+   * against `MAX_INVESTIGATION_LEVEL` — one tier ahead of raw in a heads-up game, unchanged
+   * otherwise. `activePlayerCount` must count every still-active player, the target included
+   * (i.e. 2 means "just me and one attacker"), matching `playersStillActive.length` /
+   * `byId.size` / `ctxs.size` at each of this method's call sites.
+   */
+  private effectiveInvestigationLevel(rawLevel: number, activePlayerCount: number): number {
+    return activePlayerCount === 2 ? Math.min(rawLevel + 1, MAX_INVESTIGATION_LEVEL) : rawLevel;
   }
 
   /** Builds the progressively-revealed intel for one incoming attack at the given investigation level. */

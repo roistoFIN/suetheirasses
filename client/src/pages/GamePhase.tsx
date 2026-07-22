@@ -417,8 +417,19 @@ const gpStyles = {
     background: selected ? '#fef2f2' : '#fff',
   }),
 
+  // Mantine's Badge sets a fixed height/line-height from its own stylesheet (tied to its
+  // default size, not to our custom padding/border below) — with a thick 3px border and
+  // block-level (not flex) content layout, that leftover space collects above the text
+  // instead of splitting evenly, pushing the label down until it visually overlaps the
+  // bottom border. `inline-flex` + `alignItems: 'center'` centers the label regardless of
+  // whatever fixed height Mantine applies; `height: 'auto'`/`lineHeight: 1` stop that
+  // fixed height from fighting the centering in the first place.
   stamp: (tone: string): React.CSSProperties => ({
-    display: 'inline-block',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 'auto',
+    lineHeight: 1,
     border: '3px solid',
     borderColor: tone === 'green' ? '#16a34a' : tone === 'yellow' ? '#f59e0b' : tone === 'red' ? '#dc2626' : 'var(--mantine-color-dark-8)',
     color: tone === 'green' ? '#15803d' : tone === 'yellow' ? '#b45309' : tone === 'red' ? '#b91c1c' : 'var(--mantine-color-dark-8)',
@@ -893,11 +904,18 @@ export default function GamePhase() {
 
         {currentEvent?.type === 'verdict' && (
           <Stack gap="md">
-            <Image
-              src={currentEvent.outcome === 'won' ? '/images/lawsuit-won.png' : '/images/lawsuit-lost.png'}
-              alt={currentEvent.outcome === 'won' ? 'Case won' : 'Case lost'}
-              radius="md"
-            />
+            {(() => {
+              // A 'won' event bundles every case that resolved 'won' for me this turn
+              // (see detectNewlyResolvedCases) — almost always all-plaintiff or
+              // all-defendant, but if a mixed batch ever happens, default to the
+              // plaintiff-payout art rather than picking arbitrarily.
+              const wonAsDefendantOnly = currentEvent.outcome === 'won' && currentEvent.cases.every((c) => c.plaintiffId !== player?.id);
+              const src = currentEvent.outcome === 'lost'
+                ? '/images/lawsuit-lost.png'
+                : wonAsDefendantOnly ? '/images/defender-won.png' : '/images/lawsuit-won.png';
+              const alt = currentEvent.outcome === 'lost' ? 'Case lost' : wonAsDefendantOnly ? 'Case dismissed' : 'Case won';
+              return <Image src={src} alt={alt} radius="md" />;
+            })()}
             <Stack gap="xs">
               {currentEvent.cases.map((c) => {
                 const iAmPlaintiff = c.plaintiffId === player?.id;
@@ -930,6 +948,7 @@ export default function GamePhase() {
 
         {currentEvent?.type === 'settlement' && (
           <Stack gap="md">
+            <Image src="/images/settlement-proposal.png" alt="Settlement reached" radius="md" />
             <Stack gap="xs">
               {currentEvent.cases.map(({ case: c, role }) => {
                 const opponentName = playerNames.get(role === 'plaintiff' ? c.defendantId : c.plaintiffId) ?? 'Unknown';
