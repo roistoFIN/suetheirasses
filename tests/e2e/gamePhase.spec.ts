@@ -16,11 +16,15 @@ test.describe('Game Phase', () => {
     await expect(page.getByText('GamePhasePlayer')).toBeVisible();
     await expect(page.getByText('CASH', { exact: true })).toBeVisible();
     await expect(page.getByText('EQUITY', { exact: true })).toBeVisible();
-    await expect(page.getByText('No active strategies')).toBeVisible();
+    await expect(page.getByText('No active decisions')).toBeVisible();
     await expect(page.getByText('No open lawsuits')).toBeVisible();
 
-    // The Decision Deck now renders real, deployable decisions instead of a placeholder
+    // The Decision Deck lives inside its own modal (MAKE IMPORTANT DECISIONS), not a
+    // standalone panel — open it and confirm it renders real, deployable decisions
+    // instead of a placeholder.
+    await page.getByRole('button', { name: /MAKE IMPORTANT DECISIONS/i }).click();
     await expect(page.getByRole('button', { name: 'DEPLOY' }).first()).toBeVisible();
+    await page.keyboard.press('Escape');
 
     // SUE THEIR ASSES lives in the Open Lawsuits box, not the Decision Deck — its label
     // shows the flat filing fee (gameSettings.lawsuitFilingCost), charged instantly the

@@ -787,15 +787,19 @@ deck mirrors `DecisionEngine.canDeploy`'s exclusion rules client-side (same deci
 maturing, forward/reverse `excludes`) so a card is visibly greyed out with a reason
 rather than letting a player queue a move the server would reject.
 
-Whatever's queued this turn also shows up in the **Active Strategies** box itself, not
-just inside the Decision Deck — a red `QUEUED` badge alongside the already-active
-decisions, with its own **Cancel** link right there (no need to reopen the deck just to
-back out of a pick). The same goes for a filed-but-not-yet-created lawsuit in the **Open
+The deck itself opens from a **MAKE IMPORTANT DECISIONS** button inside the **Active
+Decisions** box, rather than sitting inline as its own panel — the same "button opens a
+modal" shape the **SUE THEIR ASSES** button already uses for the Sue modal. Whatever's
+queued this turn shows up in the **Active Decisions** box directly too, not just inside
+that modal — a red `QUEUED` badge alongside the already-active decisions, with its own
+**Cancel** link right there (no need to reopen the deck just to back out of a pick). The
+box's header count (`"X strategic and Y operational"`) includes both active and queued
+decisions together. The same goes for a filed-but-not-yet-created lawsuit in the **Open
 Lawsuits** box: it appears as a `QUEUED` entry with a **Remove** link, alongside the
 `SUE THEIR ASSES` modal's own queued-lawsuits list, which still works the same way it
-always has. Both are the exact same `pending` client state the deck/Sue modal already
-read and write — cancelling from any of the three spots re-sends the same full-replacement
-`game:submitDecisions` payload with that one entry filtered out.
+always has. All of this reads and writes the exact same `pending` client state the deck/
+Sue modal already use — cancelling from any of these spots re-sends the same
+full-replacement `game:submitDecisions` payload with that one entry filtered out.
 
 Each 120s GAME_PHASE round, every player submits up to 1 strategic + 2 operational
 decision from a shared library of 45 decisions — spanning `Traditional`, `Grey Area`,

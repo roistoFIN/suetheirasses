@@ -395,6 +395,7 @@ export default function GamePhase() {
   // the viewer's own id for own-breakdown rows, a rival's id for rival ones.
   const [kpiSubFieldGraph, setKpiSubFieldGraph] = useState<{ field: string; label: string; targetPlayerId: string } | null>(null);
   const [sueModalOpen, setSueModalOpen] = useState(false);
+  const [decisionDeckModalOpen, setDecisionDeckModalOpen] = useState(false);
   // Set when a player jumps into the Sue flow via a fully-investigated attack's
   // "SUE NOW" shortcut — pre-fills SueModal's target + ground, still requires the
   // player's own "QUEUE LAWSUIT" confirmation click.
@@ -563,6 +564,12 @@ export default function GamePhase() {
   const { variables: vars, derived, riskGauge, legalCases: myLegalCases } = myData;
   const isUrgent = localTimer <= 20;
   const playerNames = new Map<string, string>([myData, ...competitors].map((p) => [p.playerId, p.playerName]));
+  // "Active Decisions" box header count — active (resolved) + still-queued, per bucket,
+  // same "count everything actually shown in the box" convention as "Open Lawsuits (N)".
+  // activeDecisions has no `level` field of its own (only the deck's DecisionDefinition
+  // does), so each active instance is looked back up by name to bucket it.
+  const activeStrategicCount = myData.activeDecisions.filter((d) => decisions.find((def) => def.decision === d.decisionName)?.level === 'Strategic').length + pending.strategic.length;
+  const activeOperationalCount = myData.activeDecisions.filter((d) => decisions.find((def) => def.decision === d.decisionName)?.level === 'Operational').length + pending.operational.length;
   const currentEvent = eventQueue[0];
   const dismissCurrentEvent = () => setEventQueue((q) => q.slice(1));
 
@@ -606,30 +613,31 @@ export default function GamePhase() {
       <Flex wrap="wrap" gap="md">
         {/* Left column */}
         <Stack gap="md" style={{ flex: 1, minWidth: 320 }}>
-          <SectionCard title="Active Strategies">
-            {myData.activeDecisions.length === 0 && pending.strategic.length === 0 && pending.operational.length === 0 ? (
-              <Text c="dimmed" size="sm">No active strategies</Text>
-            ) : (
-              <Stack gap="sm">
-                {(['strategic', 'operational'] as const).flatMap((bucket) =>
-                  pending[bucket].map((entry, i) => (
-                    <QueuedDecisionCard
-                      key={`${bucket}-${i}`}
-                      name={entry.name}
-                      targetName={entry.targetId ? (competitors.find((c) => c.playerId === entry.targetId)?.playerName ?? entry.targetId) : undefined}
-                      onCancel={() => submitPending({ ...pending, [bucket]: pending[bucket].filter((e) => e.name !== entry.name) })}
-                    />
-                  )),
-                )}
-                {myData.activeDecisions.map((d) => (
-                  <ActiveDecisionCard key={d.id} decision={d} />
-                ))}
-              </Stack>
-            )}
-          </SectionCard>
-
-          <SectionCard title="Decision Deck">
-            <DecisionDeckView decisions={decisions} gameSettings={gameSettings} myData={myData} competitors={competitors} pending={pending} onSubmitPending={submitPending} />
+          <SectionCard title={`Active Decisions (${activeStrategicCount} strategic and ${activeOperationalCount} operational)`}>
+            <Stack gap="sm">
+              <Button variant="filled" color="dark" onClick={() => setDecisionDeckModalOpen(true)} style={{ ...boldStyle }}>
+                MAKE IMPORTANT DECISIONS
+              </Button>
+              {myData.activeDecisions.length === 0 && pending.strategic.length === 0 && pending.operational.length === 0 ? (
+                <Text c="dimmed" size="sm">No active decisions</Text>
+              ) : (
+                <Stack gap="sm">
+                  {(['strategic', 'operational'] as const).flatMap((bucket) =>
+                    pending[bucket].map((entry, i) => (
+                      <QueuedDecisionCard
+                        key={`${bucket}-${i}`}
+                        name={entry.name}
+                        targetName={entry.targetId ? (competitors.find((c) => c.playerId === entry.targetId)?.playerName ?? entry.targetId) : undefined}
+                        onCancel={() => submitPending({ ...pending, [bucket]: pending[bucket].filter((e) => e.name !== entry.name) })}
+                      />
+                    )),
+                  )}
+                  {myData.activeDecisions.map((d) => (
+                    <ActiveDecisionCard key={d.id} decision={d} />
+                  ))}
+                </Stack>
+              )}
+            </Stack>
           </SectionCard>
         </Stack>
 
@@ -731,6 +739,10 @@ export default function GamePhase() {
           cash={vars.cash}
           socket={socket}
         />
+      </Modal>
+
+      <Modal opened={decisionDeckModalOpen} onClose={() => setDecisionDeckModalOpen(false)} size="lg" centered title={<Text style={{ ...boldStyle, fontSize: '0.9rem' }}>📋 MAKE IMPORTANT DECISIONS</Text>}>
+        <DecisionDeckView decisions={decisions} gameSettings={gameSettings} myData={myData} competitors={competitors} pending={pending} onSubmitPending={submitPending} />
       </Modal>
 
       <Modal opened={riskInfoCase !== null} onClose={() => setRiskInfoCase(null)} size="md" centered title={<Text style={{ ...boldStyle, fontSize: '0.85rem' }}>⚠️ RISK BREAKDOWN</Text>}>
@@ -1007,11 +1019,12 @@ interface QueuedDecisionCardProps {
 }
 
 /** A decision the player has selected this turn but that hasn't been submitted/resolved
- * yet — shown alongside `ActiveDecisionCard` in the "Active Strategies" list so a queued
- * pick doesn't only appear inside the Decision Deck panel. Deliberately a separate,
- * lighter component rather than reusing `ActiveDecisionCard`: a pending
- * `SubmittedDecisionEntry` (`{ name, targetId? }`) has no `id`/maturity/deployedYear yet
- * — those only exist once the decision has actually been deployed by a turn resolving. */
+ * yet — shown alongside `ActiveDecisionCard` in the "Active Decisions" list so a queued
+ * pick doesn't only appear inside the Decision Deck modal (MAKE IMPORTANT DECISIONS).
+ * Deliberately a separate, lighter component rather than reusing `ActiveDecisionCard`: a
+ * pending `SubmittedDecisionEntry` (`{ name, targetId? }`) has no `id`/maturity/
+ * deployedYear yet — those only exist once the decision has actually been deployed by a
+ * turn resolving. */
 function QueuedDecisionCard({ name, targetName, onCancel }: QueuedDecisionCardProps) {
   return (
     <div style={gpStyles.activeDecisionCard}>

@@ -229,18 +229,20 @@ either the client submission logic (`GamePhase.tsx`) or `GameLoop.submitDecision
 
 ### Queued (not-yet-resolved) decisions and lawsuits render as lightweight stand-ins, not by reusing the resolved-state cards
 
-"Active Strategies" and "Open Lawsuits" used to render only server-authoritative,
-already-resolved state (`myData.activeDecisions` / `myData.legalCases`) — nothing queued
-this turn (`pending.strategic`/`operational`/`lawsuits`, the exact same client-local state
-the Decision Deck and Sue modal already read/write) showed up there at all, even though
-both boxes are the natural place a player would look to confirm what they've picked. Both
-now merge `pending`'s entries into the same list, marked with the same red `QUEUED`
-`gpStyles.stamp` badge the Decision Deck already uses for consistency — but via two new,
-deliberately lightweight components (`QueuedDecisionCard`, `QueuedLawsuitCard`), not by
-stretching `ActiveDecisionCard`/`CaseCard` to accept a queued entry. A queued
-`SubmittedDecisionEntry` (`{ name, targetId? }`) has no `id`/`deployedYear`/maturity data
-yet — that only exists once a decision has actually been deployed by a turn resolving —
-and a queued `SubmittedLawsuitEntry` (`{ targetId, decisionName, groundName }`) has no
+"Active Decisions" (originally "Active Strategies" — renamed once it started showing
+queued picks too, not just already-active ones) and "Open Lawsuits" used to render only
+server-authoritative, already-resolved state (`myData.activeDecisions` /
+`myData.legalCases`) — nothing queued this turn (`pending.strategic`/`operational`/
+`lawsuits`, the exact same client-local state the Decision Deck and Sue modal already
+read/write) showed up there at all, even though both boxes are the natural place a player
+would look to confirm what they've picked. Both now merge `pending`'s entries into the
+same list, marked with the same red `QUEUED` `gpStyles.stamp` badge the Decision Deck
+already uses for consistency — but via two new, deliberately lightweight components
+(`QueuedDecisionCard`, `QueuedLawsuitCard`), not by stretching `ActiveDecisionCard`/
+`CaseCard` to accept a queued entry. A queued `SubmittedDecisionEntry` (`{ name,
+targetId? }`) has no `id`/`deployedYear`/maturity data yet — that only exists once a
+decision has actually been deployed by a turn resolving — and a queued
+`SubmittedLawsuitEntry` (`{ targetId, decisionName, groundName }`) has no
 `id`/`stakes`/`status`/`offers` yet either, since the real `LegalCaseData` isn't created
 until `LegalEngine.fileLawsuit` runs at the next turn resolution (Step 8). Don't try to
 paper over the shape mismatch with optional fields on the resolved-state components;
@@ -250,8 +252,30 @@ sometimes missing.
 Both queued-card types carry their own removal action (`onCancel`/`onRemove`), reusing the
 exact same `pending` mutation the Decision Deck's toggle and the Sue modal's
 `handleRemoveQueued` already perform — `submitPending({ ...pending, [bucket]:
-pending[bucket].filter(...) })` — so cancelling from "Active Strategies"/"Open Lawsuits"
+pending[bucket].filter(...) })` — so cancelling from "Active Decisions"/"Open Lawsuits"
 is not a separate code path, just the same state update triggered from a third location.
+
+`Active Decisions`' header count (`"{N} strategic and {M} operational"`) deliberately
+counts everything the box actually shows — active *and* still-queued, per bucket — the
+same "the number always equals how many cards are visible" convention `Open Lawsuits
+(N)` already established. Since `ActiveDecisionInstance` carries no `level` field of its
+own (only `DecisionDefinition` does), each active instance has to be looked back up by
+`decisionName` against the loaded `decisions` deck to bucket it; queued entries don't need
+this lookup at all, since `pending.strategic`/`pending.operational` are already
+bucket-keyed by construction.
+
+### The Decision Deck lives in its own modal (MAKE IMPORTANT DECISIONS), not a standalone panel
+
+`DecisionDeckView` (filter chips, the queued-count line, every `DecisionCard`) used to
+render inline as its own `SectionCard` next to "Active Decisions." It's now opened from a
+**MAKE IMPORTANT DECISIONS** button inside the "Active Decisions" box itself — same
+"button opens a `Modal` wrapping the existing view component" shape `SueModal`/"SUE THEIR
+ASSES" already established, right down to reusing the same modal `size="lg"`/title
+styling. `DecisionDeckView` itself is unchanged — same props (`decisions`, `gameSettings`,
+`myData`, `competitors`, `pending`, `onSubmitPending`), same internal filter/toggle logic
+— only *where* it renders moved. If you add a similar "pick from a big list" flow later,
+follow this shape (a triggering button + `Modal` + the existing view component
+unmodified) rather than inventing a new panel-vs-modal pattern.
 Since `game:submitDecisions` is full-replacement (see above), every one of these three
 locations independently calling `submitPending` with a locally-filtered copy of `pending`
 is exactly as correct as the two that already existed.
