@@ -105,6 +105,10 @@ export enum ClientEvents {
   GAME_LEAVE = 'game:leave',
   /** Toggle ready status for the in-flight turn — once every active (non-bankrupt) player is ready, the turn resolves immediately instead of waiting out the timer. */
   GAME_READY = 'game:ready',
+  /** Charge `gameSettings.lawsuitFilingCost` the instant a player files a lawsuit (SueModal's "File" button) — instant, outside turn resolution, same pattern as `game:digDeeper`. The case itself is still only created/validated at the next turn resolution via `game:submitDecisions`. */
+  GAME_FILE_LAWSUIT = 'game:fileLawsuit',
+  /** Request this player's own KPI history (persisted `KpiSnapshot` rows) plus a 3-turn-ahead prediction — on demand, opened by clicking any KPI card or breakdown line item. No payload — always "my own data," never a rival's. */
+  GAME_GET_KPI_HISTORY = 'game:getKpiHistory',
 }
 
 // Server → Client events
@@ -135,6 +139,10 @@ export enum ServerEvents {
   GAME_LEFT = 'game:left',
   /** Broadcast to the whole room on every `game:ready` toggle, and reset to an empty `readyPlayerIds` at the start of each new round. */
   GAME_READY_UPDATE = 'game:readyUpdate',
+  /** Sent only to the requesting socket, in response to `game:fileLawsuit` — either the fee was charged (with the new cash) or it wasn't (with a reason). */
+  GAME_FILE_LAWSUIT_RESULT = 'game:fileLawsuitResult',
+  /** Sent only to the requesting socket, in response to `game:getKpiHistory` — this player's own KPI history + 3-turn prediction. */
+  GAME_KPI_HISTORY_RESULT = 'game:kpiHistoryResult',
 }
 
 // ============================================================
@@ -175,6 +183,13 @@ export interface ChatMessagePayload {
 /** Payload for `game:ready` — toggle this player's ready status for the in-flight turn. */
 export interface GameReadyPayload {
   ready: boolean;
+}
+
+/** Payload for `game:fileLawsuit` — pay `gameSettings.lawsuitFilingCost` to file a specific lawsuit right now. Same `{ targetId, decisionName, groundName }` shape as one entry of `SubmittedDecisions.lawsuits` — the client still separately queues that entry via `game:submitDecisions` for the case itself to be created at the next turn resolution; this only charges the fee. */
+export interface FileLawsuitPayload {
+  targetId: string;
+  decisionName: string;
+  groundName: string;
 }
 
 // ===========================================================
@@ -262,6 +277,14 @@ export interface DigDeeperResultPayload {
   cost: number;
   newCash: number;
   attack: IncomingAttackInfo;
+}
+
+/** Response for `game:fileLawsuitResult` — sent only to the socket that filed, on success.
+ * A failed charge (insufficient funds, per-turn limit reached, etc.) is reported via the
+ * generic `error` event instead, same convention as `game:digDeeper`. */
+export interface FileLawsuitResultPayload {
+  cost: number;
+  newCash: number;
 }
 
 /** Response for `game:annualReportResult` — sent only to the requesting socket. */

@@ -35,6 +35,7 @@ import type {
   LegalCaseData,
   SubmittedDecisions,
   IncomingAttackInfo,
+  KpiSnapshotPoint,
 } from '@suetheirasses/shared';
 import {
   applyDepreciation,
@@ -116,6 +117,12 @@ export interface CompanyPersistUpdate {
 export interface BankruptedPlayer {
   playerId: string;
   playerName: string;
+  /** This player's actual (negative) cash balance at the moment of elimination — the caller must
+   * persist this to their Company row too, since a bankrupted player is excluded from
+   * `companyUpdates` (their engine state is done being touched) and would otherwise keep
+   * whatever positive `cash` the DB had from their last still-active turn forever, including
+   * on the Game Over / final-standings screen. */
+  finalCash: number;
 }
 
 /** Everything resolveTurn computed: the `turn:resolved` broadcast payload plus the side effects the caller must apply. */
@@ -144,6 +151,24 @@ export type DigDeeperOutcome =
       /** The requesting player's full engineState to persist — existing keys carried through unchanged, only `investigations` updated. */
       engineStateUpdate: CompanyPersistUpdate['engineState'];
     };
+
+/** Result of a `chargeLawsuitFilingFee` call — a lightweight, single-player, out-of-band mutation (not part of turn resolution). */
+export type LawsuitFilingFeeOutcome =
+  | { success: false; reason: 'player_not_found' | 'insufficient_funds' | 'limit_reached' }
+  | {
+      success: true;
+      cost: number;
+      newCash: number;
+      /** The requesting player's full `variables` JSONB to persist, cash already decremented —
+       * same "must be written alongside the `cash` column" requirement as `DigDeeperOutcome.variables`. */
+      variables: PlayerVariables;
+    };
+
+/** Result of a `predictFutureKpis` call — up to `turnsAhead` future points, fewer if the simulation shows the player going bankrupt partway through. */
+export interface KpiPrediction {
+  predicted: KpiSnapshotPoint[];
+  bankruptAtRound?: number;
+}
 
 /** One active decision instance, read-only summary for narrating a rival's "annual report" (`GameEngine.getAnnualReport`). */
 export interface ActiveDecisionSummary {
@@ -598,7 +623,7 @@ export class GameLoop {
         }
       }
 
-      bankruptedPlayers.push({ playerId: pid, playerName: ctx.playerName });
+      bankruptedPlayers.push({ playerId: pid, playerName: ctx.playerName, finalCash: ctx.vars.cash });
     }
 
     // ── Step 11 — Risk gauge (FORMULAS §7) ────────────────────
@@ -846,6 +871,121 @@ export class GameLoop {
         investigations: newInvestigations,
       },
     };
+  }
+
+  /**
+   * Charge the flat `gameSettings.lawsuitFilingCost` filing fee the instant a player
+   * actually files a lawsuit (SueModal's "File" button) — like `digDeeper`, this is a
+   * single-player, out-of-band mutation independent of the turn timer, not part of
+   * `resolveTurn`. The lawsuit itself is still only created/validated at the next turn
+   * resolution via the normal submitDecisions → `LegalEngine.fileLawsuit` path (Step 8);
+   * this only ever moves cash. Deliberately not refunded if that later validation
+   * rejects the case (e.g. the target no longer has the cited decision deployed) —
+   * filing is a real, deliberate action the instant it's paid for, by product decision.
+   *
+   * Capped at `gameSettings.maxLawsuitsPerPlayerPerTurn` using `this.submissions`, the
+   * same in-memory per-round store `submitDecisions`/`resolveTurn` use — this player's
+   * currently-queued lawsuit count (before the one about to be charged) must be under
+   * the limit, or a client could rack up fee charges for filings Step 8's own
+   * `.slice(0, maxLawsuits)` guard would silently drop anyway.
+   */
+  chargeLawsuitFilingFee(roomId: string, playerId: string, players: EngineDataInput[]): LawsuitFilingFeeOutcome {
+    const me = players.find(p => p.id === playerId);
+    if (!me?.company) return { success: false, reason: 'player_not_found' };
+
+    const alreadyQueued = this.submissions.get(roomId)?.get(playerId)?.lawsuits.length ?? 0;
+    if (alreadyQueued >= this.config.gameSettings.maxLawsuitsPerPlayerPerTurn) {
+      return { success: false, reason: 'limit_reached' };
+    }
+
+    const vars = this.readVariables(me.company.variables as any);
+    const cost = this.config.gameSettings.lawsuitFilingCost;
+    if (vars.cash < cost) return { success: false, reason: 'insufficient_funds' };
+
+    const newCash = vars.cash - cost;
+    return {
+      success: true,
+      cost,
+      newCash,
+      variables: this.stripInternal({ ...vars, cash: newCash }),
+    };
+  }
+
+  /**
+   * Predict this player's own KPI trajectory `turnsAhead` turns into the future — by
+   * literally reusing `resolveTurn` itself, sandboxed behind a synthetic room id that
+   * can never collide with (or read/clear) any real room's `this.submissions` entry.
+   * A key never passed to `submitDecisions` always reads back as "nobody submitted
+   * anything" (line ~296's `this.submissions.get(roomId)?.get(p.id) ?? null`), so every
+   * player in the sandbox — including the target themselves — deploys nothing new and
+   * files no new lawsuits (Step 1/Step 8 both no-op on a null `submittedDecisions`);
+   * only already-active decisions keep maturing/scheduling normally (`advanceAndApply`
+   * increments `elapsedYears` unconditionally, independent of any submission). This is
+   * deliberately the *real* math, not an approximation — competitiveness, market share,
+   * P&L, balance sheet, depreciation, and risk gauge all run exactly as they would for a
+   * real turn.
+   *
+   * Every rival is held completely frozen: the SAME original snapshot (loaded once,
+   * before the loop) is fed back in on every iteration, never advanced with the target
+   * player's own evolving state. This is the "doesn't take other players' decisions/
+   * causes into account" product decision — market share/competitiveness still get
+   * recomputed each iteration (they're relative, so the target's own growth can still
+   * shift the split), but a rival's own decisions never mature, and rivals never deploy,
+   * sue, or get sued by anyone further during the simulated window.
+   *
+   * One real consequence of reusing the real engine wholesale: if the target has any
+   * existing case still `negotiating`, the real negotiation-timeout/trial-resolution
+   * logic (Step 8b onward) runs inside the sandbox too — including its random verdict
+   * draw, if `turnsNegotiating` crosses `negotiationPeriodTurns` within the predicted
+   * window. That's accepted, not suppressed: it's a real mechanic driven by the
+   * player's own existing situation (an already-filed case), not a new decision by
+   * anyone else, and fidelity to the real engine was the whole point of this approach
+   * over a client-side approximation. It does mean two predictions requested back to
+   * back can differ if a case happens to resolve inside the window — that's expected,
+   * not a bug.
+   *
+   * `round` must be the room's real, current round — `applyDepreciation` computes
+   * `currentYear - entry.purchaseYear` (calcEngine.ts), so a fabricated small counter
+   * (e.g. 1, 2, 3) instead of the real incrementing round number would desync every
+   * existing depreciation ledger entry's remaining-years countdown.
+   *
+   * Stops early (fewer than `turnsAhead` points, `bankruptAtRound` set) if the target
+   * would go bankrupt partway through the simulation — nothing meaningful to project
+   * past that; `BankruptedPlayer.finalCash` isn't reused here since a bankrupt player
+   * has no equity/derived stats left to plot, just the one round number.
+   */
+  predictFutureKpis(playerId: string, round: number, players: EngineDataInput[], turnsAhead: number): KpiPrediction {
+    const me = players.find(p => p.id === playerId);
+    if (!me?.company) return { predicted: [] };
+
+    const rivals = players.filter(p => p.id !== playerId);
+    const sandboxRoomId = `__predict__${playerId}`;
+    const predicted: KpiSnapshotPoint[] = [];
+
+    let meInput: EngineDataInput = me;
+    for (let i = 1; i <= turnsAhead; i++) {
+      const virtualRound = round + i;
+      const outcome = this.resolveTurn(sandboxRoomId, virtualRound, [meInput, ...rivals]);
+
+      if (outcome.bankruptedPlayers.some(b => b.playerId === playerId)) {
+        return { predicted, bankruptAtRound: virtualRound };
+      }
+
+      const result = outcome.result.players.find(p => p.playerId === playerId);
+      const update = outcome.companyUpdates.find(u => u.playerId === playerId);
+      if (!result || !update) return { predicted, bankruptAtRound: virtualRound };
+
+      predicted.push({
+        round: virtualRound,
+        variables: result.variables,
+        derived: result.derived,
+        riskGauge: result.riskGauge,
+      });
+
+      meInput = { id: playerId, name: me.name, company: { variables: update.variables, engineState: update.engineState } };
+    }
+
+    return { predicted };
   }
 
   /**

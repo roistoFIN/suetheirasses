@@ -137,8 +137,10 @@ const decisionEntrySchema = z.object({
 });
 
 /** A deliberate lawsuit filing — sue a target over a ground drawn from one of their
- * actually-deployed decisions (never auto-generated just from legal risk, FORMULAS §6). */
-const lawsuitEntrySchema = z.object({
+ * actually-deployed decisions (never auto-generated just from legal risk, FORMULAS §6).
+ * Exported and reused as-is for `game:fileLawsuit`'s payload — same shape as one entry
+ * of `submitDecisionsSchema`'s `lawsuits` array. */
+export const lawsuitEntrySchema = z.object({
   targetId: z.string().min(1).max(50),
   decisionName: z.string().min(1).max(100),
   groundName: z.string().min(1).max(200),
@@ -184,6 +186,20 @@ export type DigDeeperPayload = z.infer<typeof digDeeperSchema>;
  */
 export function validateDigDeeper(data: unknown): DigDeeperPayload {
   return digDeeperSchema.parse(data);
+}
+
+/** Inferred TypeScript type for a validated `game:fileLawsuit` payload. */
+export type FileLawsuitPayload = z.infer<typeof lawsuitEntrySchema>;
+
+/**
+ * Validates and parses raw data against the lawsuit-entry schema.
+ *
+ * @param data - Raw payload from the `game:fileLawsuit` Socket.IO event.
+ * @returns Validated `FileLawsuitPayload` object.
+ * @throws ZodValidationError if the payload fails any constraint.
+ */
+export function validateFileLawsuit(data: unknown): FileLawsuitPayload {
+  return lawsuitEntrySchema.parse(data);
 }
 
 /**
@@ -270,6 +286,7 @@ const gameSettingsSchema = z.object({
   marketFixed: z.boolean(),
   digDeeperCost: z.number(),
   negotiationPeriodTurns: z.number(),
+  lawsuitFilingCost: z.number(),
 });
 
 const playerStartingValuesSchema = z.object({

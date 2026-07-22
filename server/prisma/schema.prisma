@@ -41,10 +41,34 @@ model Player {
   createdAt    DateTime   @default(now())
   companyId    String?    @unique
   company      Company?
+  kpiSnapshots KpiSnapshot[]
 
   @@index([roomId])
   @@index([roomId, bankrupt])
   @@index([socketId])
+}
+
+// One row per player per round — the source of the KPI history graphs (GamePhase's
+// KPI cards + breakdown sub-items are all clickable, per CLAUDE.md's "KPI history +
+// prediction graphs" section). Stores the same variables/derived/riskGauge shape the
+// `turn:resolved` broadcast already carries per player, verbatim — deliberately not
+// narrowed to a handful of named columns, so any current or future clickable field
+// (cash, equity, revenue, operatingExpenses, staffCost, ...) can be graphed without a
+// further migration. Written once per round from GameEngine.resolveGameTurn (and once
+// for round 1 from broadcastInitialSnapshot) — never read/written by GameLoop itself,
+// which stays pure; this is persistence, the same split as Company.
+model KpiSnapshot {
+  id        String   @id @default(cuid())
+  playerId  String
+  player    Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  round     Int
+  variables Json
+  derived   Json
+  riskGauge Float
+  createdAt DateTime @default(now())
+
+  @@unique([playerId, round])
+  @@index([playerId])
 }
 
 // ============================================================

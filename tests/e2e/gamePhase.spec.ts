@@ -22,9 +22,11 @@ test.describe('Game Phase', () => {
     // The Decision Deck now renders real, deployable decisions instead of a placeholder
     await expect(page.getByRole('button', { name: 'DEPLOY' }).first()).toBeVisible();
 
-    // SUE THEIR ASSES lives in the Open Lawsuits box, not the Decision Deck
+    // SUE THEIR ASSES lives in the Open Lawsuits box, not the Decision Deck — its label
+    // shows the flat filing fee (gameSettings.lawsuitFilingCost), charged instantly the
+    // moment a lawsuit is actually filed, not just for opening this button's modal.
     await expect(page.getByText('Open Lawsuits (0)')).toBeVisible();
-    await expect(page.getByText('📋 SUE THEIR ASSES')).toBeVisible();
+    await expect(page.getByText(/SUE THEIR ASSES \(\$[\d,]+\)/)).toBeVisible();
   });
 
   test('should not throw a client-side error when the game room loads', async ({ page }) => {

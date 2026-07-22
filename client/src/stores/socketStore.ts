@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { io, Socket } from 'socket.io-client';
-import { ClientEvents, ServerEvents, type RoomJoinedResponse, type RoomRejoinPayload, type RoomUpdatedResponse, type PhaseChangedResponse, type GameOverResponse, type ErrorResponse, type TurnResolutionResult, type GameDeckResponse, type DigDeeperResultPayload, type AnnualReportResultPayload } from '@suetheirasses/shared';
+import { ClientEvents, ServerEvents, type RoomJoinedResponse, type RoomRejoinPayload, type RoomUpdatedResponse, type PhaseChangedResponse, type GameOverResponse, type ErrorResponse, type TurnResolutionResult, type GameDeckResponse, type DigDeeperResultPayload, type FileLawsuitResultPayload, type AnnualReportResultPayload } from '@suetheirasses/shared';
 import { useGameStore } from './gameStore';
 
 interface SocketState {
@@ -193,13 +193,20 @@ export const useSocketStore = create<SocketState>((set, get) => ({
 
     socket.on(ServerEvents.PLAYER_BANKRUPT, (data: { playerId: string; playerName: string }) => {
       console.log('Player bankrupt:', data);
-      const { markPlayerBankrupt, player, setSelfEliminationReason } = useGameStore.getState();
+      const { markPlayerBankrupt, player, setSelfEliminationReason, enqueueBankruptcyEvent } = useGameStore.getState();
       markPlayerBankrupt(data.playerId);
-      // Mine — flag it so App.tsx's full-screen "lost" takeover replaces whatever
-      // phase would otherwise render (see game:left below for the forfeit case,
-      // which upgrades this to 'forfeit' right after).
       if (player && data.playerId === player.id) {
+        // Mine — flag it so App.tsx's full-screen "lost" takeover replaces whatever phase
+        // would otherwise render (see game:left below for the forfeit case, which upgrades
+        // this to 'forfeit' right after). No bankruptcyEvents entry for myself — the
+        // takeover screen already tells me, no need for the generic one too.
         setSelfEliminationReason('bankrupt');
+      } else {
+        // Someone else's elimination — everyone still in the game gets a "X has gone
+        // bankrupt" takeover (see App.tsx's BankruptcyOverlay), queued so it's shown even
+        // if this same elimination ends the game (game:over/phase:changed follow right
+        // after this same event).
+        enqueueBankruptcyEvent({ playerId: data.playerId, playerName: data.playerName });
       }
     });
 
@@ -226,6 +233,16 @@ export const useSocketStore = create<SocketState>((set, get) => ({
       console.log('Dig deeper result:', data);
       const { player, applyDigDeeperResult } = useGameStore.getState();
       if (player) applyDigDeeperResult(player.id, data);
+    });
+
+    // Instant lawsuit-filing-fee deduction — patches displayed cash right away rather
+    // than waiting for the next turn:resolved. SueModal itself separately listens for
+    // this same event (and for a failed `error`) to decide whether to queue the filing;
+    // this handler only keeps the CASH KPI in sync, same reasoning as digDeeperResult.
+    socket.on(ServerEvents.GAME_FILE_LAWSUIT_RESULT, (data: FileLawsuitResultPayload) => {
+      console.log('Lawsuit filing fee charged:', data);
+      const { player, applyFileLawsuitResult } = useGameStore.getState();
+      if (player) applyFileLawsuitResult(player.id, data.newCash);
     });
 
     socket.on(ServerEvents.GAME_ANNUAL_REPORT_RESULT, (data: AnnualReportResultPayload) => {

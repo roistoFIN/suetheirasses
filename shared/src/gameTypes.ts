@@ -52,6 +52,12 @@ export interface GameSettings {
   marketFixed: boolean;
   /** Cash cost of one "Dig Deeper" investigation click — deducted instantly, outside turn resolution. */
   digDeeperCost: number;
+  /** Flat cost of filing one lawsuit (the SUE THEIR ASSES flow) — deducted instantly the
+   * moment a player files, outside turn resolution, same "instant" pattern as
+   * `digDeeperCost`. Not refunded if the case is later rejected at turn resolution (e.g.
+   * the target no longer has the cited decision deployed) — filing is a real, deliberate
+   * action the instant it's paid for. */
+  lawsuitFilingCost: number;
   /** Turns a case can sit at status 'negotiating' before it's automatically forced to
    * 'awaiting_trial' (and resolves the turn after that). FORMULAS.md doesn't model a
    * negotiation phase — this closes a real gap where, absent the (separately tracked,
@@ -300,22 +306,25 @@ export interface AnnualReportEntry {
 // Turn Result — what gets broadcast after each turn resolves
 // ============================================================
 
+/** Named so `KpiSnapshotPoint` (history/prediction graphs) can reuse the exact same shape without duplicating it. */
+export interface PlayerDerivedStats {
+  equity: number;
+  revenue: number;
+  volume: number;
+  receivables: number;
+  financeCost: number;
+  taxCost: number;
+  depreciation: number;
+  stockValue: number;
+  marketShare: number;
+  competitiveness: number;
+}
+
 export interface PlayerTurnResult {
   playerId: string;
   playerName: string;
   variables: PlayerVariables;
-  derived: {
-    equity: number;
-    revenue: number;
-    volume: number;
-    receivables: number;
-    financeCost: number;
-    taxCost: number;
-    depreciation: number;
-    stockValue: number;
-    marketShare: number;
-    competitiveness: number;
-  };
+  derived: PlayerDerivedStats;
   activeDecisions: ActiveDecisionInstance[];
   legalCases: LegalCaseData[];
   riskGauge: number;
@@ -328,4 +337,30 @@ export interface TurnResolutionResult {
   players: PlayerTurnResult[];
   gameOver: boolean;
   winnerId?: string;
+}
+
+// ============================================================
+// KPI History & Prediction — every clickable stat (the 4 top KPI cards, Threat Level,
+// and every individual line item inside their breakdown views) opens a graph combining
+// this player's own actual history with a 3-turn-ahead prediction. See CLAUDE.md's "KPI
+// history + prediction graphs" section for why this is one generic point shape (the
+// full variables/derived/riskGauge bag) rather than a handful of named fields — any
+// numeric field within it is graphable without further backend changes.
+// ============================================================
+
+/** One turn's worth of KPI data — either an actual persisted `KpiSnapshot` row (history) or one predicted future turn. */
+export interface KpiSnapshotPoint {
+  round: number;
+  variables: PlayerVariables;
+  derived: PlayerDerivedStats;
+  riskGauge: number;
+}
+
+/** Response for `game:kpiHistoryResult` — sent only to the requesting socket, always this player's own data. */
+export interface KpiHistoryResponse {
+  history: KpiSnapshotPoint[];
+  /** Up to 3 points, fewer if `bankruptAtRound` cuts the simulation short. */
+  predicted: KpiSnapshotPoint[];
+  /** Set if the prediction simulation shows this player going bankrupt within the predicted window — `predicted` then has fewer than 3 points, stopping at the last turn that still had a solvent outcome. */
+  bankruptAtRound?: number;
 }

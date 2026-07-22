@@ -227,21 +227,44 @@ same way — don't assume a phase change ever tears the component down for you.
 full replacement for that in-flight turn, never a delta. Keep this in mind when touching
 either the client submission logic (`GamePhase.tsx`) or `GameLoop.submitDecisions`.
 
-### Three exceptions to "everything happens in resolveTurn": Dig Deeper, reconnection, and forfeit
+### Four exceptions to "everything happens in resolveTurn": Dig Deeper, reconnection, forfeit, and lawsuit filing fees
 
 Almost every gameplay effect only ever happens inside the turn-timer-driven
-`resolveTurn`/`resolveGameTurn` cycle. Three things deliberately don't: `GameLoop.digDeeper`
+`resolveTurn`/`resolveGameTurn` cycle. Four things deliberately don't: `GameLoop.digDeeper`
 (pay $10k to reveal the next tier of intel on an incoming attack), `GameEngine.rejoinRoom`/
-`markPlayerDisconnected`/`finalizePlayerRemoval` (session resume after a disconnect), and
-`GameEngine.forfeitGame` (the "Leave Game" button's voluntary instant bankruptcy). All
-three mutate `Company`/`Player` state instantly, outside the turn cycle — `digDeeper`
-still keeps `GameLoop` pure (no Prisma/Socket.IO in it; `GameEngine` does the one-off
-write), and `forfeitGame` writes `bankrupt: true` directly rather than going through a
-turn's normal bankruptcy-check step — but if you're looking for "why did this player's
-cash/state change and I don't see it in `resolveTurn`," check these three paths first. The
-disconnect-grace-period sweep (`GameEngine`'s heartbeat interval, `RECONNECT_GRACE_PERIOD_MS`)
-mirrors the pre-existing stale-room cleanup (`STALE_ROOM_THRESHOLD`) pattern rather than
-using a per-player `setTimeout` — extend that same interval, don't add a second one.
+`markPlayerDisconnected`/`finalizePlayerRemoval` (session resume after a disconnect),
+`GameEngine.forfeitGame` (the "Leave Game" button's voluntary instant bankruptcy), and
+`GameLoop.chargeLawsuitFilingFee` (pay `gameSettings.lawsuitFilingCost` the instant a player
+actually files via SueModal's "File" button). All four mutate `Company`/`Player` state
+instantly, outside the turn cycle — `digDeeper` and `chargeLawsuitFilingFee` both keep
+`GameLoop` pure (no Prisma/Socket.IO in either; `GameEngine.digDeeper`/`GameEngine.fileLawsuit`
+do the one-off writes), and `forfeitGame` writes `bankrupt: true` directly rather than going
+through a turn's normal bankruptcy-check step — but if you're looking for "why did this
+player's cash/state change and I don't see it in `resolveTurn`," check these four paths
+first. The disconnect-grace-period sweep (`GameEngine`'s heartbeat interval,
+`RECONNECT_GRACE_PERIOD_MS`) mirrors the pre-existing stale-room cleanup
+(`STALE_ROOM_THRESHOLD`) pattern rather than using a per-player `setTimeout` — extend that
+same interval, don't add a second one.
+
+`chargeLawsuitFilingFee` only ever moves cash — the lawsuit itself is still exclusively
+created/validated later, inside `resolveTurn`'s Step 8 (`LegalEngine.fileLawsuit`), via the
+normal `game:submitDecisions` full-replacement flow. The client calls `game:fileLawsuit`
+first (SueModal's "File" button) and only queues the `{ targetId, decisionName, groundName }`
+entry into its pending submission (which is what Step 8 actually reads) once that charge
+succeeds. By product decision, a successfully-charged fee is **never refunded**, even if
+Step 8 later rejects the case (e.g. the target no longer has the cited decision deployed
+by the time the turn resolves) — filing is treated as a real, deliberate action the instant
+it's paid for, not something contingent on the case surviving to be created. Capped at
+`gameSettings.maxLawsuitsPerPlayerPerTurn` using `GameLoop`'s in-memory `submissions` map
+(this player's currently-queued lawsuit count for the room) — the same limit Step 8's own
+`.slice(0, maxLawsuits)` guard enforces on the case-creation side, so a client can't rack up
+fee charges for filings that would be silently dropped anyway. `GamePhase.tsx`'s CASH KPI
+doesn't pick this up until the *next* `turn:resolved` unless the client also patches it
+locally — `gameStore.applyFileLawsuitResult`, driven by a `game:fileLawsuitResult` listener
+in `socketStore.ts`, exists specifically for that (same "must patch the store or the UI
+shows stale cash" requirement as `applyDigDeeperResult`; this was a real gap during this
+feature's own manual verification — the DB write was correct but the KPI didn't move until
+the fix).
 
 `forfeitGame` is also the one place that calls `resolveGameTurn` *early* rather than
 outside it — see *Ready-up triggers `resolveGameTurn` early* below for why that has to be
@@ -269,11 +292,95 @@ active player ready, `forfeitGame` returns `{ triggerImmediateResolution: true }
 that calls `resolveGameTurn`. Follow this same "return a flag, let the caller trigger it"
 shape for any other early-resolution path that itself needs to run inside `advancingRooms`.
 
+### A bankrupted player's Company row needs its negative cash written explicitly — it's not in `companyUpdates`
+
+`GameLoop.resolveTurn`'s Step 12 only builds a `CompanyPersistUpdate` for
+`playersStillActive` — a player who just crossed `cash < 0` this turn is deliberately
+excluded (`gameLoop.test.ts`'s "should not include a company update for a player it just
+bankrupted" documents this), since their engine state (decisions, legal cases, etc.) is
+done being touched for good. This was a real, shipped bug: nothing else ever persisted
+their actual negative cash to the DB either, so their `Company.cash` column stayed frozen
+at whatever positive value it had from their last still-active turn — including on the
+Game Over / Final Standings screen, which reads `cash` straight from the DB via
+`buildGameOverPayload`. A bankrupted player could show up with a *positive* final balance
+despite having just lost on negative cash.
+
+Fixed via `BankruptedPlayer.finalCash` — `resolveTurn` snapshots `ctx.vars.cash` (still the
+real negative value; the bankruptcy waterfall in the same step only pays *out of* it to
+plaintiffs, never overwrites it) onto each `bankruptedPlayers` entry, and
+`GameEngine.resolveGameTurn` writes it to that player's `Company.cash` in the same loop
+that flags `Player.bankrupt = true`. If you ever change what counts as "still active" in
+Step 10, or add another path that can bankrupt a player outside `resolveTurn` (`digDeeper`
+can't — cash only goes down there, never negative-eligible in a way that skips this step —
+but any future one might), make sure it persists a real final cash figure the same way;
+don't assume `bankrupt: true` alone is a complete write.
+
+### KPI history + prediction graphs — the prediction reuses `resolveTurn` itself, sandboxed behind a fake room id
+
+Every clickable stat in `GamePhase.tsx` — the 4 top KPI cards, Threat Level, and every
+individual tracked-field row inside their breakdown views (`CashWaterfallView`,
+`RevenueView`, `EquityView`, `ShareView`, `ThreatView`) — opens the same generic
+`KpiHistoryGraph`, keyed by a dot-path into a `KpiSnapshotPoint` (`'variables.cash'`,
+`'derived.equity'`, the bare `'riskGauge'`, etc.) rather than one bespoke component per
+field. Deliberately generic: adding a new clickable field anywhere is a one-line change
+(a `field` string on a row), not a new backend endpoint. Purely computed intermediate
+rows in the waterfall breakdowns (COGS, gross profit, EBITDA, EBIT, profit before tax,
+net profit, market equity, net demand) are **not** clickable — there's no single tracked
+field for them in `KpiSnapshot`/the prediction output, since they're derived-of-derived
+inside the view component itself, not persisted anywhere.
+
+**History** is one `KpiSnapshot` row per player per round (`variables`/`derived`/
+`riskGauge`, the same shape `turn:resolved` already carries per player), written by
+`GameEngine.persistKpiSnapshots` from both `resolveGameTurn` and `broadcastInitialSnapshot`
+(round 1) — `upsert`, not `create`, so a hypothetical double-write for the same round is
+harmless rather than a unique-constraint crash. `GameLoop` itself never touches this table
+— same read/write split as `Company`, `GameLoop` stays pure.
+
+**Prediction** (`GameLoop.predictFutureKpis`) is the more interesting piece: rather than
+reimplementing a subset of the 9-step turn math (risking drift from FORMULAS.md), it
+calls `resolveTurn` **itself**, `turnsAhead` times in a row, sandboxed behind a synthetic
+room id (`` `__predict__${playerId}` ``) that was never passed to `submitDecisions` — a
+room id `this.submissions` has no entry for always reads back as "nobody submitted
+anything" (the same lookup `resolveTurn` does for a real room), so Step 1
+(`processNewDecisions`) and Step 8 (lawsuit filing) both no-op for every player in the
+sandbox automatically. Nobody deploys anything new or sues anyone during the simulated
+turns; only already-active decisions keep maturing (`advanceAndApply` increments
+`elapsedYears` unconditionally, independent of any submission). The target player's own
+snapshot evolves iteration to iteration (fed forward from each call's `companyUpdates`);
+every rival is held **frozen** — the exact same original snapshot is re-fed on every
+iteration, never advanced — which is the literal implementation of the product decision
+that a prediction "assumes the player's own decisions apply but not other players'."
+Competitiveness/market share still get recomputed each iteration (they're relative, so
+the target's own growth can still shift the split against static rivals), but a rival's
+decisions never mature and rivals never deploy, sue, or get sued by anyone further.
+
+Two things worth knowing before touching this:
+- `round` passed to each sandboxed `resolveTurn` call must be the room's real, current
+  round plus an offset (**not** a small fabricated counter like 1, 2, 3) —
+  `applyDepreciation` (calcEngine.ts) computes `currentYear - entry.purchaseYear` for
+  every existing depreciation ledger entry, so a fake absolute round number desyncs
+  every entry's remaining-years countdown even though `elapsedYears`-keyed schedule
+  lookups (the decision impact math itself) don't care about the absolute value.
+- Because this reuses the real engine wholesale rather than composing individual steps,
+  the target's existing `negotiating` legal cases still run through the real
+  negotiation-timeout/trial-resolution logic inside the sandbox — including its random
+  verdict draw, if `turnsNegotiating` crosses `negotiationPeriodTurns` within the
+  predicted window. This is accepted, not suppressed: it's a real mechanic driven by the
+  player's own existing situation, and reusing the real engine (not an approximation)
+  was the whole point. Two predictions requested back to back *can* differ if a case
+  happens to resolve inside the window — expected, not a bug. Stops early
+  (`bankruptAtRound` set, fewer than `turnsAhead` points) if the target would go bankrupt
+  partway through — nothing meaningful to project past that.
+
+`gameLoop.test.ts`'s `predictFutureKpis` suite includes a regression test that a queued
+decision for the *real* room still applies after a prediction runs — the thing this
+sandboxing approach exists to guarantee never breaks.
+
 ### Local LLM for narrated "annual report" text — best-effort, never load-bearing
 
 `GameEngine.getAnnualReport` (triggered by `game:getAnnualReport`, opened from a rival's
-Full Filing modal in `GamePhase.tsx`) is a fourth out-of-band, on-demand path alongside
-Dig Deeper, reconnection, and forfeit above — but unlike those, it's read-only (no `Company`
+Full Filing modal in `GamePhase.tsx`) is a fifth out-of-band, on-demand path alongside
+Dig Deeper, reconnection, forfeit, and lawsuit filing fees above — but unlike those, it's read-only (no `Company`
 row is ever written) and it does real network I/O, so it's the one place in the server
 that talks to something other than Postgres/Socket.IO: `server/src/services/llmService.ts`
 calls a local `llama.cpp` server (the `llm` service in `docker-compose.yml`, model
@@ -598,3 +705,18 @@ reads `outcome` directly. A separate `useEffect` keyed on `round` (from `gameSto
 part of the turn-sync effect above) enqueues `turnChange` events, skipping the very first
 render via a `lastAnnouncedRoundRef` null-check — round 1 is the initial game start, not a
 change from anything.
+
+**Deliberately not a fourth `PostTurnEvent` type:** the "someone else went bankrupt"
+takeover lives outside this queue entirely — in `gameStore.bankruptcyEvents` and
+`App.tsx`'s `BankruptcyOverlay`, checked ahead of the `currentPhase` switch, the same
+position as the existing `selfElimination`/`LostOverlay` check. `eventQueue` is local
+`GamePhase` state, so it (correctly) disappears the moment `GamePhase` unmounts — fine for
+sued/verdict/turnChange, since the game is still going whenever those fire. A bankruptcy
+can end the game outright, in which case `currentPhase` flips to AFTERMATH and `GamePhase`
+unmounts almost immediately (the `player:bankrupt` and `game:over`/`phase:changed`
+broadcasts arrive back-to-back from the same turn resolution) — anything queued in
+`GamePhase`'s own local state would vanish unseen right along with it. Promoting it to
+`gameStore` (a top-level, phase-independent App.tsx check) instead of `eventQueue` is what
+makes it survive that transition. If you add another post-turn notice that must be visible
+even when it's the thing that ends the game, follow this same pattern, not the
+`PostTurnEvent` one.

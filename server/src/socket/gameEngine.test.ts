@@ -200,6 +200,10 @@ const createMockPrisma = () => {
     asset: {
       deleteMany: vi.fn().mockResolvedValue({}),
     },
+    kpiSnapshot: {
+      upsert: vi.fn().mockResolvedValue({}),
+      findMany: vi.fn().mockResolvedValue([]),
+    } as any,
     $transaction: vi.fn().mockImplementation(async (fn: (tx: Partial<PrismaClient>) => Promise<unknown>) => {
       return fn(mockPrisma as Partial<PrismaClient>);
     }),
@@ -1453,6 +1457,45 @@ describe('GameEngine', () => {
       expect(payload.gameOver).toBe(false);
       expect(payload.players).toHaveLength(1);
       expect(payload.players[0].activeDecisions).toEqual([]);
+    });
+
+    it('should persist a KpiSnapshot row for round 1 for every player in the snapshot', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+
+      await engine.broadcastInitialSnapshot(roomState.room.id, 1);
+
+      expect(mockPrisma.kpiSnapshot!.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { playerId_round: { playerId: expect.any(String), round: 1 } },
+        }),
+      );
+    });
+  });
+
+  describe('getKpiHistory', () => {
+    it('returns this player\'s persisted history (oldest round first) plus a 3-turn prediction', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      const aliceId = Array.from(roomState.players.keys())[0];
+      roomState.room.status = RoomStatus.GAME_PHASE;
+      roomState.room.currentPhaseRound = 2;
+
+      (mockPrisma.kpiSnapshot!.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { round: 1, variables: {}, derived: {}, riskGauge: 5 },
+      ]);
+
+      const response = await engine.getKpiHistory(roomState.room.id, aliceId);
+
+      expect(response).not.toBeNull();
+      expect(response!.history).toEqual([{ round: 1, variables: {}, derived: {}, riskGauge: 5 }]);
+      expect(Array.isArray(response!.predicted)).toBe(true);
+    });
+
+    it('returns null for a room that does not exist', async () => {
+      const response = await engine.getKpiHistory('nonexistent-room', 'player-1');
+
+      expect(response).toBeNull();
     });
   });
 

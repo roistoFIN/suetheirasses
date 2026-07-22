@@ -44,6 +44,8 @@ interface GameState {
   clearTurnResults: () => void;
   /** Instant, out-of-band "Dig Deeper" response — patches just the requesting player's cash + incomingAttacks. */
   applyDigDeeperResult: (playerId: string, data: DigDeeperResultPayload) => void;
+  /** Instant, out-of-band lawsuit-filing-fee response — patches just the requesting player's cash, same "don't wait for the next turn:resolved" reasoning as applyDigDeeperResult. */
+  applyFileLawsuitResult: (playerId: string, newCash: number) => void;
 
   /** AI-narrated "annual report" text per rival, keyed by rivalPlayerId — requested on demand from the Full Filing modal. */
   annualReports: Map<string, AnnualReportEntry[]>;
@@ -77,6 +79,16 @@ interface GameState {
   /** Set once this player's own bankruptcy is detected (natural cash<0 elimination, or a `game:leave` forfeit) — GamePhase shows a full-screen "lost" takeover keyed off this instead of redirecting instantly, so the player has a moment to see it before returning to the landing page. */
   selfElimination: { reason: 'bankrupt' | 'forfeit' } | null;
   setSelfEliminationReason: (reason: 'bankrupt' | 'forfeit') => void;
+
+  /** One "X has gone bankrupt" notice queued per elimination every *other* still-in-the-game
+   * player should be told about — the eliminated player themselves gets `selfElimination`'s
+   * full-screen takeover instead, never this. Queued (not a single value) since more than one
+   * player can be eliminated in the same turn. App.tsx renders `bankruptcyEvents[0]` as a
+   * full-screen takeover ahead of the phase switch — including ahead of AFTERMATH/GameOver, so
+   * the message is seen even when this same elimination ends the game. */
+  bankruptcyEvents: { playerId: string; playerName: string }[];
+  enqueueBankruptcyEvent: (event: { playerId: string; playerName: string }) => void;
+  dismissBankruptcyEvent: () => void;
 }
 
 export const useGameStore = create<GameState>((set) => ({
@@ -96,6 +108,7 @@ export const useGameStore = create<GameState>((set) => ({
   notification: null,
   isRejoining: false,
   selfElimination: null,
+  bankruptcyEvents: [],
   annualReports: new Map(),
   annualReportLoading: new Set(),
 
@@ -129,7 +142,6 @@ export const useGameStore = create<GameState>((set) => ({
             ),
           }
         : null,
-      notification: `Player has gone bankrupt!`,
     })),
   updatePhase: (data) =>
     set((state) => ({
@@ -156,6 +168,14 @@ export const useGameStore = create<GameState>((set) => ({
           incomingAttacks: p.incomingAttacks.map((a) => (a.attackId === data.attackId ? data.attack : a)),
         };
       });
+      return { turnResults: { ...state.turnResults, players } };
+    }),
+  applyFileLawsuitResult: (playerId, newCash) =>
+    set((state) => {
+      if (!state.turnResults) return {};
+      const players = state.turnResults.players.map((p) =>
+        p.playerId !== playerId ? p : { ...p, variables: { ...p.variables, cash: newCash } },
+      );
       return { turnResults: { ...state.turnResults, players } };
     }),
   setAnnualReportLoading: (rivalPlayerId) =>
@@ -189,8 +209,13 @@ export const useGameStore = create<GameState>((set) => ({
       annualReports: new Map(),
       annualReportLoading: new Set(),
       selfElimination: null,
+      bankruptcyEvents: [],
     }),
   setSelfEliminationReason: (reason) => set({ selfElimination: { reason } }),
+  enqueueBankruptcyEvent: (event) =>
+    set((state) => ({ bankruptcyEvents: [...state.bankruptcyEvents, event] })),
+  dismissBankruptcyEvent: () =>
+    set((state) => ({ bankruptcyEvents: state.bankruptcyEvents.slice(1) })),
   setCompanies: (companies) => {
     const companyMap = new Map<string, Company>();
     for (const c of companies) {

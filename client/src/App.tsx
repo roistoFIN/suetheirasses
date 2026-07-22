@@ -48,6 +48,35 @@ const LostOverlay: React.FC<{ reason: 'bankrupt' | 'forfeit' }> = ({ reason }) =
   );
 };
 
+/**
+ * Full-screen takeover shown to every still-in-the-game player when *someone else* goes
+ * bankrupt — see `gameStore.bankruptcyEvents` (queued, not a single value, since more than
+ * one player can be eliminated the same turn) and `socketStore.ts`'s `player:bankrupt`
+ * handler, which enqueues one of these for everyone except the eliminated player (they get
+ * `LostOverlay` instead, never both). Checked in App.tsx ahead of the `currentPhase` switch,
+ * same position as `LostOverlay` and for the same reason: if this elimination also ends the
+ * game, `player:bankrupt` and `game:over`/`phase:changed` (which flips `currentPhase` to
+ * AFTERMATH) arrive back-to-back in the same server-side turn resolution — without this
+ * check running first, the Game Over screen would render immediately and the bankruptcy
+ * message would never be seen at all.
+ */
+const BankruptcyOverlay: React.FC<{ playerName: string; onDismiss: () => void }> = ({ playerName, onDismiss }) => (
+  <Container size="xs" py="xl">
+    <Paper withBorder p="xl" shadow="lg">
+      <Image src="/images/lost.png" alt="Eliminated" radius="md" mb="md" />
+      <Title order={2} ta="center" mb="xs" c="red">
+        {playerName.toUpperCase()} HAS GONE BANKRUPT
+      </Title>
+      <Text ta="center" c="dimmed" mb="lg">
+        Their cash ran out and the bank came knocking — they're out of the game.
+      </Text>
+      <Button fullWidth color="red" onClick={onDismiss}>
+        Got it
+      </Button>
+    </Paper>
+  </Container>
+);
+
 /** How long a top-of-screen notification (e.g. "you were kicked") stays up before auto-dismissing. */
 const NOTIFICATION_AUTO_DISMISS_MS = 6000;
 
@@ -86,7 +115,7 @@ const NotificationBanner: React.FC = () => {
  */
 const App: React.FC = () => {
   const { connect, disconnect } = useSocketStore();
-  const { currentPhase, isRejoining, selfElimination } = useGameStore();
+  const { currentPhase, isRejoining, selfElimination, bankruptcyEvents, dismissBankruptcyEvent } = useGameStore();
   const isAdminRoute = window.location.pathname.startsWith('/admin');
 
   useEffect(() => {
@@ -104,6 +133,13 @@ const App: React.FC = () => {
   // already-conclusive full-screen takeover and read as contradictory.
   if (selfElimination) {
     return <LostOverlay reason={selfElimination.reason} />;
+  }
+
+  // Checked ahead of the phase switch too — see BankruptcyOverlay's doc comment for why
+  // (it has to win over an AFTERMATH phase change that this same elimination may have
+  // triggered, or the message would never be shown at all).
+  if (bankruptcyEvents.length > 0) {
+    return <BankruptcyOverlay playerName={bankruptcyEvents[0].playerName} onDismiss={dismissBankruptcyEvent} />;
   }
 
   // Attempting to resume a saved session (page reload, back button, brief network

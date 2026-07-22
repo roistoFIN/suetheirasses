@@ -366,6 +366,25 @@ model Asset {
 
   @@index([companyId])
 }
+
+// One row per player per round — the source of the KPI history graphs (every KPI card
+// and breakdown line item is clickable, see "KPI History & Prediction" above). Stores
+// the same variables/derived/riskGauge shape turn:resolved already carries per player,
+// verbatim, so any current or future clickable field can be graphed without a further
+// migration. Written by GameEngine, never read/written by GameLoop itself.
+model KpiSnapshot {
+  id        String   @id @default(cuid())
+  playerId  String
+  player    Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  round     Int
+  variables Json
+  derived   Json
+  riskGauge Float
+  createdAt DateTime @default(now())
+
+  @@unique([playerId, round])
+  @@index([playerId])
+}
 ```
 
 ---
@@ -387,7 +406,9 @@ model Asset {
 | `room:startGame` | — | Host starts the game (WAITING → GAME_PHASE, round 1) |
 | `game:submitDecisions` | `{ strategic: DecisionEntry[], operational: DecisionEntry[], lawsuits: LawsuitEntry[] }` | Full replacement of this turn's pending decisions (`{ name, targetId? }` each) *and* deliberate lawsuit filings (`{ targetId, decisionName, groundName }` each — see *Lawsuits* below). Structural validation only — per-turn limits (max 1 strategic / 2 operational / 3 lawsuits) come from `game_config.json` and are enforced by `DecisionEngine.canDeploy` / `GameLoop`'s lawsuit-filing step. |
 | `game:digDeeper` | `{ attackId }` | Pay `gameSettings.digDeeperCost` ($10,000 by default) to reveal the next tier of intel on one incoming attack — instant, outside the turn-resolution cycle. See *Attack Awareness & Dig Deeper* below. |
+| `game:fileLawsuit` | `{ targetId, decisionName, groundName }` | Pay `gameSettings.lawsuitFilingCost` ($15,000 by default) the instant a lawsuit is actually filed — instant, outside the turn-resolution cycle, same pattern as `game:digDeeper`. The client still separately queues the same entry via `game:submitDecisions` for the case itself to be created at the next turn resolution. See *Lawsuits* below. |
 | `game:getAnnualReport` | `{ rivalPlayerId }` | Request AI-narrated "annual report" text for one rival's active decisions — on demand, outside the turn-resolution cycle. See *AI-Narrated Annual Reports* below. |
+| `game:getKpiHistory` | — | Request this player's own KPI history (persisted `KpiSnapshot` rows) plus a 3-turn-ahead prediction — on demand, opened by clicking any KPI card or breakdown line item. No payload — always "my own data." See *KPI History & Prediction* below. |
 | `game:leave` | — | Voluntary forfeit — GAME_PHASE only. Instant bankruptcy for the requesting player; the game continues for everyone else. See *Leave Game* below. |
 | `game:ready` | `{ ready }` | Toggle ready status for the in-flight turn — GAME_PHASE only. Once every active player is ready, the turn resolves immediately. See *Ready-Up* below. |
 | `chat:message` | `{ message }` | Send a chat message to the room — WAITING phase only. See *Lobby Features* above. |
@@ -410,7 +431,9 @@ model Asset {
 | `player:bankrupt` | `{ playerId, playerName }` | Player eliminated — either their cash went below $0 this turn (FORMULAS §12), or they voluntarily forfeited via `game:leave` |
 | `game:over` | `{ winner, finalStandings }` | Only one player remains; room moved to AFTERMATH. Also re-sent on a successful `room:rejoin` during AFTERMATH. |
 | `game:digDeeperResult` | `{ attackId, cost, newCash, attack: IncomingAttackInfo }` | Sent only to the requesting socket, never broadcast — the newly-unlocked intel tier for one attack |
+| `game:fileLawsuitResult` | `{ cost, newCash }` | Sent only to the requesting socket, on a successful `game:fileLawsuit` charge — a failed charge (insufficient funds, per-turn limit reached) is reported via the generic `error` event instead, same convention as `game:digDeeper` |
 | `game:annualReportResult` | `{ rivalPlayerId, entries: AnnualReportEntry[] }` | Sent only to the requesting socket, never broadcast — AI-narrated (or static-fallback) flavor text for the rival's active decisions |
+| `game:kpiHistoryResult` | `{ history: KpiSnapshotPoint[], predicted: KpiSnapshotPoint[], bankruptAtRound? }` | Sent only to the requesting socket — this player's own persisted KPI history (oldest round first) plus up to 3 predicted future turns |
 | `game:left` | — | Sent only to the requesting socket, confirming a successful `game:leave` forfeit — the client's cue to show the "lost" takeover with the forfeit-specific message |
 | `game:readyUpdate` | `{ readyPlayerIds: string[], activePlayerCount: number }` | Broadcast on every `game:ready` toggle, and reset to an empty `readyPlayerIds` at the start of every new round |
 | `chat:message` | `{ playerId, playerName, message, timestamp }` | Broadcast to the room in response to a `chat:message` from any player in it |
@@ -499,6 +522,7 @@ Manages all game-related state including room state, player data, phase tracking
 | `handleTurnResolved(data)` | Replace `turnResults` with the latest `turn:resolved` payload |
 | `clearTurnResults()` | Clear `turnResults` |
 | `applyDigDeeperResult(playerId, data)` | Immutably patches just the requesting player's cash + the matching `incomingAttacks` entry inside `turnResults` — the instant, out-of-band response to `game:digDeeper`, applied without waiting for the next turn |
+| `applyFileLawsuitResult(playerId, newCash)` | Immutably patches just the requesting player's cash inside `turnResults` — the instant, out-of-band response to `game:fileLawsuit`, same "don't wait for the next turn" reasoning as `applyDigDeeperResult` |
 | `setAnnualReportLoading(rivalPlayerId)` | Marks one rival's AI annual report as in-flight, so `RivalFullReportView` doesn't fire a duplicate `game:getAnnualReport` while waiting |
 | `applyAnnualReportResult(rivalPlayerId, entries)` | Caches the AI-narrated entries for one rival, keyed by id — the response to `game:getAnnualReport` |
 | `setGameDeck(data)` | Store the decision library + per-turn limits |
@@ -550,10 +574,12 @@ reconnection (see *Reconnection & Session Resume* below):
 - `phase:changed` → Calls `gameStore.updatePhase()`
 - `timer:update` → Calls `gameStore.updateTimer()`
 - `player:bankrupt` → Calls `gameStore.markPlayerBankrupt()`; for *my own* id, also calls
-  `setSelfEliminationReason('bankrupt')` — see *Leave Game* above
+  `setSelfEliminationReason('bankrupt')` — see *Leave Game* above; for anyone else's,
+  calls `enqueueBankruptcyEvent()` instead — see *Bankruptcy & Game Over* below
 - `game:over` → Calls `gameStore.setGameOver()`; clears the saved session (nothing left
   to reconnect to)
 - `game:digDeeperResult` → Calls `gameStore.applyDigDeeperResult()`
+- `game:fileLawsuitResult` → Calls `gameStore.applyFileLawsuitResult()`
 - `game:annualReportResult` → Calls `gameStore.applyAnnualReportResult()`
 - `game:left` → Calls `setSelfEliminationReason('forfeit')` — upgrades the reason set by
   the `player:bankrupt` handler moments earlier; does **not** itself reset the session,
@@ -796,6 +822,17 @@ re-validates that the target still has that decision active, then prices the cas
 decision's `elapsedYears` — the longer a risky decision has been live, the higher the
 probability tier, exactly like a normal impact schedule (FORMULAS §6, §9).
 
+Filing also costs a flat `gameSettings.lawsuitFilingCost` ($15,000 by default), shown right
+on the **SUE THEIR ASSES** button and deducted **instantly** the moment the "File" button
+is clicked in `SueModal` — a `game:fileLawsuit` round trip, same "instant, outside turn
+resolution" pattern as Dig Deeper, not something that waits for the round timer. The case
+itself is still only created/validated later, at the next turn resolution, exactly as
+described above — the fee purely gates the *act of filing*. It is **not refunded** if that
+later validation rejects the case (e.g. the target no longer has the cited decision
+deployed by the time the turn resolves), and is capped at
+`gameSettings.maxLawsuitsPerPlayerPerTurn` same as the filings themselves, so a player can't
+rack up fee charges for lawsuits that would be silently dropped at resolution anyway.
+
 `target.*` impact fields (FORMULAS §0 — the 9 fields like `target.cash`, `target.outrage`
 that route a decision's effect to the chosen target rather than the decision-maker, used
 by Buy Shares/Sell Shares and the offensive-sabotage decisions) route to the chosen
@@ -940,6 +977,34 @@ feature is fully optional — the game plays identically whether or not the `llm
 container is running. See CLAUDE.md's *"Local LLM for narrated annual report text"*
 for the architectural rationale.
 
+### KPI History & Prediction
+
+Every KPI card (CASH, EQUITY, REVENUE, STOCK VALUE, THREAT LEVEL) and every individual
+tracked-field row inside their breakdown views (e.g. Operating expenses/Staff costs/Tax
+inside the Cash Waterfall, Volume/Price inside Revenue, each balance-sheet line inside
+Equity, each factor inside Shares) is clickable — it opens a graph combining this
+player's own actual history with a 3-turn-ahead prediction, via `game:getKpiHistory`
+(no payload, always "my own data") → `game:kpiHistoryResult`. History is one
+`KpiSnapshot` DB row per player per round, written alongside every turn resolution.
+Purely computed intermediate figures in the breakdown views (COGS, gross profit,
+EBITDA, EBIT, profit before tax, net profit, market equity, net demand) aren't
+clickable — they're derived-of-derived inside the view itself, not a single tracked
+field anywhere.
+
+The 3-turn prediction is computed by the real game engine, not an approximation — it
+literally re-runs `GameLoop.resolveTurn` forward, using the exact same competitiveness/
+market-share/P&L/balance-sheet/depreciation math a real turn does. By explicit product
+decision, it **assumes only this player's own decisions and their causes continue
+applying — it does not take other players' decisions into account**: every rival is
+held frozen at their current snapshot for the whole predicted window (no new rival
+decisions, attacks, or lawsuits), while the player's own already-active decisions keep
+maturing and scheduling normally. The graph shows this as a dashed continuation of the
+solid actual-history line, with a caption spelling out the assumption. If the
+projection shows the player going bankrupt within the window, the dashed line simply
+stops at that round instead of showing further (meaningless) points. See CLAUDE.md's
+*"KPI history + prediction graphs"* section for how the prediction is implemented
+(reusing `resolveTurn` itself, sandboxed) without forking or approximating the engine.
+
 ### Admin Portal
 
 `/admin` is a real, independent URL — the only one in this app that isn't rendered off
@@ -1043,7 +1108,21 @@ that turn's positive income-side cash flow, oldest filing first, until the pool 
 (FORMULAS §16). The game continues, looping GAME_PHASE rounds, until only one player
 remains — there is no fixed round limit and no score-based win condition. The eliminated
 player themselves sees the "lost" takeover described in *Leave Game* above, regardless of
-whether they left voluntarily or actually ran out of cash.
+whether they left voluntarily or actually ran out of cash. Everyone else still in the game
+gets a matching full-screen "X HAS GONE BANKRUPT" takeover (same `lost.png` art), queued in
+`gameStore.bankruptcyEvents` and rendered by `App.tsx`'s `BankruptcyOverlay` ahead of the
+`currentPhase` switch — so it's shown even when this same elimination ends the game (the
+`player:bankrupt` and `game:over`/`phase:changed` broadcasts arrive back-to-back from the
+same turn resolution; without the overlay taking priority, the Game Over screen would
+render immediately and the message would never be seen).
+
+A bankrupted player's Company row must have its real (negative) `cash` persisted, not just
+their `Player.bankrupt` flag — `GameLoop.resolveTurn` excludes bankrupted players from
+`companyUpdates` (their engine state is done being touched), so `BankruptedPlayer.finalCash`
+carries their actual balance at elimination for `GameEngine` to write to the DB alongside
+the `bankrupt: true` flag. Skipping this left a bankrupted player's `cash` column frozen at
+whatever positive value it had from their last still-active turn — including on the Game
+Over / Final Standings screen, which read the DB straight through `buildGameOverPayload`.
 
 ### Post-Turn Info Windows (sued / lawsuit verdict / turn change)
 
@@ -1206,7 +1285,10 @@ npm run lint
 # promoteNewHostIfNeeded, leaveRoom, buildRoomSnapshot, and joinRoom's kickedNames
 # rejection), validation schemas, llmService, adminAuth middleware. No DB or live LLM
 # required (mocked Prisma, incl. mocked `formula` model; llmService's own network calls
-# are mocked via global.fetch).
+# are mocked via global.fetch). Also covers predictFutureKpis (KPI history/prediction
+# graphs) — incl. a regression test that a real room's queued decision still applies
+# after a prediction runs, proving the prediction's sandboxed room id never touches
+# real in-flight submissions.
 npm test --workspace=server
 
 # Run frontend unit tests (Vitest) — Zustand stores, GamePhase utilities (incl.

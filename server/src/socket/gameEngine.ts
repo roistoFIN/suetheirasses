@@ -18,12 +18,14 @@ import {
   type GameConfig,
   type GameSettings,
   type TurnResolutionResult,
+  type PlayerTurnResult,
   type AnnualReportEntry,
   type AdminRoomSnapshot,
   type FormulaInfo,
   type GameReadyUpdateResponse,
+  type KpiHistoryResponse,
 } from '@suetheirasses/shared';
-import { validateRoomJoin, validateSubmitDecisions, validateDigDeeper, validateRoomRejoin, validateAnnualReportRequest, validateChatMessage, validateGameReady, validateRoomSetInviteOnly } from '../validation/schemas.js';
+import { validateRoomJoin, validateSubmitDecisions, validateDigDeeper, validateFileLawsuit, validateRoomRejoin, validateAnnualReportRequest, validateChatMessage, validateGameReady, validateRoomSetInviteOnly } from '../validation/schemas.js';
 import { GameLoop } from '../engine/gameLoop.js';
 import { generateAnnualReportBlurb } from '../services/llmService.js';
 
@@ -155,6 +157,30 @@ export class GameEngine {
   }
 
   /**
+   * Charge the flat lawsuit filing fee the instant a player files (SueModal's "File"
+   * button) — like `digDeeper`, this happens instantly, outside the turn-resolution
+   * cycle: a single Prisma write for the requesting player only. The lawsuit itself is
+   * still only created/validated at the next turn resolution via the normal
+   * `submitDecisions` → `LegalEngine.fileLawsuit` path — this method only ever moves cash.
+   */
+  async fileLawsuit(roomId: string, playerId: string): Promise<import('../engine/gameLoop.js').LawsuitFilingFeeOutcome> {
+    const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
+    const outcome = this.gameLoop.chargeLawsuitFilingFee(roomId, playerId, dbPlayers);
+    if (outcome.success) {
+      await this.prisma.company.update({
+        where: { playerId },
+        data: {
+          cash: outcome.newCash,
+          // GameLoop reads cash from variables.cash (JSONB), not the cash column — both
+          // must be written, same requirement as digDeeper's write.
+          variables: outcome.variables as any,
+        },
+      });
+    }
+    return outcome;
+  }
+
+  /**
    * AI-narrated "annual report" text for one rival's active decisions — on demand
    * (opened from the Full Filing modal), never part of turn resolution. Re-derives the
    * rival's active decisions server-side from their Company row rather than trusting
@@ -185,6 +211,36 @@ export class GameEngine {
   }
 
   /**
+   * This player's own KPI history (persisted `KpiSnapshot` rows, oldest round first) plus
+   * a 3-turn-ahead prediction (`GameLoop.predictFutureKpis`) — on demand, opened by
+   * clicking any KPI card or breakdown line item in `GamePhase.tsx`. Always "my own
+   * data" — there's no rival variant of this, unlike `getAnnualReport`. Returns `null`
+   * only if the room itself is unknown; if the player has since gone bankrupt (excluded
+   * from `loadActiveCompanyPlayers`), `predicted` just comes back empty rather than the
+   * whole call failing — `history` is still real and worth returning.
+   */
+  async getKpiHistory(roomId: string, playerId: string): Promise<KpiHistoryResponse | null> {
+    const roomState = this.rooms.get(roomId);
+    if (!roomState) return null;
+
+    const rows = await this.prisma.kpiSnapshot.findMany({
+      where: { playerId },
+      orderBy: { round: 'asc' },
+    });
+    const history = rows.map((r) => ({
+      round: r.round,
+      variables: r.variables as any,
+      derived: r.derived as any,
+      riskGauge: r.riskGauge,
+    }));
+
+    const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
+    const prediction = this.gameLoop.predictFutureKpis(playerId, roomState.room.currentPhaseRound, dbPlayers, 3);
+
+    return { history, predicted: prediction.predicted, bankruptAtRound: prediction.bankruptAtRound };
+  }
+
+  /**
    * Broadcast each player's starting-position snapshot the instant the game starts,
    * so the client renders the game room immediately instead of a blank loading state
    * for the whole first round's timer.
@@ -192,8 +248,40 @@ export class GameEngine {
   async broadcastInitialSnapshot(roomId: string, round: number): Promise<void> {
     const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
     const snapshot = this.gameLoop.getInitialSnapshot(roomId, round, dbPlayers);
+    await this.persistKpiSnapshots(snapshot.players, round);
     this.lastTurnResults.set(roomId, snapshot);
     this.io.to(roomId).emit(ServerEvents.TURN_RESOLVED, snapshot);
+  }
+
+  /**
+   * One `KpiSnapshot` row per player per round — the source of the KPI history graphs
+   * (every KPI card/breakdown line item is clickable; see CLAUDE.md's "KPI history +
+   * prediction graphs" section). `upsert`, not `create` — idempotent against a
+   * hypothetical double-call for the same round (nothing currently does this, but a
+   * unique-constraint crash on a UI-triggered write path is worse than a harmless
+   * overwrite). Never called for a bankrupted player's final round — they're excluded
+   * from `outcome.result.players`/`getInitialSnapshot`'s output the same way
+   * `companyUpdates` excludes them (see `BankruptedPlayer.finalCash`'s doc comment);
+   * their last real cash figure already lives on the Game Over screen instead.
+   */
+  private async persistKpiSnapshots(players: PlayerTurnResult[], round: number): Promise<void> {
+    for (const p of players) {
+      await this.prisma.kpiSnapshot.upsert({
+        where: { playerId_round: { playerId: p.playerId, round } },
+        create: {
+          playerId: p.playerId,
+          round,
+          variables: p.variables as any,
+          derived: p.derived as any,
+          riskGauge: p.riskGauge,
+        },
+        update: {
+          variables: p.variables as any,
+          derived: p.derived as any,
+          riskGauge: p.riskGauge,
+        },
+      });
+    }
   }
 
   /**
@@ -643,6 +731,14 @@ export class GameEngine {
           where: { id: bankrupted.playerId },
           data: { bankrupt: true },
         });
+        // Bankrupted players are deliberately excluded from outcome.companyUpdates (see
+        // BankruptedPlayer.finalCash doc comment) — their negative cash has to be persisted
+        // here instead, or the DB (and anything reading it later, e.g. buildGameOverPayload's
+        // final-standings cash column) keeps showing their last still-active positive balance.
+        await this.prisma.company.update({
+          where: { playerId: bankrupted.playerId },
+          data: { cash: bankrupted.finalCash },
+        });
         this.io.to(roomId).emit(ServerEvents.PLAYER_BANKRUPT, {
           playerId: bankrupted.playerId,
           playerName: bankrupted.playerName,
@@ -659,6 +755,8 @@ export class GameEngine {
           },
         });
       }
+
+      await this.persistKpiSnapshots(outcome.result.players, round);
 
       this.lastTurnResults.set(roomId, outcome.result);
       this.io.to(roomId).emit(ServerEvents.TURN_RESOLVED, outcome.result);
@@ -1575,6 +1673,44 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
       }
     });
 
+    // Charge the flat lawsuit filing fee the instant a player files (SueModal's "File"
+    // button) — instant, outside the turn-resolution cycle, result goes only to this
+    // socket. The client still separately queues the same { targetId, decisionName,
+    // groundName } entry via game:submitDecisions for the case itself.
+    socket.on(ClientEvents.GAME_FILE_LAWSUIT, async (payload: unknown) => {
+      const roomId = engine.getPlayerRoom(socket.id);
+      if (!roomId) return;
+
+      const roomState = engine.rooms.get(roomId);
+      if (!roomState || roomState.room.status !== RoomStatus.GAME_PHASE) return;
+
+      const player = Array.from(roomState.players.values()).find(
+        (p: Player) => p.socketId === socket.id,
+      );
+      if (!player) return;
+
+      try {
+        validateFileLawsuit(payload);
+        const outcome = await engine.fileLawsuit(roomId, player.id);
+        if (!outcome.success) {
+          socket.emit(ServerEvents.ERROR, {
+            code: 'FILE_LAWSUIT_FAILED',
+            message: outcome.reason,
+          });
+          return;
+        }
+        socket.emit(ServerEvents.GAME_FILE_LAWSUIT_RESULT, {
+          cost: outcome.cost,
+          newCash: outcome.newCash,
+        });
+      } catch (error: any) {
+        socket.emit(ServerEvents.ERROR, {
+          code: 'INVALID_FILE_LAWSUIT',
+          message: error.message || 'Invalid lawsuit filing request',
+        });
+      }
+    });
+
     // Request AI-narrated "annual report" text for one rival — on demand (opened from
     // the Full Filing modal), outside the turn-resolution cycle, result goes only to
     // this socket. Never blocks/broadcasts anything else in the room.
@@ -1607,6 +1743,27 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
           message: error.message || 'Invalid annual report request',
         });
       }
+    });
+
+    // Request this player's own KPI history + 3-turn prediction — on demand (opened by
+    // clicking any KPI card or breakdown line item in GamePhase.tsx), outside the
+    // turn-resolution cycle. No payload — always "my own data," result goes only to
+    // this socket.
+    socket.on(ClientEvents.GAME_GET_KPI_HISTORY, async () => {
+      const roomId = engine.getPlayerRoom(socket.id);
+      if (!roomId) return;
+
+      const roomState = engine.rooms.get(roomId);
+      if (!roomState || roomState.room.status !== RoomStatus.GAME_PHASE) return;
+
+      const player = Array.from(roomState.players.values()).find(
+        (p: Player) => p.socketId === socket.id,
+      );
+      if (!player) return;
+
+      const response = await engine.getKpiHistory(roomId, player.id);
+      if (!response) return;
+      socket.emit(ServerEvents.GAME_KPI_HISTORY_RESULT, response);
     });
 
     // Voluntary forfeit — "Leave Game" button, GAME_PHASE only. Instant bankruptcy

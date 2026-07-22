@@ -9,7 +9,8 @@
     "totalMarketVolumeTonnesPerYear": 10000,
     "marketFixed": true,
     "digDeeperCost": 10000,
-    "negotiationPeriodTurns": 2
+    "negotiationPeriodTurns": 2,
+    "lawsuitFilingCost": 15000
   },
 
   "playerStartingValues": {

@@ -54,6 +54,7 @@ function makeConfig(overrides: Partial<GameConfig> = {}): GameConfig {
       marketFixed: true,
       digDeeperCost: 10000,
       negotiationPeriodTurns: 2,
+      lawsuitFilingCost: 15000,
     },
     playerStartingValues: {
       cash: 100000,
@@ -730,6 +731,12 @@ describe('GameLoop', () => {
       const aliceBankrupt = outcome.bankruptedPlayers.find(b => b.playerId === 'player-1');
       if (aliceBankrupt) {
         expect(outcome.companyUpdates.find(u => u.playerId === 'player-1')).toBeUndefined();
+        // Regression: finalCash must carry the real negative balance since the caller can't
+        // get it from companyUpdates (this player is excluded from it) — without it, the
+        // Company row's cash column is never updated off whatever positive value it had
+        // before this turn, which surfaced as a bankrupt player showing positive cash on
+        // the Game Over screen.
+        expect(aliceBankrupt.finalCash).toBeLessThan(0);
       }
     });
   });
@@ -911,6 +918,171 @@ describe('GameLoop', () => {
       const bob = turnOutcome.result.players.find((p) => p.playerId === 'player-2')!;
       expect(bob.incomingAttacks[0].investigationLevel).toBe(1);
       expect(bob.incomingAttacks[0].attackerName).toBe('Alice');
+    });
+  });
+
+  describe('chargeLawsuitFilingFee', () => {
+    function makeFeeFixture(cash = 100000): EngineDataInput[] {
+      return makePlayers([{ id: 'player-1', name: 'Alice', variables: makeVars({ cash }) }]);
+    }
+
+    it('charges the flat lawsuitFilingCost and returns the new cash', () => {
+      // makeConfig's lawsuitFilingCost is 15000.
+      const outcome = gameLoop.chargeLawsuitFilingFee('room-1', 'player-1', makeFeeFixture());
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.cost).toBe(15000);
+      expect(outcome.newCash).toBe(85000);
+      expect(outcome.variables.cash).toBe(85000);
+    });
+
+    it('fails with insufficient_funds and does not charge when cash is below the cost', () => {
+      const outcome = gameLoop.chargeLawsuitFilingFee('room-1', 'player-1', makeFeeFixture(5000));
+
+      expect(outcome).toEqual({ success: false, reason: 'insufficient_funds' });
+    });
+
+    it('fails with player_not_found for an unknown player', () => {
+      const outcome = gameLoop.chargeLawsuitFilingFee('room-1', 'nonexistent', makeFeeFixture());
+
+      expect(outcome).toEqual({ success: false, reason: 'player_not_found' });
+    });
+
+    it('fails with limit_reached once this player has already queued maxLawsuitsPerPlayerPerTurn lawsuits this round', () => {
+      // makeConfig's maxLawsuitsPerPlayerPerTurn is 3.
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [],
+        operational: [],
+        lawsuits: [
+          { targetId: 'player-2', decisionName: 'New Factory', groundName: 'ground-a' },
+          { targetId: 'player-2', decisionName: 'New Factory', groundName: 'ground-b' },
+          { targetId: 'player-2', decisionName: 'New Factory', groundName: 'ground-c' },
+        ],
+      });
+
+      const outcome = gameLoop.chargeLawsuitFilingFee('room-1', 'player-1', makeFeeFixture());
+
+      expect(outcome).toEqual({ success: false, reason: 'limit_reached' });
+    });
+
+    it('does not count another player\'s queued lawsuits toward this player\'s limit', () => {
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [],
+        operational: [],
+        lawsuits: [{ targetId: 'player-1', decisionName: 'New Factory', groundName: 'ground-a' }],
+      });
+
+      const outcome = gameLoop.chargeLawsuitFilingFee('room-1', 'player-1', makeFeeFixture());
+
+      expect(outcome.success).toBe(true);
+    });
+
+    it('does not carry a room\'s queued-lawsuit count over to a different room', () => {
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [],
+        operational: [],
+        lawsuits: [
+          { targetId: 'player-2', decisionName: 'New Factory', groundName: 'ground-a' },
+          { targetId: 'player-2', decisionName: 'New Factory', groundName: 'ground-b' },
+          { targetId: 'player-2', decisionName: 'New Factory', groundName: 'ground-c' },
+        ],
+      });
+
+      const outcome = gameLoop.chargeLawsuitFilingFee('room-2', 'player-1', makeFeeFixture());
+
+      expect(outcome.success).toBe(true);
+    });
+  });
+
+  describe('predictFutureKpis', () => {
+    // 'New Factory' (this file's fixture decision, not the real game_engine.json's) has
+    // cash: { 1: -30000, default: -30000 } — it keeps draining 30k every year forever
+    // once deployed, which makes it a convenient known quantity to isolate.
+    function makePredictFixture(aliceCash: number, opts: { withDecision?: boolean; suppressRevenue?: boolean } = {}): EngineDataInput[] {
+      const { withDecision = true, suppressRevenue = false } = opts;
+      return makePlayers([
+        {
+          id: 'player-1',
+          name: 'Alice',
+          // Zeroing out capacityUtilization/installedCapacity drives volume (and so
+          // revenue) to ~0, isolating fixed costs (operatingExpenses/staffCost, which
+          // apply regardless of production) as the only meaningful cash drain — used
+          // by the bankruptcy test below, since this fixture's default economy
+          // otherwise grows cash by millions/turn (revenue swamps any single
+          // decision's cash-schedule effect, real game_engine.json numbers aside).
+          variables: makeVars(suppressRevenue ? { cash: aliceCash, capacityUtilization: 0, installedCapacity: 0 } : { cash: aliceCash }),
+          engineState: {
+            activeDecisions: withDecision
+              ? [{ id: 'inst-1', definitionName: 'New Factory', deployedYear: 1, elapsedYears: 0, isMatured: false }]
+              : [],
+          },
+        },
+        { id: 'player-2', name: 'Bob' },
+      ]);
+    }
+
+    it('keeps the player\'s own already-active decision applying its schedule into every predicted turn', () => {
+      // 'Bot Attack' only touches the deploying player's own vars via a flat
+      // `cash: -12000/turn` — its other two impact fields are `target.*`, routed to
+      // whichever rival is targeted, never back onto the attacker themselves. That
+      // makes it a cleanly isolated cash-only effect to compare against an otherwise-
+      // identical fixture without it (unlike 'New Factory', whose installedCapacity
+      // bump feeds back into volume/revenue and swamps its own cash schedule).
+      const withAttack = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: makeVars({ cash: 500000 }), engineState: { activeDecisions: [{ id: 'inst-1', definitionName: 'Bot Attack', deployedYear: 1, elapsedYears: 0, isMatured: false, targetId: 'player-2' }] } },
+        { id: 'player-2', name: 'Bob' },
+      ]);
+      const withoutAttack = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: makeVars({ cash: 500000 }) },
+        { id: 'player-2', name: 'Bob' },
+      ]);
+
+      const predictedWithAttack = gameLoop.predictFutureKpis('player-1', 5, withAttack, 3);
+      const predictedWithoutAttack = gameLoop.predictFutureKpis('player-1', 5, withoutAttack, 3);
+
+      expect(predictedWithAttack.predicted).toHaveLength(3);
+      expect(predictedWithoutAttack.predicted).toHaveLength(3);
+      for (let i = 0; i < 3; i++) {
+        expect(predictedWithAttack.predicted[i].variables.cash).toBeLessThan(predictedWithoutAttack.predicted[i].variables.cash);
+      }
+    });
+
+    it('rounds are sequential starting at currentRound + 1', () => {
+      const prediction = gameLoop.predictFutureKpis('player-1', 5, makePredictFixture(500000), 3);
+
+      expect(prediction.predicted.map(p => p.round)).toEqual([6, 7, 8]);
+    });
+
+    it('stops early and sets bankruptAtRound once the projection would cross negative cash', () => {
+      // Revenue suppressed (see makePredictFixture) so fixed costs alone drain this
+      // small starting cash negative well within the 3-turn window.
+      const prediction = gameLoop.predictFutureKpis('player-1', 1, makePredictFixture(20000, { suppressRevenue: true }), 3);
+
+      expect(prediction.predicted.length).toBeLessThan(3);
+      expect(prediction.bankruptAtRound).toBeDefined();
+      expect(prediction.bankruptAtRound).toBeGreaterThan(1);
+    });
+
+    it('returns no predicted points for an unknown player id', () => {
+      const prediction = gameLoop.predictFutureKpis('nonexistent', 5, makePredictFixture(500000), 3);
+
+      expect(prediction).toEqual({ predicted: [] });
+    });
+
+    it('never touches the real room\'s in-flight submissions — a queued decision for the real room still applies after a prediction runs', () => {
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [{ name: 'Exclusive Deal' }],
+        operational: [],
+        lawsuits: [],
+      });
+
+      // Run a prediction in between — should not clear or otherwise disturb 'room-1'.
+      gameLoop.predictFutureKpis('player-1', 1, makePredictFixture(500000), 3);
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+      const alice = outcome.result.players.find(p => p.playerId === 'player-1')!;
+      expect(alice.activeDecisions.some(d => d.decisionName === 'Exclusive Deal')).toBe(true);
     });
   });
 
