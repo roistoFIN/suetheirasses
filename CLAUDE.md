@@ -323,6 +323,33 @@ Since `game:submitDecisions` is full-replacement (see above), every one of these
 locations independently calling `submitPending` with a locally-filtered copy of `pending`
 is exactly as correct as the two that already existed.
 
+### "Active Decisions"' already-active and queued cards show the same description + SHOW DETAILS panel as the Decision Deck — via a shared `DecisionDetails` sub-component, not by duplicating `DecisionCard`
+
+`ActiveDecisionCard` and `QueuedDecisionCard` used to show only a decision's name and
+maturity/queued status — confirming *what a still-maturing or queued pick actually does*
+required reopening the Decision Deck modal and finding the same card again. Neither
+`ActiveDecisionInstance` (`{ id, decisionName, deployedYear, elapsedYears, isMatured }`)
+nor a queued `SubmittedDecisionEntry` (`{ name, targetId? }`) carries the decision's own
+`description`/`impacts`/`legalRisks` — only a name — so both `ActiveDecisionCard` and
+`QueuedDecisionCard`'s call sites (`GamePhase.tsx`'s "Active Decisions" box) now look the
+full `DecisionDefinition` back up by name against the loaded `decisions` library
+(`decisions.find((def) => def.decision === d.decisionName)`, the same pattern the box's
+header-count bucketing already used) and pass it down as an optional `def` prop.
+
+`DecisionDetails({ def })` is the shared component both cards render: the description
+text unconditionally, then — reusing `summarizeEffects`/`getMaturityYears`'s sibling
+logic exactly as `DecisionCard` does — a collapsible **SHOW DETAILS**/**HIDE DETAILS**
+toggle (`useState` + `IconChevronDown` rotation) gating an **EFFECTS** timeline panel and
+a `⚖ Legal risk: …` line. `def` is optional and the component renders nothing if it's
+undefined (a defensive fallback for a lookup miss, not expected in practice — see
+*"Deleting a decision is guarded"* above for why an in-use decision can't vanish from the
+library mid-game). Deliberately a new shared component rather than either (a) inlining
+the same JSX twice into both cards, or (b) making `DecisionCard` itself accept an
+"already-active" mode — `DecisionCard` also renders deploy/target-picker/exclusion-reason
+UI that has no equivalent for an already-deployed or queued instance, so folding this into
+it would mean threading a bunch of not-applicable props through one component instead of
+composing a small shared piece into two simpler ones.
+
 ### Indirect effects — decisions with no `target.*` impacts still generate an incoming-attack-style hint, broadcast to everyone
 
 `buildIncomingAttacks` used to only ever surface a decision with real `target.*`

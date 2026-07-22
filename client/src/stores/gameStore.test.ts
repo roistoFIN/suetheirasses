@@ -516,6 +516,7 @@ describe('gameStore', () => {
       description: 'x',
       baseProbability: 0.12,
       plaintiffFullyInvestigated: false,
+      defendantInvestigated: false,
       stakes: 20000,
       status: 'negotiating',
       offers: [{ by: 'defendant', amount: 10000 }],

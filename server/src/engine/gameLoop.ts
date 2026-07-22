@@ -180,7 +180,19 @@ export interface LegalCaseSideUpdate {
  * mutation (not part of turn resolution). On success, the caller (`GameEngine`) persists
  * both `plaintiff` and `defendant` updates and emits `case` to both parties' sockets. */
 export type LegalCaseActionOutcome =
-  | { success: false; reason: 'case_not_found' | 'not_negotiating' | 'not_a_party' | 'not_your_turn' | 'no_offer_to_accept' | 'invalid_amount' }
+  | {
+      success: false;
+      reason:
+        | 'case_not_found'
+        | 'not_negotiating'
+        | 'not_a_party'
+        | 'not_your_turn'
+        | 'no_offer_to_accept'
+        | 'invalid_amount'
+        | 'not_defendant'
+        | 'already_investigated'
+        | 'insufficient_funds';
+    }
   | {
       success: true;
       case: LegalCaseData;
@@ -1143,6 +1155,50 @@ export class GameLoop {
       case: updatedCase,
       plaintiff: { playerId: plaintiff.playerId, engineState: this.serializeEngineStateForCase(plaintiff.engineState, updatedCase) },
       defendant: { playerId: defendant.playerId, engineState: this.serializeEngineStateForCase(defendant.engineState, updatedCase) },
+    };
+  }
+
+  /**
+   * Pay `gameSettings.digDeeperCost` to reveal the probability of success on a case
+   * you're the DEFENDANT on. A case's `baseProbability`/`adjustedProbability` used to be
+   * free intel for the defendant the instant it was filed — this makes it cost the same
+   * "dig deeper" fee an incoming-attack investigation does, and gates it behind an
+   * explicit action instead of showing it automatically. Unlike the 3-tier incoming-
+   * attack investigation ladder (`digDeeper`), this is a single one-shot reveal scoped to
+   * one case — there's only one thing to learn (the odds), not a progression of tiers.
+   *
+   * Same two-party persist shape as `makeOffer`/`acceptOffer`/`goToCourt` (the case is
+   * spliced into both parties' `engineState.legalCases`), even though only the
+   * defendant's cash moves — the plaintiff's own copy of the case still needs the
+   * updated `defendantInvestigated` flag written back so the two copies never diverge.
+   */
+  digDeeperOnCase(playerId: string, caseId: string, players: EngineDataInput[]): LegalCaseActionOutcome {
+    const found = this.findCaseAndParties(caseId, players);
+    if (!found) return { success: false, reason: 'case_not_found' };
+    const { case: case_, plaintiff, defendant } = found;
+
+    if (playerId !== defendant.playerId) return { success: false, reason: 'not_defendant' };
+    if (case_.defendantInvestigated) return { success: false, reason: 'already_investigated' };
+
+    const cost = this.config.gameSettings.digDeeperCost;
+    if (defendant.vars.cash < cost) return { success: false, reason: 'insufficient_funds' };
+
+    const newCash = defendant.vars.cash - cost;
+    const updatedCase: LegalCaseData = { ...case_, defendantInvestigated: true };
+
+    return {
+      success: true,
+      case: updatedCase,
+      plaintiff: {
+        playerId: plaintiff.playerId,
+        engineState: this.serializeEngineStateForCase(plaintiff.engineState, updatedCase),
+      },
+      defendant: {
+        playerId: defendant.playerId,
+        cash: newCash,
+        variables: this.stripInternal({ ...defendant.vars, cash: newCash }),
+        engineState: this.serializeEngineStateForCase(defendant.engineState, updatedCase),
+      },
     };
   }
 

@@ -115,6 +115,8 @@ export enum ClientEvents {
   GAME_ACCEPT_OFFER = 'game:acceptOffer',
   /** End negotiation and send a case to trial — instant, outside turn resolution. Either party may call this at any time while the case is `'negotiating'`. Only marks the case `'awaiting_trial'`; the verdict itself is still drawn the next time the room's turn resolves (same trial-resolution step every `awaiting_trial` case already goes through), not immediately. */
   GAME_GO_TO_COURT = 'game:goToCourt',
+  /** Pay `gameSettings.digDeeperCost` to reveal the probability of success on a case you're the defendant on — instant, outside turn resolution. Defendant-only; a plaintiff never knows a defendant's odds this way. Unlike `game:digDeeper`'s 3-tier ladder, this is a single one-shot reveal scoped to one case. */
+  GAME_DIG_DEEPER_CASE = 'game:digDeeperCase',
 }
 
 // Server → Client events
@@ -213,6 +215,13 @@ export interface AcceptOfferPayload {
 
 /** Payload for `game:goToCourt` — end negotiation on this case and send it to trial. */
 export interface GoToCourtPayload {
+  caseId: string;
+}
+
+/** Payload for `game:digDeeperCase` — spend `gameSettings.digDeeperCost` to reveal the
+ * probability of success on a case you're the defendant on. Defendant-only, one-shot per
+ * case (unlike `game:digDeeper`'s 3-tier ladder). */
+export interface DigDeeperCasePayload {
   caseId: string;
 }
 

@@ -803,6 +803,11 @@ always has. All of this reads and writes the exact same `pending` client state t
 Sue modal already use — cancelling from any of these spots re-sends the same
 full-replacement `game:submitDecisions` payload with that one entry filtered out.
 
+Each card in the box — active or still-queued — also shows the decision's own
+description and a collapsible **SHOW DETAILS** toggle, the same **EFFECTS** timeline +
+legal-risk line the deck's own cards render, so confirming what a still-maturing or
+queued pick actually does never requires reopening the deck.
+
 Each 120s GAME_PHASE round, every player submits up to 1 strategic + 2 operational
 decision from a shared library of 45 decisions — spanning `Traditional`, `Grey Area`,
 and `Dirty` in nature. When the timer expires, `GameLoop` resolves the turn for all

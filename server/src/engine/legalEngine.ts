@@ -82,6 +82,7 @@ export class LegalEngine {
       baseProbability: probability,
       adjustedProbability: undefined,
       plaintiffFullyInvestigated,
+      defendantInvestigated: false,
       stakes,
       status: 'negotiating',
       offers: [],

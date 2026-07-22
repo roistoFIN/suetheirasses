@@ -25,7 +25,7 @@ import {
   type GameReadyUpdateResponse,
   type KpiHistoryResponse,
 } from '@suetheirasses/shared';
-import { validateRoomJoin, validateSubmitDecisions, validateDigDeeper, validateFileLawsuit, validateRoomRejoin, validateAnnualReportRequest, validateChatMessage, validateGameReady, validateRoomSetInviteOnly, validateKpiHistoryRequest, validateMakeOffer, validateAcceptOffer, validateGoToCourt } from '../validation/schemas.js';
+import { validateRoomJoin, validateSubmitDecisions, validateDigDeeper, validateFileLawsuit, validateRoomRejoin, validateAnnualReportRequest, validateChatMessage, validateGameReady, validateRoomSetInviteOnly, validateKpiHistoryRequest, validateMakeOffer, validateAcceptOffer, validateGoToCourt, validateDigDeeperCase } from '../validation/schemas.js';
 import { GameLoop } from '../engine/gameLoop.js';
 import { generateAnnualReportBlurb } from '../services/llmService.js';
 
@@ -212,6 +212,17 @@ export class GameEngine {
   async goToCourt(roomId: string, playerId: string, caseId: string): Promise<import('../engine/gameLoop.js').LegalCaseActionOutcome> {
     const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
     const outcome = this.gameLoop.goToCourt(playerId, caseId, dbPlayers);
+    if (outcome.success) {
+      await this.persistLegalCaseAction(outcome);
+      this.emitLegalCaseUpdate(roomId, outcome);
+    }
+    return outcome;
+  }
+
+  /** Pay `gameSettings.digDeeperCost` to reveal the probability of success on a case you're the defendant on — instant, outside the turn-resolution cycle. Same two-party persist/emit shape as `makeOffer`, even though only the defendant's cash moves. */
+  async digDeeperOnCase(roomId: string, playerId: string, caseId: string): Promise<import('../engine/gameLoop.js').LegalCaseActionOutcome> {
+    const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
+    const outcome = this.gameLoop.digDeeperOnCase(playerId, caseId, dbPlayers);
     if (outcome.success) {
       await this.persistLegalCaseAction(outcome);
       this.emitLegalCaseUpdate(roomId, outcome);
@@ -1925,6 +1936,38 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
         socket.emit(ServerEvents.ERROR, {
           code: 'INVALID_GO_TO_COURT_REQUEST',
           message: error.message || 'Invalid go-to-court request',
+        });
+      }
+    });
+
+    // Defendant pays to reveal the probability of success on a case — instant, outside
+    // the turn-resolution cycle. Same "success already broadcast via game:legalCaseUpdate,
+    // only failure needs a response" shape as game:makeOffer.
+    socket.on(ClientEvents.GAME_DIG_DEEPER_CASE, async (payload: unknown) => {
+      const roomId = engine.getPlayerRoom(socket.id);
+      if (!roomId) return;
+
+      const roomState = engine.rooms.get(roomId);
+      if (!roomState || roomState.room.status !== RoomStatus.GAME_PHASE) return;
+
+      const player = Array.from(roomState.players.values()).find(
+        (p: Player) => p.socketId === socket.id,
+      );
+      if (!player) return;
+
+      try {
+        const { caseId } = validateDigDeeperCase(payload);
+        const outcome = await engine.digDeeperOnCase(roomId, player.id, caseId);
+        if (!outcome.success) {
+          socket.emit(ServerEvents.ERROR, {
+            code: 'DIG_DEEPER_CASE_FAILED',
+            message: outcome.reason,
+          });
+        }
+      } catch (error: any) {
+        socket.emit(ServerEvents.ERROR, {
+          code: 'INVALID_DIG_DEEPER_CASE_REQUEST',
+          message: error.message || 'Invalid dig-deeper-on-case request',
         });
       }
     });

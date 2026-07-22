@@ -722,12 +722,13 @@ export default function GamePhase() {
                       key={`${bucket}-${i}`}
                       name={entry.name}
                       targetName={entry.targetId ? (competitors.find((c) => c.playerId === entry.targetId)?.playerName ?? entry.targetId) : undefined}
+                      def={decisions.find((def) => def.decision === entry.name)}
                       onCancel={() => submitPending({ ...pending, [bucket]: pending[bucket].filter((e) => e.name !== entry.name) })}
                     />
                   )),
                 )}
                 {myData.activeDecisions.map((d) => (
-                  <ActiveDecisionCard key={d.id} decision={d} />
+                  <ActiveDecisionCard key={d.id} decision={d} def={decisions.find((def) => def.decision === d.decisionName)} />
                 ))}
               </Stack>
             </Stack>
@@ -773,6 +774,8 @@ export default function GamePhase() {
                       negotiationPeriodTurns={gameSettings?.negotiationPeriodTurns}
                       socket={socket}
                       onRiskInfo={(caseItem) => setRiskInfoCase(caseItem)}
+                      cash={vars.cash}
+                      digDeeperCost={gameSettings?.digDeeperCost ?? 10000}
                     />
                   ))}
               </Stack>
@@ -1197,6 +1200,54 @@ function SectionCard({ title, children }: SectionCardProps) {
 // Sub-components — Active Decision Card
 // ============================================================
 
+/** Description + collapsible effects/legal-risk panel for a decision that's already
+ * deployed or queued — shared by `ActiveDecisionCard` and `QueuedDecisionCard` so both
+ * show the same "what does this actually do" detail the Decision Deck's own
+ * `DecisionCard` already provides. `def` is looked up by name against the loaded
+ * decision library at each card's call site, since neither an `ActiveDecisionInstance`
+ * nor a queued `SubmittedDecisionEntry` carries the full `DecisionDefinition` itself
+ * (only `decisionName`/`name`) — undefined if the lookup ever fails, in which case
+ * nothing renders (defensive; shouldn't happen since a decision in use can't be deleted,
+ * see CLAUDE.md's "Deleting a decision is guarded" section). */
+function DecisionDetails({ def }: { def?: DecisionDefinition }) {
+  const [expanded, setExpanded] = useState(false);
+  if (!def) return null;
+
+  const effects = summarizeEffects(def);
+  const hasLegalRisk = !!def.legalRisks && def.legalRisks.length > 0;
+  const hasDetails = effects.length > 0 || hasLegalRisk;
+
+  return (
+    <>
+      <Text size="xs" c="dimmed" style={{ marginTop: 6, lineHeight: 1.4 }}>{def.description}</Text>
+      {hasDetails && (
+        <Flex align="center" gap={6} style={{ marginTop: 6, cursor: 'pointer' }} onClick={() => setExpanded((e) => !e)}>
+          <Text size="xs" style={{ ...boldStyle, color: '#4b5563' }}>{expanded ? 'HIDE DETAILS' : 'SHOW DETAILS'}</Text>
+          <IconChevronDown size={12} style={{ color: '#6b7280', transform: expanded ? 'rotate(180deg)' : undefined, transition: 'transform 0.2s ease' }} />
+        </Flex>
+      )}
+      {expanded && effects.length > 0 && (
+        <div style={{ marginTop: 8, padding: 8, background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 6 }}>
+          <Text size="xs" style={{ ...boldStyle, color: '#4b5563', marginBottom: 4 }}>EFFECTS</Text>
+          <Stack gap={2}>
+            {effects.map((line) => (
+              <Flex key={line.field} justify="space-between" gap="xs">
+                <Text size="xs" c="dimmed">{line.field}</Text>
+                <Text size="xs" style={boldStyle}>{line.timeline}</Text>
+              </Flex>
+            ))}
+          </Stack>
+        </div>
+      )}
+      {expanded && hasLegalRisk && (
+        <Text size="xs" c="orange" style={{ marginTop: 4, fontStyle: 'italic' }}>
+          ⚖ Legal risk: {def.legalRisks!.map((r) => r.name).join(', ')}
+        </Text>
+      )}
+    </>
+  );
+}
+
 interface ActiveDecisionCardProps {
   decision: {
     id: string;
@@ -1206,9 +1257,11 @@ interface ActiveDecisionCardProps {
     elapsedYears: number;
     isMatured: boolean;
   };
+  /** Looked up by name against the loaded decision library at the call site — see `DecisionDetails`. */
+  def?: DecisionDefinition;
 }
 
-function ActiveDecisionCard({ decision }: ActiveDecisionCardProps) {
+function ActiveDecisionCard({ decision, def }: ActiveDecisionCardProps) {
   const progress = decision.maturityYears > 0 ? Math.min(100, (decision.elapsedYears / decision.maturityYears) * 100) : 100;
 
   return (
@@ -1226,6 +1279,7 @@ function ActiveDecisionCard({ decision }: ActiveDecisionCardProps) {
           <Box h="100%" style={{ width: `${progress}%`, background: '#fbbf24', borderRadius: 3, transition: 'width 0.3s ease' }} />
         </Box>
       )}
+      <DecisionDetails def={def} />
     </div>
   );
 }
@@ -1234,6 +1288,8 @@ interface QueuedDecisionCardProps {
   name: string;
   /** Set when this decision targets a chosen opponent (e.g. Bot Attack) — resolved to a player name where possible. */
   targetName?: string;
+  /** Looked up by name against the loaded decision library at the call site — see `DecisionDetails`. */
+  def?: DecisionDefinition;
   onCancel: () => void;
 }
 
@@ -1243,8 +1299,10 @@ interface QueuedDecisionCardProps {
  * Deliberately a separate, lighter component rather than reusing `ActiveDecisionCard`: a
  * pending `SubmittedDecisionEntry` (`{ name, targetId? }`) has no `id`/maturity/
  * deployedYear yet — those only exist once the decision has actually been deployed by a
- * turn resolving. */
-function QueuedDecisionCard({ name, targetName, onCancel }: QueuedDecisionCardProps) {
+ * turn resolving. Shares `DecisionDetails` (description + collapsible effects/legal-risk)
+ * with `ActiveDecisionCard`, since a queued pick's own `DecisionDefinition` lookup is
+ * identical — only the header row (progress vs. QUEUED badge) differs. */
+function QueuedDecisionCard({ name, targetName, def, onCancel }: QueuedDecisionCardProps) {
   return (
     <div style={gpStyles.activeDecisionCard}>
       <Flex justify="space-between" align="center">
@@ -1257,6 +1315,7 @@ function QueuedDecisionCard({ name, targetName, onCancel }: QueuedDecisionCardPr
           <Text size="xs" c="red" style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={onCancel}>Cancel</Text>
         </Flex>
       </Flex>
+      <DecisionDetails def={def} />
     </div>
   );
 }
@@ -1562,21 +1621,56 @@ interface CaseCardProps {
   /** For the "auto-resolves in N turns" countdown — undefined game:deck hasn't arrived yet. */
   negotiationPeriodTurns?: number;
   socket: Socket | null;
+  /** This player's current cash — only used to gray out the defendant's own Dig Deeper button when they can't afford it. */
+  cash: number;
+  digDeeperCost: number;
 }
 
-function CaseCard({ caseData, myPlayerId, playerNames, onRiskInfo, negotiationPeriodTurns, socket }: CaseCardProps) {
+function CaseCard({ caseData, myPlayerId, playerNames, onRiskInfo, negotiationPeriodTurns, socket, cash, digDeeperCost }: CaseCardProps) {
   const isDefendant = getCaseRole(caseData, myPlayerId) === 'defendant';
   const opponentName = getOpponentName(caseData, myPlayerId, playerNames);
 
-  // The defendant always sees the odds. The plaintiff only sees them if they fully
-  // "Dig Deeper"-investigated the underlying attack before suing over its exact
-  // suggested ground — server-stamped onto the case at filing time, see CLAUDE.md.
-  const knowsOdds = isDefendant || caseData.plaintiffFullyInvestigated;
+  // Neither side gets the odds for free anymore. The plaintiff only sees them if they
+  // fully "Dig Deeper"-investigated the underlying attack before suing over its exact
+  // suggested ground (server-stamped onto the case at filing time, see CLAUDE.md). The
+  // defendant only sees them after paying to "Dig Deeper" on this specific case
+  // (`game:digDeeperCase`) — a one-shot reveal, unlike the plaintiff's pre-filing route.
+  const knowsOdds = isDefendant ? caseData.defendantInvestigated : caseData.plaintiffFullyInvestigated;
   let displayProb = caseData.baseProbability;
   if (caseData.adjustedProbability !== undefined) {
     displayProb = caseData.adjustedProbability;
   }
   const sem = knowsOdds ? semaphoreLevel(displayProb) : null;
+  const canAffordDig = cash >= digDeeperCost;
+
+  const [digging, setDigging] = useState(false);
+  const [digError, setDigError] = useState<string | null>(null);
+
+  const handleDigDeeperOnCase = () => {
+    if (!socket || digging) return;
+    setDigging(true);
+    setDigError(null);
+
+    const cleanup = () => {
+      socket.off(ServerEvents.GAME_LEGAL_CASE_UPDATE, onResult);
+      socket.off(ServerEvents.ERROR, onError);
+    };
+    const onResult = (data: { case: LegalCaseData }) => {
+      if (data.case.id !== caseData.id) return;
+      cleanup();
+      setDigging(false);
+    };
+    const onError = (data: { code: string; message: string }) => {
+      if (data.code !== 'DIG_DEEPER_CASE_FAILED' && data.code !== 'INVALID_DIG_DEEPER_CASE_REQUEST') return;
+      cleanup();
+      setDigging(false);
+      setDigError('Something went wrong — please try again.');
+    };
+
+    socket.on(ServerEvents.GAME_LEGAL_CASE_UPDATE, onResult);
+    socket.on(ServerEvents.ERROR, onError);
+    socket.emit(ClientEvents.GAME_DIG_DEEPER_CASE, { caseId: caseData.id });
+  };
 
   return (
     <div style={gpStyles.caseCard}>
@@ -1594,7 +1688,14 @@ function CaseCard({ caseData, myPlayerId, playerNames, onRiskInfo, negotiationPe
           </Box>
         )}
         {!knowsOdds && (
-          <Box style={gpStyles.semaphoreChip('gray', false)} title="You don't know the odds on a case you filed — dig deeper to the end on the underlying attack before suing to reveal them.">
+          <Box
+            style={gpStyles.semaphoreChip('gray', false)}
+            title={
+              isDefendant
+                ? 'Dig deeper on this case to reveal the probability of success.'
+                : "You don't know the odds on a case you filed — dig deeper to the end on the underlying attack before suing to reveal them."
+            }
+          >
             <Box h={8} w={8} style={{ background: semColors.gray.bg, borderRadius: '50%' }} />
             <Text style={{ fontWeight: 900 }}>Unknown</Text>
           </Box>
@@ -1611,6 +1712,26 @@ function CaseCard({ caseData, myPlayerId, playerNames, onRiskInfo, negotiationPe
         <Text style={{ ...boldStyle, fontSize: '0.7rem', color: '#4b5563' }}>STAKES</Text>
         <Text style={{ ...boldStyle, fontSize: '0.85rem' }}>{fmt(caseData.stakes)}</Text>
       </Flex>
+
+      {/* Defendant-only: pay to reveal the probability of success on this case */}
+      {isDefendant && !knowsOdds && (
+        <Stack gap={4} mt="sm">
+          <Button
+            size="xs"
+            variant="outline"
+            color="gray"
+            fullWidth
+            loading={digging}
+            disabled={!canAffordDig}
+            onClick={handleDigDeeperOnCase}
+          >
+            🔍 Dig Deeper (${digDeeperCost.toLocaleString()}){!canAffordDig ? ' — not enough cash' : ''}
+          </Button>
+          {digError && (
+            <Text size="xs" c="red" style={{ fontStyle: 'italic' }}>{digError}</Text>
+          )}
+        </Stack>
+      )}
 
       {/* Status / Negotiation */}
       {caseData.status === 'awaiting_trial' ? (
@@ -2149,7 +2270,7 @@ function KpiHistoryGraph({ field, socket, targetPlayerId }: KpiHistoryGraphProps
         dataKey="round"
         series={[
           { name: 'actual', color: 'blue.6', label: 'Actual' },
-          { name: 'predicted', color: 'blue.6', strokeDasharray: '6 4', label: 'Predicted' },
+          { name: 'predicted', color: 'red.6', strokeDasharray: '6 4', label: 'Predicted' },
         ]}
         withLegend
         withDots
@@ -2694,10 +2815,7 @@ function RivalFullReportView({ rival, prevRival, decisions, onFieldClick }: Riva
         ))}
       </Stack>
       <Stack gap={0}>
-        <Flex justify="space-between" align="center" style={{ marginBottom: 8 }}>
-          <Text style={{ ...boldStyle, fontSize: '0.75rem', color: '#6b7280' }}>ANNUAL REPORT</Text>
-          {aiEntries && <Text size="xs" c="dimmed" style={{ fontStyle: 'italic' }}>✨ AI-generated</Text>}
-        </Flex>
+        <Text style={{ ...boldStyle, fontSize: '0.75rem', color: '#6b7280', marginBottom: 8 }}>ANNUAL REPORTS</Text>
         {annualReport.length === 0 ? (
           <Text size="xs" c="dimmed" style={{ fontStyle: 'italic' }}>No filings yet — {rival.playerName} hasn't deployed any strategies.</Text>
         ) : (

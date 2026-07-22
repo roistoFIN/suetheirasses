@@ -161,6 +161,7 @@ function makeCase(overrides: Partial<LegalCaseData> = {}): LegalCaseData {
     baseProbability: 0.12,
     adjustedProbability: undefined,
     plaintiffFullyInvestigated: false,
+    defendantInvestigated: false,
     stakes: 20000,
     status: 'negotiating',
     offers: [],
@@ -1625,6 +1626,51 @@ describe('GameLoop', () => {
       const outcome = gameLoop.goToCourt('player-3', 'case-1', players);
 
       expect(outcome).toEqual({ success: false, reason: 'not_a_party' });
+    });
+  });
+
+  describe('digDeeperOnCase', () => {
+    // Fixture: plaintiffId 'player-2', defendantId 'player-1' (see makeCase).
+    it('charges the defendant digDeeperCost and reveals the odds by flipping defendantInvestigated', () => {
+      const case_ = makeCase({ defendantInvestigated: false });
+      const outcome = gameLoop.digDeeperOnCase('player-1', 'case-1', playersWithCase(case_, { 'player-1': 100000, 'player-2': 50000 }));
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.case.defendantInvestigated).toBe(true);
+      expect(outcome.defendant.cash).toBe(90000);
+      expect(outcome.defendant.variables?.cash).toBe(90000);
+      // The plaintiff's own persisted copy carries the updated flag too, but their cash
+      // never moves — this is a defendant-only cost.
+      expect(outcome.plaintiff.cash).toBeUndefined();
+      expect(outcome.plaintiff.engineState.legalCases[0].defendantInvestigated).toBe(true);
+      expect(outcome.defendant.engineState.legalCases[0].defendantInvestigated).toBe(true);
+    });
+
+    it('rejects the plaintiff trying to dig deeper on their own filed case', () => {
+      const outcome = gameLoop.digDeeperOnCase('player-2', 'case-1', playersWithCase(makeCase()));
+
+      expect(outcome).toEqual({ success: false, reason: 'not_defendant' });
+    });
+
+    it('rejects a case already investigated', () => {
+      const case_ = makeCase({ defendantInvestigated: true });
+      const outcome = gameLoop.digDeeperOnCase('player-1', 'case-1', playersWithCase(case_));
+
+      expect(outcome).toEqual({ success: false, reason: 'already_investigated' });
+    });
+
+    it('rejects the defendant when they cannot afford digDeeperCost', () => {
+      const case_ = makeCase();
+      const outcome = gameLoop.digDeeperOnCase('player-1', 'case-1', playersWithCase(case_, { 'player-1': 5000 }));
+
+      expect(outcome).toEqual({ success: false, reason: 'insufficient_funds' });
+    });
+
+    it('rejects an unknown case id', () => {
+      const outcome = gameLoop.digDeeperOnCase('player-1', 'no-such-case', playersWithCase(makeCase()));
+
+      expect(outcome).toEqual({ success: false, reason: 'case_not_found' });
     });
   });
 

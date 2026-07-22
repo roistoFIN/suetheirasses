@@ -260,6 +260,12 @@ export interface LegalCaseData {
    * decision later matures out or its deployer goes bankrupt. Gates whether the plaintiff
    * (not just the defendant) sees `baseProbability`/`adjustedProbability` client-side. */
   plaintiffFullyInvestigated: boolean;
+  /** True once the defendant has paid to "Dig Deeper" and reveal the probability of
+   * success on this specific case — a single one-shot reveal (unlike the 3-tier incoming-
+   * attack investigation ladder), gated behind `game:digDeeperCase`. Starts `false` for
+   * every newly-filed case: the defendant no longer sees `baseProbability`/
+   * `adjustedProbability` for free, they must dig deeper on the case itself first. */
+  defendantInvestigated: boolean;
   stakes: number;
   status: 'negotiating' | 'awaiting_trial' | 'resolved';
   /** Settlement offer history — a single neutral list, identical for both parties (this

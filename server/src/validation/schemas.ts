@@ -304,6 +304,25 @@ export function validateGoToCourt(data: unknown): GoToCourtPayload {
   return goToCourtSchema.parse(data);
 }
 
+/** Zod schema for the `game:digDeeperCase` Socket.IO event payload — defendant pays to reveal the probability of success on this case. */
+export const digDeeperCaseSchema = z.object({
+  caseId: z.string().min(1).max(100),
+});
+
+/** Inferred TypeScript type for validated dig-deeper-case payloads. */
+export type DigDeeperCasePayload = z.infer<typeof digDeeperCaseSchema>;
+
+/**
+ * Validates and parses raw data against the dig-deeper-case schema.
+ *
+ * @param data - Raw payload from the `game:digDeeperCase` Socket.IO event.
+ * @returns Validated `DigDeeperCasePayload` object.
+ * @throws ZodValidationError if the payload fails any constraint.
+ */
+export function validateDigDeeperCase(data: unknown): DigDeeperCasePayload {
+  return digDeeperCaseSchema.parse(data);
+}
+
 // ============================================================
 // Admin Portal — decision library + game config (REST, not socket events).
 // Structural validation for the decision shape (mirrors submitDecisionsSchema's
