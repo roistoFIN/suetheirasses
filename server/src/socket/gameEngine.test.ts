@@ -1473,8 +1473,140 @@ describe('GameEngine', () => {
     });
   });
 
+  describe('makeOffer / acceptOffer / goToCourt', () => {
+    /** A negotiating case between two real room players — `player.findMany` overridden
+     * to carry `company.variables`/`engineState` (the default mock company fixture, per
+     * `createMockPrisma`, only has `cash`/`debt`/`assets`), since these are the fields
+     * GameLoop's pure makeOffer/acceptOffer/goToCourt methods actually read. */
+    async function makeTwoPartyCaseRoom() {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+      roomState.room.status = RoomStatus.GAME_PHASE;
+
+      const [aliceId, bobId] = Array.from(roomState.players.keys());
+      const case_ = {
+        id: 'case-1',
+        roomId: roomState.room.id,
+        plaintiffId: bobId,
+        defendantId: aliceId,
+        decisionName: 'Water Pumping',
+        groundName: 'Environmental Violation',
+        description: 'Sue for environmental damage',
+        baseProbability: 0.12,
+        stakes: 20000,
+        status: 'negotiating' as const,
+        offers: [] as Array<{ by: 'plaintiff' | 'defendant'; amount: number }>,
+        turnsNegotiating: 0,
+        createdAt: new Date(),
+      };
+
+      (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockImplementation(({ where }: any) =>
+        Promise.resolve(
+          where?.roomId === roomState.room.id
+            ? [
+                {
+                  id: aliceId,
+                  name: 'Alice',
+                  roomId: roomState.room.id,
+                  bankrupt: false,
+                  company: { variables: { cash: 100000 }, engineState: { legalCases: [case_] } },
+                },
+                {
+                  id: bobId,
+                  name: 'Bob',
+                  roomId: roomState.room.id,
+                  bankrupt: false,
+                  company: { variables: { cash: 50000 }, engineState: { legalCases: [case_] } },
+                },
+              ]
+            : [],
+        ),
+      );
+
+      return { roomState, aliceId, bobId };
+    }
+
+    it('makeOffer persists both parties\' Company rows and emits the update to both sockets', async () => {
+      const { roomState, aliceId } = await makeTwoPartyCaseRoom();
+
+      const outcome = await engine.makeOffer(roomState.room.id, aliceId, 'case-1', 10000);
+
+      expect(outcome.success).toBe(true);
+      expect(mockPrisma.company.update).toHaveBeenCalledTimes(2);
+      const emittedTo = (mockIo.to as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+      expect(emittedTo).toEqual(expect.arrayContaining(['socket-1', 'socket-2']));
+      const legalCaseUpdateCalls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (call: [string, ...unknown[]]) => call[0] === ServerEvents.GAME_LEGAL_CASE_UPDATE,
+      );
+      expect(legalCaseUpdateCalls).toHaveLength(2);
+      // An offer never moves cash — neither recipient gets a newCash figure.
+      for (const call of legalCaseUpdateCalls) {
+        expect((call[1] as any).newCash).toBeUndefined();
+        expect((call[1] as any).case.offers).toEqual([{ by: 'defendant', amount: 10000 }]);
+      }
+    });
+
+    it('acceptOffer settles the case and gives each recipient their OWN new cash figure, not the other party\'s', async () => {
+      const { roomState, aliceId, bobId } = await makeTwoPartyCaseRoom();
+      // Seed a pending offer directly, bypassing a real makeOffer call.
+      (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockImplementation(({ where }: any) =>
+        Promise.resolve(
+          where?.roomId === roomState.room.id
+            ? [
+                { id: aliceId, name: 'Alice', roomId: roomState.room.id, bankrupt: false, company: { variables: { cash: 100000 }, engineState: { legalCases: [{ id: 'case-1', roomId: roomState.room.id, plaintiffId: bobId, defendantId: aliceId, decisionName: 'Water Pumping', groundName: 'Environmental Violation', description: 'x', baseProbability: 0.12, stakes: 20000, status: 'negotiating', offers: [{ by: 'defendant', amount: 10000 }], turnsNegotiating: 0, createdAt: new Date() }] } } },
+                { id: bobId, name: 'Bob', roomId: roomState.room.id, bankrupt: false, company: { variables: { cash: 50000 }, engineState: { legalCases: [{ id: 'case-1', roomId: roomState.room.id, plaintiffId: bobId, defendantId: aliceId, decisionName: 'Water Pumping', groundName: 'Environmental Violation', description: 'x', baseProbability: 0.12, stakes: 20000, status: 'negotiating', offers: [{ by: 'defendant', amount: 10000 }], turnsNegotiating: 0, createdAt: new Date() }] } } },
+              ]
+            : [],
+        ),
+      );
+
+      const outcome = await engine.acceptOffer(roomState.room.id, bobId, 'case-1');
+
+      expect(outcome.success).toBe(true);
+      const legalCaseUpdateCalls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (call: [string, ...unknown[]]) => call[0] === ServerEvents.GAME_LEGAL_CASE_UPDATE,
+      );
+      expect(legalCaseUpdateCalls).toHaveLength(2);
+      const newCashValues = legalCaseUpdateCalls.map((call) => (call[1] as any).newCash).sort((a, b) => a - b);
+      // Alice (defendant, started at 100000) pays 10000 -> 90000; Bob (plaintiff, started
+      // at 50000) receives it -> 60000. Each socket gets only its own figure.
+      expect(newCashValues).toEqual([60000, 90000]);
+    });
+
+    it('goToCourt marks the case awaiting_trial and moves no cash', async () => {
+      const { roomState, aliceId } = await makeTwoPartyCaseRoom();
+
+      const outcome = await engine.goToCourt(roomState.room.id, aliceId, 'case-1');
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.case.status).toBe('awaiting_trial');
+      const legalCaseUpdateCalls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (call: [string, ...unknown[]]) => call[0] === ServerEvents.GAME_LEGAL_CASE_UPDATE,
+      );
+      for (const call of legalCaseUpdateCalls) {
+        expect((call[1] as any).newCash).toBeUndefined();
+      }
+    });
+
+    it('does not write to the DB or emit anything on a validation failure (e.g. not this player\'s turn)', async () => {
+      const { roomState, bobId } = await makeTwoPartyCaseRoom();
+
+      // Plaintiff (Bob) tries to make the opening offer — only the defendant may move first.
+      const outcome = await engine.makeOffer(roomState.room.id, bobId, 'case-1', 10000);
+
+      expect(outcome).toEqual({ success: false, reason: 'not_your_turn' });
+      expect(mockPrisma.company.update).not.toHaveBeenCalled();
+      const legalCaseUpdateCalls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (call: [string, ...unknown[]]) => call[0] === ServerEvents.GAME_LEGAL_CASE_UPDATE,
+      );
+      expect(legalCaseUpdateCalls).toHaveLength(0);
+    });
+  });
+
   describe('getKpiHistory', () => {
-    it('returns this player\'s persisted history (oldest round first) plus a 3-turn prediction', async () => {
+    it('returns this player\'s persisted history (oldest round first) plus a 3-turn prediction, tagged with their own playerId', async () => {
       const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
       const roomState = await engine.createRoom(host);
       const aliceId = Array.from(roomState.players.keys())[0];
@@ -1485,15 +1617,39 @@ describe('GameEngine', () => {
         { round: 1, variables: {}, derived: {}, riskGauge: 5 },
       ]);
 
-      const response = await engine.getKpiHistory(roomState.room.id, aliceId);
+      const response = await engine.getKpiHistory(roomState.room.id, aliceId, true);
 
       expect(response).not.toBeNull();
+      expect(response!.playerId).toBe(aliceId);
       expect(response!.history).toEqual([{ round: 1, variables: {}, derived: {}, riskGauge: 5 }]);
       expect(Array.isArray(response!.predicted)).toBe(true);
     });
 
+    it('returns only real history for a rival lookup — no prediction is ever run', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      const rivalId = 'rival-player-id';
+      roomState.room.status = RoomStatus.GAME_PHASE;
+      roomState.room.currentPhaseRound = 2;
+
+      (mockPrisma.kpiSnapshot!.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { round: 1, variables: {}, derived: {}, riskGauge: 3 },
+      ]);
+
+      const response = await engine.getKpiHistory(roomState.room.id, rivalId, false);
+
+      expect(response).not.toBeNull();
+      expect(response!.playerId).toBe(rivalId);
+      expect(response!.history).toEqual([{ round: 1, variables: {}, derived: {}, riskGauge: 3 }]);
+      expect(response!.predicted).toEqual([]);
+      expect(response!.bankruptAtRound).toBeUndefined();
+      expect(mockPrisma.kpiSnapshot!.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { playerId: rivalId, player: { roomId: roomState.room.id } } }),
+      );
+    });
+
     it('returns null for a room that does not exist', async () => {
-      const response = await engine.getKpiHistory('nonexistent-room', 'player-1');
+      const response = await engine.getKpiHistory('nonexistent-room', 'player-1', true);
 
       expect(response).toBeNull();
     });

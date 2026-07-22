@@ -9,15 +9,15 @@ import { useGameStore } from '../stores/gameStore';
 import { useSocketStore } from '../stores/socketStore';
 import {
   ServerEvents, ClientEvents,
-  type PlayerTurnResult, type LegalCaseData,
+  type PlayerTurnResult, type LegalCaseData, type PlayerVariables, type PlayerDerivedStats,
   type DecisionDefinition, type GameSettings, type SubmittedDecisions,
   type IncomingAttackInfo, type TurnResolutionResult,
-  type KpiHistoryResponse, type KpiSnapshotPoint,
+  type KpiHistoryResponse,
 } from '@suetheirasses/shared';
 import {
   IconClock, IconFileText,
-  IconTrendingUp, IconTrendingDown, IconSearch, IconGavel,
-  IconHelpCircle, IconLock, IconCheck, IconSwords, IconChevronDown,
+  IconTrendingUp, IconTrendingDown, IconMinus, IconSearch, IconGavel,
+  IconLock, IconCheck, IconSwords, IconChevronDown,
   IconShield, IconDoorExit,
 } from '@tabler/icons-react';
 
@@ -30,7 +30,7 @@ import {
 // decision. See getGroundsAgainst() near SueModal, which derives grounds live from a
 // target's real activeDecisions instead of a hardcoded list.
 
-/** Maps the 4 top KPI cards + Threat Level's `drillDown.type` to the KpiSnapshotPoint field their history/prediction graph should read — see KpiHistoryGraph. Rival drill-downs ('rival'/'rival-field') deliberately have no entry: this feature is "player's own KPIs" only. */
+/** Maps the 4 top KPI cards + Threat Level's `drillDown.type` to the KpiSnapshotPoint field their history/prediction graph should read — see KpiHistoryGraph. Rival drill-downs ('rival'/'rival-field') deliberately have no entry: rivals read `field`/`label` straight off `drillDown` instead (see RivalFieldView / RivalFullReportView), since a rival has no single "top" field the way each own-KPI type does. */
 const OWN_KPI_DRILLDOWN_FIELD: Record<string, { field: string; label: string }> = {
   cash: { field: 'variables.cash', label: 'CASH' },
   equity: { field: 'derived.equity', label: 'EQUITY' },
@@ -74,10 +74,30 @@ function computeTrend(current: number, previous: number | undefined, epsilon = 0
   return diff > 0 ? 'up' : 'down';
 }
 
+/** The up/down/no-change indicator for a `Trend` — shared by every KPI display (top
+ * cards, rival mini-stats, every breakdown row). `invert` flips which direction reads as
+ * "good" (e.g. Debt, costs, Outrage, Threat Level itself — up is bad for these). Renders
+ * nothing when `trend` is `undefined` (round 1, nothing to compare against yet) — the
+ * dash is reserved for a genuine "no change" reading, not "no data yet". */
+function TrendIcon({ trend, invert, size = 14 }: { trend?: Trend; invert?: boolean; size?: number }) {
+  if (!trend) return null;
+  if (trend === 'same') {
+    return <IconMinus size={size} style={{ color: '#9ca3af' }} title="No change since last turn" />;
+  }
+  const isGood = trend === 'up' ? !invert : invert;
+  const color = isGood ? '#16a34a' : '#dc2626';
+  return trend === 'up'
+    ? <IconTrendingUp size={size} style={{ color }} title="Up since last turn" />
+    : <IconTrendingDown size={size} style={{ color }} title="Down since last turn" />;
+}
+
 const semColors: Record<string, { bg: string; chipBg: string; chipBorder: string; textColor: string }> = {
   green: { bg: '#22c55e', chipBg: '#dcfce7', chipBorder: '#22c55e', textColor: '#15803d' },
   yellow: { bg: '#fbbf24', chipBg: '#fef3c7', chipBorder: '#f59e0b', textColor: '#b45309' },
   red: { bg: '#ef4444', chipBg: '#fee2e2', chipBorder: '#ef4444', textColor: '#b91c1c' },
+  /** A plaintiff never sees their own filed case's real probability — the semaphore
+   * chip's "unknown" state, styled the same as the real thing but gray and unclickable. */
+  gray: { bg: '#9ca3af', chipBg: '#f3f4f6', chipBorder: '#9ca3af', textColor: '#4b5563' },
 };
 
 /** Determine the viewing player's role in a case — 'role'/'opponent' are view
@@ -262,7 +282,7 @@ const gpStyles = {
     color: active ? '#fff' : 'var(--mantine-color-dark-6)',
   }),
 
-  semaphoreChip: (level: string): React.CSSProperties => {
+  semaphoreChip: (level: string, clickable = true): React.CSSProperties => {
     const colors = semColors[level];
     return {
       display: 'flex',
@@ -272,7 +292,7 @@ const gpStyles = {
       borderRadius: 9999,
       border: `2px solid ${colors.chipBorder}`,
       background: colors.chipBg,
-      cursor: 'pointer',
+      cursor: clickable ? 'pointer' : 'default',
       flexShrink: 0,
     };
   },
@@ -367,11 +387,13 @@ export default function GamePhase() {
   const [prevData, setPrevData] = useState<PlayerTurnResult | null>(null);
   const [prevCompetitors, setPrevCompetitors] = useState<Map<string, PlayerTurnResult>>(new Map());
   const [localTimer, setLocalTimer] = useState(timer);
-  const [drillDown, setDrillDown] = useState<{ type: string; data?: PlayerTurnResult; field?: string } | null>(null);
-  // A breakdown-view row (e.g. "Operating expenses" inside the Cash Waterfall) that has
-  // its own history/prediction graph — separate from `drillDown` since it stacks as its
-  // own modal on top of whichever breakdown modal is already open, rather than replacing it.
-  const [kpiSubFieldGraph, setKpiSubFieldGraph] = useState<{ field: string; label: string } | null>(null);
+  const [drillDown, setDrillDown] = useState<{ type: string; data?: PlayerTurnResult; field?: string; label?: string } | null>(null);
+  // A breakdown-view row (e.g. "Operating expenses" inside the Cash Waterfall, or any row
+  // inside a rival's Full Filing report) that has its own history graph — separate from
+  // `drillDown` since it stacks as its own modal on top of whichever breakdown modal is
+  // already open, rather than replacing it. `targetPlayerId` is always explicit — it's
+  // the viewer's own id for own-breakdown rows, a rival's id for rival ones.
+  const [kpiSubFieldGraph, setKpiSubFieldGraph] = useState<{ field: string; label: string; targetPlayerId: string } | null>(null);
   const [sueModalOpen, setSueModalOpen] = useState(false);
   // Set when a player jumps into the Sue flow via a fully-investigated attack's
   // "SUE NOW" shortcut — pre-fills SueModal's target + ground, still requires the
@@ -550,7 +572,7 @@ export default function GamePhase() {
       <Flex justify="space-between" align="center" wrap="wrap" gap="sm" style={gpStyles.header}>
         <Text style={gpStyles.title}>{myData.playerName}</Text>
         <Flex align="center" gap="sm">
-          <RiskGaugeBar value={riskGauge} onClick={() => setDrillDown({ type: 'threat' })} />
+          <RiskGaugeBar value={riskGauge} trend={computeTrend(riskGauge, prevData?.riskGauge)} onClick={() => setDrillDown({ type: 'threat', data: myData })} />
           <TurnBox
             round={round}
             seconds={localTimer}
@@ -585,10 +607,20 @@ export default function GamePhase() {
         {/* Left column */}
         <Stack gap="md" style={{ flex: 1, minWidth: 320 }}>
           <SectionCard title="Active Strategies">
-            {myData.activeDecisions.length === 0 ? (
+            {myData.activeDecisions.length === 0 && pending.strategic.length === 0 && pending.operational.length === 0 ? (
               <Text c="dimmed" size="sm">No active strategies</Text>
             ) : (
               <Stack gap="sm">
+                {(['strategic', 'operational'] as const).flatMap((bucket) =>
+                  pending[bucket].map((entry, i) => (
+                    <QueuedDecisionCard
+                      key={`${bucket}-${i}`}
+                      name={entry.name}
+                      targetName={entry.targetId ? (competitors.find((c) => c.playerId === entry.targetId)?.playerName ?? entry.targetId) : undefined}
+                      onCancel={() => submitPending({ ...pending, [bucket]: pending[bucket].filter((e) => e.name !== entry.name) })}
+                    />
+                  )),
+                )}
                 {myData.activeDecisions.map((d) => (
                   <ActiveDecisionCard key={d.id} decision={d} />
                 ))}
@@ -603,7 +635,7 @@ export default function GamePhase() {
 
         {/* Right column */}
         <Stack gap="md" style={{ flex: 1, minWidth: 320 }}>
-          <SectionCard title={`Open Lawsuits (${myLegalCases.filter((c) => c.status !== 'resolved').length})`}>
+          <SectionCard title={`Open Lawsuits (${myLegalCases.filter((c) => c.status !== 'resolved').length + pending.lawsuits.length})`}>
             <Stack gap="sm">
               <IncomingAttackHints
                 attacks={myData.incomingAttacks}
@@ -618,10 +650,18 @@ export default function GamePhase() {
               <Button variant="filled" color="red" onClick={() => setSueModalOpen(true)} style={{ ...boldStyle }}>
                 SUE THEIR ASSES (${(gameSettings?.lawsuitFilingCost ?? 0).toLocaleString()})
               </Button>
-              {myLegalCases.filter((c) => c.status !== 'resolved').length === 0 ? (
+              {myLegalCases.filter((c) => c.status !== 'resolved').length === 0 && pending.lawsuits.length === 0 ? (
                 <Text c="dimmed" size="sm">No open lawsuits</Text>
               ) : (
                 <Stack gap="sm">
+                  {pending.lawsuits.map((entry, i) => (
+                    <QueuedLawsuitCard
+                      key={`pending-lawsuit-${i}`}
+                      entry={entry}
+                      targetName={competitors.find((c) => c.playerId === entry.targetId)?.playerName ?? entry.targetId}
+                      onRemove={() => submitPending({ ...pending, lawsuits: pending.lawsuits.filter((_, j) => j !== i) })}
+                    />
+                  ))}
                   {myLegalCases
                     .filter((c) => c.status !== 'resolved')
                     .map((c) => (
@@ -631,10 +671,7 @@ export default function GamePhase() {
                         myPlayerId={myData.playerId}
                         playerNames={playerNames}
                         negotiationPeriodTurns={gameSettings?.negotiationPeriodTurns}
-                        onInspect={(rivalName) => {
-                          const rival = competitors.find((rp) => rp.playerName === rivalName);
-                          if (rival) setDrillDown({ type: 'rival', data: rival });
-                        }}
+                        socket={socket}
                         onRiskInfo={(caseItem) => setRiskInfoCase(caseItem)}
                       />
                     ))}
@@ -645,7 +682,7 @@ export default function GamePhase() {
 
           {competitors.length > 0 && (
             <SectionCard title="Competitor Intel">
-              <RivalList rivals={competitors} prevRivals={prevCompetitors} onFullReport={(r) => setDrillDown({ type: 'rival', data: r })} onFieldClick={(r, field) => setDrillDown({ type: 'rival-field', data: r, field })} />
+              <RivalList rivals={competitors} prevRivals={prevCompetitors} onFullReport={(r) => setDrillDown({ type: 'rival', data: r })} onFieldClick={(r, t) => setDrillDown({ type: 'rival-field', data: r, field: t.field, label: t.label })} />
             </SectionCard>
           )}
         </Stack>
@@ -653,26 +690,33 @@ export default function GamePhase() {
 
       {/* ── Modals ─────────────────────────────────────── */}
       <Modal opened={drillDown !== null} onClose={() => setDrillDown(null)} size="lg" centered overlayProps={{ opacity: 0.55, color: 'var(--mantine-color-dark-9)' }}>
-        {drillDown && OWN_KPI_DRILLDOWN_FIELD[drillDown.type] && (
+        {drillDown && OWN_KPI_DRILLDOWN_FIELD[drillDown.type] && drillDown.data && (
           <>
             <Text style={{ ...boldStyle, fontSize: '0.8rem', marginBottom: 8 }}>{OWN_KPI_DRILLDOWN_FIELD[drillDown.type].label} — HISTORY &amp; PREDICTION</Text>
-            <KpiHistoryGraph field={OWN_KPI_DRILLDOWN_FIELD[drillDown.type].field} label={OWN_KPI_DRILLDOWN_FIELD[drillDown.type].label} socket={socket} />
+            <KpiHistoryGraph field={OWN_KPI_DRILLDOWN_FIELD[drillDown.type].field} label={OWN_KPI_DRILLDOWN_FIELD[drillDown.type].label} socket={socket} targetPlayerId={drillDown.data.playerId} />
             <Divider my="md" />
           </>
         )}
-        {drillDown?.type === 'cash' && myData && <CashWaterfallView data={myData} onFieldClick={setKpiSubFieldGraph} />}
-        {drillDown?.type === 'revenue' && myData && <RevenueView data={myData} onFieldClick={setKpiSubFieldGraph} />}
-        {drillDown?.type === 'equity' && myData && <EquityView data={myData} onFieldClick={setKpiSubFieldGraph} />}
-        {drillDown?.type === 'shares' && myData && <ShareView data={myData} rivals={competitors} onFieldClick={setKpiSubFieldGraph} />}
-        {drillDown?.type === 'threat' && myData && <ThreatView data={myData} onFieldClick={setKpiSubFieldGraph} />}
-        {drillDown?.type === 'rival' && drillDown.data && <RivalFullReportView rival={drillDown.data} decisions={decisions} />}
+        {drillDown?.type === 'cash' && myData && <CashWaterfallView data={myData} prevData={prevData ?? undefined} onFieldClick={(t) => setKpiSubFieldGraph({ ...t, targetPlayerId: myData.playerId })} />}
+        {drillDown?.type === 'revenue' && myData && <RevenueView data={myData} prevData={prevData ?? undefined} onFieldClick={(t) => setKpiSubFieldGraph({ ...t, targetPlayerId: myData.playerId })} />}
+        {drillDown?.type === 'equity' && myData && <EquityView data={myData} prevData={prevData ?? undefined} onFieldClick={(t) => setKpiSubFieldGraph({ ...t, targetPlayerId: myData.playerId })} />}
+        {drillDown?.type === 'shares' && myData && <ShareView data={myData} rivals={competitors} prevData={prevData ?? undefined} prevRivals={prevCompetitors} onFieldClick={(t) => setKpiSubFieldGraph({ ...t, targetPlayerId: myData.playerId })} />}
+        {drillDown?.type === 'threat' && myData && <ThreatView data={myData} prevData={prevData ?? undefined} onFieldClick={(t) => setKpiSubFieldGraph({ ...t, targetPlayerId: myData.playerId })} />}
+        {drillDown?.type === 'rival' && drillDown.data && (
+          <RivalFullReportView
+            rival={drillDown.data}
+            prevRival={prevCompetitors.get(drillDown.data.playerId)}
+            decisions={decisions}
+            onFieldClick={(t) => setKpiSubFieldGraph(t)}
+          />
+        )}
         {drillDown?.type === 'rival-field' && drillDown.data && drillDown.field && (
-          <RivalFieldView rival={drillDown.data} field={drillDown.field} />
+          <RivalFieldView rival={drillDown.data} field={drillDown.field} label={drillDown.label ?? drillDown.field} socket={socket} />
         )}
       </Modal>
 
-      <Modal opened={kpiSubFieldGraph !== null} onClose={() => setKpiSubFieldGraph(null)} size="md" centered title={<Text style={{ ...boldStyle, fontSize: '0.85rem' }}>{kpiSubFieldGraph?.label} — HISTORY &amp; PREDICTION</Text>}>
-        {kpiSubFieldGraph && <KpiHistoryGraph field={kpiSubFieldGraph.field} label={kpiSubFieldGraph.label} socket={socket} />}
+      <Modal opened={kpiSubFieldGraph !== null} onClose={() => setKpiSubFieldGraph(null)} size="md" centered title={<Text style={{ ...boldStyle, fontSize: '0.85rem' }}>{kpiSubFieldGraph?.label} — HISTORY{myData && kpiSubFieldGraph?.targetPlayerId === myData.playerId ? ' & PREDICTION' : ''}</Text>}>
+        {kpiSubFieldGraph && <KpiHistoryGraph field={kpiSubFieldGraph.field} label={kpiSubFieldGraph.label} socket={socket} targetPlayerId={kpiSubFieldGraph.targetPlayerId} />}
       </Modal>
 
       <Modal opened={sueModalOpen} onClose={() => { setSueModalOpen(false); setSueSuggestion(null); }} size="lg" centered title={<Text style={{ ...boldStyle, fontSize: '0.9rem' }}>📋 SUE THEIR ASSES</Text>}>
@@ -818,8 +862,7 @@ function KpiCard({ label, value, trend, negative, onClick }: KpiCardProps) {
       <Text style={gpStyles.kpiLabel}>{label}</Text>
       <Flex align="center" gap="xs">
         <Text style={{ ...boldStyle, fontSize: '1.25rem', color }}>{value}</Text>
-        {trend === 'up' && <IconTrendingUp size={16} style={{ color: '#16a34a' }} title="Up since last turn" />}
-        {trend === 'down' && <IconTrendingDown size={16} style={{ color: '#dc2626' }} title="Down since last turn" />}
+        <TrendIcon trend={trend} size={16} />
       </Flex>
     </Box>
   );
@@ -831,10 +874,12 @@ function KpiCard({ label, value, trend, negative, onClick }: KpiCardProps) {
 
 interface RiskGaugeBarProps {
   value: number;
+  /** Since-last-turn trend — undefined on round 1, when there's nothing to compare against. */
+  trend?: Trend;
   onClick: () => void;
 }
 
-function RiskGaugeBar({ value, onClick }: RiskGaugeBarProps) {
+function RiskGaugeBar({ value, trend, onClick }: RiskGaugeBarProps) {
   const pctVal = Math.max(0, Math.min(100, value));
   const critical = pctVal >= 70;
   const color = pctVal < 35 ? '#22c55e' : pctVal < 70 ? '#fbbf24' : '#ef4444';
@@ -851,6 +896,7 @@ function RiskGaugeBar({ value, onClick }: RiskGaugeBarProps) {
             <Box h="100%" style={{ background: color, width: `${pctVal}%`, transition: 'width 0.5s ease' }} />
           </Box>
         </Stack>
+        <TrendIcon trend={trend} invert size={16} />
       </Flex>
     </Box>
   );
@@ -949,6 +995,36 @@ function ActiveDecisionCard({ decision }: ActiveDecisionCardProps) {
           <Box h="100%" style={{ width: `${progress}%`, background: '#fbbf24', borderRadius: 3, transition: 'width 0.3s ease' }} />
         </Box>
       )}
+    </div>
+  );
+}
+
+interface QueuedDecisionCardProps {
+  name: string;
+  /** Set when this decision targets a chosen opponent (e.g. Bot Attack) — resolved to a player name where possible. */
+  targetName?: string;
+  onCancel: () => void;
+}
+
+/** A decision the player has selected this turn but that hasn't been submitted/resolved
+ * yet — shown alongside `ActiveDecisionCard` in the "Active Strategies" list so a queued
+ * pick doesn't only appear inside the Decision Deck panel. Deliberately a separate,
+ * lighter component rather than reusing `ActiveDecisionCard`: a pending
+ * `SubmittedDecisionEntry` (`{ name, targetId? }`) has no `id`/maturity/deployedYear yet
+ * — those only exist once the decision has actually been deployed by a turn resolving. */
+function QueuedDecisionCard({ name, targetName, onCancel }: QueuedDecisionCardProps) {
+  return (
+    <div style={gpStyles.activeDecisionCard}>
+      <Flex justify="space-between" align="center">
+        <Stack gap={0}>
+          <Text style={{ ...boldStyle, fontSize: '0.9rem' }}>{name}</Text>
+          {targetName && <Text size="xs" c="dimmed">→ {targetName}</Text>}
+        </Stack>
+        <Flex align="center" gap={8}>
+          <Badge style={gpStyles.stamp('red')}>QUEUED</Badge>
+          <Text size="xs" c="red" style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={onCancel}>Cancel</Text>
+        </Flex>
+      </Flex>
     </div>
   );
 }
@@ -1250,13 +1326,13 @@ interface CaseCardProps {
   caseData: LegalCaseData;
   myPlayerId: string;
   playerNames: Map<string, string>;
-  onInspect: (rivalName: string) => void;
   onRiskInfo: (caseItem: LegalCaseData) => void;
   /** For the "auto-resolves in N turns" countdown — undefined game:deck hasn't arrived yet. */
   negotiationPeriodTurns?: number;
+  socket: Socket | null;
 }
 
-function CaseCard({ caseData, myPlayerId, playerNames, onInspect, onRiskInfo, negotiationPeriodTurns }: CaseCardProps) {
+function CaseCard({ caseData, myPlayerId, playerNames, onRiskInfo, negotiationPeriodTurns, socket }: CaseCardProps) {
   const isDefendant = getCaseRole(caseData, myPlayerId) === 'defendant';
   const opponentName = getOpponentName(caseData, myPlayerId, playerNames);
 
@@ -1283,9 +1359,10 @@ function CaseCard({ caseData, myPlayerId, playerNames, onInspect, onRiskInfo, ne
           </Box>
         )}
         {!isDefendant && (
-          <Button variant="outline" size="xs" leftSection={<IconHelpCircle size={12} />} onClick={() => onInspect(opponentName)}>
-            Investigate
-          </Button>
+          <Box style={gpStyles.semaphoreChip('gray', false)} title="You don't know the odds on a case you filed — only the defendant sees a probability.">
+            <Box h={8} w={8} style={{ background: semColors.gray.bg, borderRadius: '50%' }} />
+            <Text style={{ fontWeight: 900 }}>Unknown</Text>
+          </Box>
         )}
       </Flex>
 
@@ -1309,51 +1386,189 @@ function CaseCard({ caseData, myPlayerId, playerNames, onInspect, onRiskInfo, ne
         <Stack gap="sm" mt="sm">
           {negotiationPeriodTurns !== undefined && (
             <Text size="xs" c="dimmed" style={{ fontStyle: 'italic' }}>
-              ⏳ Goes to trial automatically in {Math.max(0, negotiationPeriodTurns - caseData.turnsNegotiating)} more turn(s) if not settled
+              {caseData.offers.length > 0
+                ? '⚠️ A pending offer left unanswered when the turn ends is treated as accepted'
+                : `⏳ Goes to trial automatically in ${Math.max(0, negotiationPeriodTurns - caseData.turnsNegotiating)} more turn(s) if nobody makes an offer`}
             </Text>
           )}
-          {/* Offer history */}
-          {caseData.offers.length > 0 && (
-            <Flex wrap="wrap" gap={4}>
-              {caseData.offers.map((o, i) => (
-                <Badge key={i} variant="light">{o.by === 'me' ? 'You' : 'Them'}: {fmt(o.amount)}</Badge>
-              ))}
-            </Flex>
-          )}
-          {/* Counter offer slider */}
-          <div style={gpStyles.sliderContainer}>
-            <Text style={{ ...boldStyle, fontSize: '0.7rem', color: '#6b7280', marginBottom: 8 }}>YOUR COUNTER</Text>
-            <CounterOfferSlider caseData={caseData} />
-          </div>
-          {/* Accept / Court buttons */}
-          <Flex gap="sm">
-            <Button flex={1} size="xs" color="green" leftSection={<IconCheck size={13} />} disabled={!caseData.offers.some((o) => o.by === 'them')}>
-              ACCEPT {fmt(caseData.offers.filter((o) => o.by === 'them').at(-1)?.amount ?? 0)}
-            </Button>
-            <Button flex={1} size="xs" color="red" leftSection={<IconSwords size={13} />} variant="filled">
-              COURT
-            </Button>
-          </Flex>
+          <NegotiationPanel caseData={caseData} myPlayerId={myPlayerId} socket={socket} />
         </Stack>
       )}
     </div>
   );
 }
 
-interface CounterOfferSliderProps {
+/** Every value `CASE_ACTION_EVENT`/`CASE_ACTION_ERROR_CODE` are keyed by — the three
+ * instant, out-of-band negotiation actions a case's `NegotiationPanel` can send. */
+type CaseActionKind = 'offer' | 'accept' | 'court';
+
+const CASE_ACTION_EVENT: Record<CaseActionKind, ClientEvents> = {
+  offer: ClientEvents.GAME_MAKE_OFFER,
+  accept: ClientEvents.GAME_ACCEPT_OFFER,
+  court: ClientEvents.GAME_GO_TO_COURT,
+};
+
+const CASE_ACTION_ERROR_CODE: Record<CaseActionKind, string> = {
+  offer: 'MAKE_OFFER_FAILED',
+  accept: 'ACCEPT_OFFER_FAILED',
+  court: 'GO_TO_COURT_FAILED',
+};
+
+/** Friendly copy for a failed `game:makeOffer`/`game:acceptOffer`/`game:goToCourt` — keyed by `LegalCaseActionOutcome`'s `reason`. */
+const CASE_ACTION_ERROR_COPY: Record<string, string> = {
+  case_not_found: 'This case could not be found.',
+  not_negotiating: 'This case is no longer being negotiated.',
+  not_a_party: "You're not a party to this case.",
+  not_your_turn: "It's not your turn to act on this case yet.",
+  no_offer_to_accept: "There's no offer to accept yet.",
+  invalid_amount: 'Enter an amount between $1 and the full stakes.',
+};
+
+interface NegotiationPanelProps {
   caseData: LegalCaseData;
+  myPlayerId: string;
+  socket: Socket | null;
 }
 
-function CounterOfferSlider({ caseData }: CounterOfferSliderProps) {
-  const [slider, setSlider] = useState(caseData.myOffer ?? Math.round(caseData.stakes * 0.5));
-  const lastTheirOffer = [...caseData.offers].reverse().find((o) => o.by === 'them')?.amount ?? Math.round(caseData.stakes * 0.1);
-  const maxOffer = caseData.offers.length === 0 ? caseData.stakes : Math.max(...caseData.offers.map((o) => o.amount));
+/** The interactive half of an open, still-`'negotiating'` case — offer history, a
+ * counter-offer slider, and Offer/Counter/Accept/Court buttons, all wired to the instant,
+ * out-of-band `game:makeOffer`/`game:acceptOffer`/`game:goToCourt` actions (same "fire
+ * over the socket, don't wait for the turn timer" pattern as Dig Deeper and the lawsuit
+ * filing fee). Every action's success arrives via the global `game:legalCaseUpdate`
+ * listener (`socketStore.ts`), which patches `turnResults` — this component only listens
+ * locally to know when ITS OWN in-flight request has landed, filtered by matching
+ * `case.id`, purely to clear its own loading state; the actual UI update comes for free
+ * from the re-render off the patched `caseData` prop. */
+function NegotiationPanel({ caseData, myPlayerId, socket }: NegotiationPanelProps) {
+  const role: 'plaintiff' | 'defendant' = caseData.plaintiffId === myPlayerId ? 'plaintiff' : 'defendant';
+  const lastOffer = caseData.offers.length > 0 ? caseData.offers[caseData.offers.length - 1] : null;
+  // The defendant always moves first; after that, whichever role did NOT make the most
+  // recent offer is the one currently allowed to counter or accept. Going to court is
+  // never turn-gated — either party can end negotiation at any time.
+  const isMyTurnToRespond = lastOffer === null ? role === 'defendant' : lastOffer.by !== role;
+
+  const [amount, setAmount] = useState(lastOffer?.amount ?? Math.round(caseData.stakes * 0.5));
+  const [submitting, setSubmitting] = useState<CaseActionKind | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  // Re-seed the slider whenever a new offer actually lands (not on every render) — a
+  // counter starts from exactly what's currently on the table.
+  useEffect(() => {
+    setAmount(lastOffer?.amount ?? Math.round(caseData.stakes * 0.5));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [caseData.offers.length]);
+
+  const sendAction = (kind: CaseActionKind, payload: Record<string, unknown>) => {
+    if (!socket || submitting) return;
+    setSubmitting(kind);
+    setActionError(null);
+
+    const cleanup = () => {
+      socket.off(ServerEvents.GAME_LEGAL_CASE_UPDATE, onResult);
+      socket.off(ServerEvents.ERROR, onError);
+    };
+    const onResult = (data: { case: LegalCaseData }) => {
+      if (data.case.id !== caseData.id) return;
+      cleanup();
+      setSubmitting(null);
+    };
+    const onError = (data: { code: string; message: string }) => {
+      if (data.code !== CASE_ACTION_ERROR_CODE[kind]) return;
+      cleanup();
+      setSubmitting(null);
+      setActionError(CASE_ACTION_ERROR_COPY[data.message] ?? 'Something went wrong — please try again.');
+    };
+
+    socket.on(ServerEvents.GAME_LEGAL_CASE_UPDATE, onResult);
+    socket.on(ServerEvents.ERROR, onError);
+    socket.emit(CASE_ACTION_EVENT[kind], { caseId: caseData.id, ...payload });
+  };
 
   return (
-    <Flex align="center" gap="sm">
-      <Slider flex={1} min={lastTheirOffer} max={maxOffer} step={500} value={slider} onChange={setSlider} color="#dc2626" />
-      <Text style={{ ...boldStyle, fontSize: '0.8rem', minWidth: 70, textAlign: 'right' }}>{fmt(slider)}</Text>
-    </Flex>
+    <Stack gap="sm">
+      {caseData.offers.length > 0 && (
+        <Flex wrap="wrap" gap={4}>
+          {caseData.offers.map((o, i) => (
+            <Badge key={i} variant="light">{o.by === role ? 'You' : 'Them'}: {fmt(o.amount)}</Badge>
+          ))}
+        </Flex>
+      )}
+
+      {isMyTurnToRespond ? (
+        <>
+          <div style={gpStyles.sliderContainer}>
+            <Text style={{ ...boldStyle, fontSize: '0.7rem', color: '#6b7280', marginBottom: 8 }}>
+              {lastOffer ? 'YOUR COUNTER' : 'YOUR OPENING OFFER'}
+            </Text>
+            <Flex align="center" gap="sm">
+              <Slider flex={1} min={Math.min(500, caseData.stakes)} max={caseData.stakes} step={500} value={amount} onChange={setAmount} color="#dc2626" disabled={submitting !== null} />
+              <Text style={{ ...boldStyle, fontSize: '0.8rem', minWidth: 70, textAlign: 'right' }}>{fmt(amount)}</Text>
+            </Flex>
+          </div>
+          <Flex gap="sm">
+            {lastOffer && (
+              <Button flex={1} size="xs" color="green" leftSection={<IconCheck size={13} />} loading={submitting === 'accept'} disabled={submitting !== null && submitting !== 'accept'} onClick={() => sendAction('accept', {})}>
+                ACCEPT {fmt(lastOffer.amount)}
+              </Button>
+            )}
+            <Button flex={1} size="xs" color="orange" variant="outline" loading={submitting === 'offer'} disabled={submitting !== null && submitting !== 'offer'} onClick={() => sendAction('offer', { amount })}>
+              {lastOffer ? 'COUNTER' : 'MAKE OFFER'}
+            </Button>
+            <Button flex={1} size="xs" color="red" leftSection={<IconSwords size={13} />} variant="filled" loading={submitting === 'court'} disabled={submitting !== null && submitting !== 'court'} onClick={() => sendAction('court', {})}>
+              COURT
+            </Button>
+          </Flex>
+        </>
+      ) : (
+        <Flex align="center" justify="space-between" gap="sm">
+          <Text size="xs" c="dimmed" style={{ fontStyle: 'italic' }}>
+            Waiting for the other side to respond{lastOffer ? ` to your ${fmt(lastOffer.amount)} offer` : ''}…
+          </Text>
+          <Button size="xs" color="red" leftSection={<IconSwords size={13} />} variant="outline" loading={submitting === 'court'} disabled={submitting !== null} onClick={() => sendAction('court', {})}>
+            COURT
+          </Button>
+        </Flex>
+      )}
+
+      {actionError && (
+        <Text size="xs" c="red" style={{ fontStyle: 'italic' }}>{actionError}</Text>
+      )}
+    </Stack>
+  );
+}
+
+interface QueuedLawsuitCardProps {
+  entry: SubmittedDecisions['lawsuits'][number];
+  targetName: string;
+  onRemove: () => void;
+}
+
+/** A lawsuit the player has filed (fee already charged instantly, per `game:fileLawsuit`)
+ * but whose case hasn't actually been created yet — that only happens once this turn
+ * resolves (`LegalEngine.fileLawsuit`, Step 8). Shown alongside `CaseCard` in the "Open
+ * Lawsuits" list so a queued filing doesn't only appear inside the Sue modal's own list.
+ * Lighter than `CaseCard`: a queued `SubmittedLawsuitEntry` has no `id`/`stakes`/`status`/
+ * `offers` yet — there's no real `LegalCaseData` to show until the case actually exists. */
+function QueuedLawsuitCard({ entry, targetName, onRemove }: QueuedLawsuitCardProps) {
+  return (
+    <div style={gpStyles.caseCard}>
+      <Flex justify="space-between" align="flex-start" gap="sm">
+        <Stack gap={4}>
+          <Badge style={gpStyles.stamp('red')}>QUEUED</Badge>
+          <Text style={{ ...boldStyle, fontSize: '0.95rem' }}>{targetName}</Text>
+          <Text size="xs" c="dimmed">{entry.decisionName} — {entry.groundName}</Text>
+        </Stack>
+      </Flex>
+      <Text
+        size="xs"
+        c="red"
+        style={{ cursor: 'pointer', textDecoration: 'underline', marginTop: 8 }}
+        title="The filing fee already charged is not refunded"
+        onClick={onRemove}
+      >
+        Remove
+      </Text>
+    </div>
   );
 }
 
@@ -1447,7 +1662,7 @@ interface RivalListProps {
   rivals: PlayerTurnResult[];
   prevRivals: Map<string, PlayerTurnResult>;
   onFullReport: (rival: PlayerTurnResult) => void;
-  onFieldClick: (rival: PlayerTurnResult, field: string) => void;
+  onFieldClick: (rival: PlayerTurnResult, target: { field: string; label: string }) => void;
 }
 
 function RivalList({ rivals, prevRivals, onFullReport, onFieldClick }: RivalListProps) {
@@ -1469,7 +1684,7 @@ interface RivalDossierProps {
   expanded: boolean;
   onToggle: () => void;
   onFullReport: (rival: PlayerTurnResult) => void;
-  onFieldClick: (rival: PlayerTurnResult, field: string) => void;
+  onFieldClick: (rival: PlayerTurnResult, target: { field: string; label: string }) => void;
 }
 
 function RivalDossier({ rival, prevRival, expanded, onToggle, onFullReport, onFieldClick }: RivalDossierProps) {
@@ -1484,11 +1699,11 @@ function RivalDossier({ rival, prevRival, expanded, onToggle, onFullReport, onFi
       {expanded && (
         <Stack gap="sm" mt="xs">
           <Flex wrap="wrap" gap="xs">
-            <MiniStatButton label="CASH" value={fmt(v.cash)} trend={computeTrend(v.cash, prevRival?.variables.cash)} onClick={() => onFieldClick(rival, 'cash')} />
-            <MiniStatButton label="REVENUE" value={fmt(d.revenue)} trend={computeTrend(d.revenue, prevRival?.derived.revenue)} onClick={() => onFieldClick(rival, 'revenue')} />
-            <MiniStatButton label="EQUITY" value={fmt(d.equity)} trend={computeTrend(d.equity, prevRival?.derived.equity)} onClick={() => onFieldClick(rival, 'equity')} />
-            <MiniStatButton label="STOCK VALUE" value={fmt(d.stockValue)} trend={computeTrend(d.stockValue, prevRival?.derived.stockValue)} onClick={() => onFieldClick(rival, 'stockValue')} />
-            <MiniStatButton label="DEBT" value={fmt(v.debt)} trend={computeTrend(v.debt, prevRival?.variables.debt)} invert onClick={() => onFieldClick(rival, 'debt')} />
+            <MiniStatButton label="CASH" value={fmt(v.cash)} trend={computeTrend(v.cash, prevRival?.variables.cash)} onClick={() => onFieldClick(rival, { field: 'variables.cash', label: 'CASH' })} />
+            <MiniStatButton label="REVENUE" value={fmt(d.revenue)} trend={computeTrend(d.revenue, prevRival?.derived.revenue)} onClick={() => onFieldClick(rival, { field: 'derived.revenue', label: 'REVENUE' })} />
+            <MiniStatButton label="EQUITY" value={fmt(d.equity)} trend={computeTrend(d.equity, prevRival?.derived.equity)} onClick={() => onFieldClick(rival, { field: 'derived.equity', label: 'EQUITY' })} />
+            <MiniStatButton label="STOCK VALUE" value={fmt(d.stockValue)} trend={computeTrend(d.stockValue, prevRival?.derived.stockValue)} onClick={() => onFieldClick(rival, { field: 'derived.stockValue', label: 'STOCK VALUE' })} />
+            <MiniStatButton label="DEBT" value={fmt(v.debt)} trend={computeTrend(v.debt, prevRival?.variables.debt)} invert onClick={() => onFieldClick(rival, { field: 'variables.debt', label: 'DEBT' })} />
           </Flex>
           <Button fullWidth size="xs" variant="outline" leftSection={<IconFileText size={12} />} onClick={() => onFullReport(rival)}>
             FULL FILING
@@ -1510,16 +1725,12 @@ interface MiniStatButtonProps {
 }
 
 function MiniStatButton({ label, value, trend, invert, onClick }: MiniStatButtonProps) {
-  const isGood = trend === 'up' ? !invert : trend === 'down' ? invert : undefined;
-  const arrowColor = isGood === undefined ? undefined : isGood ? '#16a34a' : '#dc2626';
-
   return (
     <Box style={gpStyles.rivalMiniStat} onClick={onClick}>
       <Text style={{ fontSize: '0.65rem', color: '#6b7280' }}>{label}</Text>
       <Flex align="center" gap={4}>
         <Text style={{ ...boldStyle, fontSize: '0.75rem' }}>{value}</Text>
-        {trend === 'up' && <IconTrendingUp size={12} style={{ color: arrowColor }} title="Up since last turn" />}
-        {trend === 'down' && <IconTrendingDown size={12} style={{ color: arrowColor }} title="Down since last turn" />}
+        <TrendIcon trend={trend} invert={invert} size={12} />
       </Flex>
     </Box>
   );
@@ -1538,19 +1749,22 @@ function MiniStatButton({ label, value, trend, invert, onClick }: MiniStatButton
 // market equity, net demand) are deliberately NOT clickable — there's no single tracked
 // field for them in KpiSnapshot/the prediction output to graph.
 
-/** Reads a dot-path field ('variables.cash', 'derived.equity', or the bare 'riskGauge') out of one KpiSnapshotPoint. */
-function getKpiFieldValue(point: KpiSnapshotPoint, field: string): number {
+/** Reads a dot-path field ('variables.cash', 'derived.equity', or the bare 'riskGauge') out of one KpiSnapshotPoint — or any other object with the same variables/derived/riskGauge shape, e.g. a `PlayerTurnResult`, which is how breakdown-row trend arrows read a previous turn's value without a second lookup helper. */
+function getKpiFieldValue(point: { variables: PlayerVariables; derived: PlayerDerivedStats; riskGauge: number }, field: string): number {
   if (field === 'riskGauge') return point.riskGauge;
   const [bucket, key] = field.split('.') as ['variables' | 'derived', string];
   return (point[bucket] as any)?.[key] ?? 0;
 }
 
 /** A breakdown-view row for a field that has history/prediction data behind it — click opens the KPI graph modal for that field. */
-function ClickableStatRow({ label, value, colorType, onClick }: { label: string; value: React.ReactNode; colorType?: 'plus' | 'minus'; onClick: () => void }) {
+function ClickableStatRow({ label, value, colorType, trend, invert, onClick, title = 'Click for history + prediction' }: { label: string; value: React.ReactNode; colorType?: 'plus' | 'minus'; trend?: Trend; invert?: boolean; onClick: () => void; title?: string }) {
   return (
-    <Flex justify="space-between" align="center" style={{ ...gpStyles.statRow(colorType), cursor: 'pointer' }} onClick={onClick} title="Click for history + prediction">
+    <Flex justify="space-between" align="center" style={{ ...gpStyles.statRow(colorType), cursor: 'pointer' }} onClick={onClick} title={title}>
       <Text size="sm" style={{ textDecoration: 'underline', textDecorationStyle: 'dotted', textUnderlineOffset: 3 }}>{label}</Text>
-      <Text style={{ ...boldStyle, fontSize: '0.85rem' }}>{value}</Text>
+      <Flex align="center" gap={4}>
+        <Text style={{ ...boldStyle, fontSize: '0.85rem' }}>{value}</Text>
+        <TrendIcon trend={trend} invert={invert} size={13} />
+      </Flex>
     </Flex>
   );
 }
@@ -1559,12 +1773,19 @@ interface KpiHistoryGraphProps {
   field: string;
   label: string;
   socket: Socket | null;
+  /** Whose history to fetch — the viewer's own player id gets history + a 3-turn
+   * prediction; any other (rival) id in the room gets history only, no prediction. */
+  targetPlayerId: string;
 }
 
 /** Fetches fresh on every open (via game:getKpiHistory) rather than caching — the server
  * recomputes the 3-turn prediction from the current live state each time anyway, so a
- * cached response would go stale the moment another turn resolves. */
-function KpiHistoryGraph({ field, socket }: KpiHistoryGraphProps) {
+ * cached response would go stale the moment another turn resolves. Two of these can be
+ * mounted at once (a top-level graph plus a stacked sub-field one), possibly for two
+ * different players — `payload.playerId` is checked against `targetPlayerId` before
+ * applying a response, so a stale reply for a since-closed graph can never flash the
+ * wrong player's data into this one. */
+function KpiHistoryGraph({ field, socket, targetPlayerId }: KpiHistoryGraphProps) {
   const [data, setData] = useState<KpiHistoryResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -1573,16 +1794,17 @@ function KpiHistoryGraph({ field, socket }: KpiHistoryGraphProps) {
     setData(null);
     setLoading(true);
     const handler = (payload: KpiHistoryResponse) => {
+      if (payload.playerId !== targetPlayerId) return;
       setData(payload);
       setLoading(false);
     };
     socket.on(ServerEvents.GAME_KPI_HISTORY_RESULT, handler);
-    socket.emit(ClientEvents.GAME_GET_KPI_HISTORY);
+    socket.emit(ClientEvents.GAME_GET_KPI_HISTORY, { targetPlayerId });
     return () => {
       socket.off(ServerEvents.GAME_KPI_HISTORY_RESULT, handler);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [socket, field]);
+  }, [socket, field, targetPlayerId]);
 
   if (loading || !data) {
     return (
@@ -1653,13 +1875,18 @@ function KpiHistoryGraph({ field, socket }: KpiHistoryGraphProps) {
 
 interface CashWaterfallViewProps {
   data: PlayerTurnResult;
+  /** Previous turn's snapshot, for the trend arrow on every row — undefined on round 1. */
+  prevData?: PlayerTurnResult;
   onFieldClick: (target: { field: string; label: string }) => void;
 }
 
-function CashWaterfallView({ data, onFieldClick }: CashWaterfallViewProps) {
+/** The waterfall's computed-only intermediates (COGS, gross profit, EBITDA, EBIT, profit
+ * before tax, net profit) have no single tracked field in KpiSnapshot, so their trend
+ * arrows are derived by recomputing the same FORMULAS §4-§5 math against the previous
+ * turn's snapshot rather than reading a persisted field — shared by CashWaterfallView's
+ * current- and previous-turn calls. */
+function computeCashWaterfall(data: PlayerTurnResult) {
   const { variables: v, derived: d } = data;
-
-  // FORMULAS §4-§5: Build waterfall showing how cash changed this turn
   const cogs = (v.materialCostPerTon + v.logisticsCostPerTon) * (d.volume || 0);
   const grossProfit = d.revenue - cogs;
   const ebitda = grossProfit - v.operatingExpenses - v.staffCost + v.otherIncome;
@@ -1668,28 +1895,36 @@ function CashWaterfallView({ data, onFieldClick }: CashWaterfallViewProps) {
   const profitBeforeTax = ebit - financeCost;
   const taxCost = d.taxCost || 0;
   const netProfit = profitBeforeTax - taxCost;
+  return { cogs, grossProfit, ebitda, ebit, financeCost, profitBeforeTax, taxCost, netProfit };
+}
+
+function CashWaterfallView({ data, prevData, onFieldClick }: CashWaterfallViewProps) {
+  const { variables: v, derived: d } = data;
+  const cur = computeCashWaterfall(data);
+  const prev = prevData ? computeCashWaterfall(prevData) : undefined;
   // Starting cash = current cash - netProfit - depreciation (reverse of FORMULAS §5)
-  const startingCash = v.cash - netProfit - d.depreciation;
+  const startingCash = v.cash - cur.netProfit - d.depreciation;
 
   // `field` is the KpiSnapshotPoint dot-path a row's history/prediction graph should
   // read — omitted for rows that are only computed here (COGS, gross profit, EBITDA,
   // EBIT, profit before tax, net profit), since there's no single tracked field for
-  // those in KpiSnapshot/the prediction output.
-  const rows: { label: string; value: number; type: 'plus' | 'minus' | undefined; field?: string }[] = [
-    { label: 'Revenue', value: d.revenue, type: 'plus', field: 'derived.revenue' },
-    { label: 'COGS (material + logistics × volume)', value: -cogs, type: 'minus' },
-    { label: 'Gross profit', value: grossProfit, type: undefined },
-    { label: 'Operating expenses', value: -v.operatingExpenses, type: 'minus', field: 'variables.operatingExpenses' },
-    { label: 'Staff costs', value: -v.staffCost, type: 'minus', field: 'variables.staffCost' },
-    { label: 'Other income', value: v.otherIncome, type: 'plus', field: 'variables.otherIncome' },
-    { label: 'EBITDA', value: ebitda, type: undefined },
-    { label: 'Depreciation', value: -d.depreciation, type: 'minus', field: 'derived.depreciation' },
-    { label: 'EBIT', value: ebit, type: undefined },
-    { label: 'Finance cost', value: -financeCost, type: 'minus', field: 'derived.financeCost' },
-    { label: 'Profit before tax', value: profitBeforeTax, type: undefined },
-    { label: 'Tax', value: -taxCost, type: 'minus', field: 'derived.taxCost' },
-    { label: 'Net profit', value: netProfit, type: 'plus' },
-    { label: 'Depreciation (non-cash add-back)', value: d.depreciation, type: 'plus' },
+  // those in KpiSnapshot/the prediction output; their trend is computed against `prev`
+  // instead. `invert` marks cost rows, where the trend arrow reads "up = bad".
+  const rows: { label: string; value: number; type: 'plus' | 'minus' | undefined; field?: string; trend?: Trend; invert?: boolean }[] = [
+    { label: 'Revenue', value: d.revenue, type: 'plus', field: 'derived.revenue', trend: computeTrend(d.revenue, prevData?.derived.revenue) },
+    { label: 'COGS (material + logistics × volume)', value: -cur.cogs, type: 'minus', trend: computeTrend(cur.cogs, prev?.cogs), invert: true },
+    { label: 'Gross profit', value: cur.grossProfit, type: undefined, trend: computeTrend(cur.grossProfit, prev?.grossProfit) },
+    { label: 'Operating expenses', value: -v.operatingExpenses, type: 'minus', field: 'variables.operatingExpenses', trend: computeTrend(v.operatingExpenses, prevData?.variables.operatingExpenses), invert: true },
+    { label: 'Staff costs', value: -v.staffCost, type: 'minus', field: 'variables.staffCost', trend: computeTrend(v.staffCost, prevData?.variables.staffCost), invert: true },
+    { label: 'Other income', value: v.otherIncome, type: 'plus', field: 'variables.otherIncome', trend: computeTrend(v.otherIncome, prevData?.variables.otherIncome) },
+    { label: 'EBITDA', value: cur.ebitda, type: undefined, trend: computeTrend(cur.ebitda, prev?.ebitda) },
+    { label: 'Depreciation', value: -d.depreciation, type: 'minus', field: 'derived.depreciation', trend: computeTrend(d.depreciation, prevData?.derived.depreciation), invert: true },
+    { label: 'EBIT', value: cur.ebit, type: undefined, trend: computeTrend(cur.ebit, prev?.ebit) },
+    { label: 'Finance cost', value: -cur.financeCost, type: 'minus', field: 'derived.financeCost', trend: computeTrend(cur.financeCost, prev?.financeCost), invert: true },
+    { label: 'Profit before tax', value: cur.profitBeforeTax, type: undefined, trend: computeTrend(cur.profitBeforeTax, prev?.profitBeforeTax) },
+    { label: 'Tax', value: -cur.taxCost, type: 'minus', field: 'derived.taxCost', trend: computeTrend(cur.taxCost, prev?.taxCost), invert: true },
+    { label: 'Net profit', value: cur.netProfit, type: 'plus', trend: computeTrend(cur.netProfit, prev?.netProfit) },
+    { label: 'Depreciation (non-cash add-back)', value: d.depreciation, type: 'plus', trend: computeTrend(d.depreciation, prevData?.derived.depreciation) },
   ];
 
   let running = startingCash;
@@ -1700,18 +1935,24 @@ function CashWaterfallView({ data, onFieldClick }: CashWaterfallViewProps) {
         running += row.value;
         const valueText = fmt(row.value);
         return row.field ? (
-          <ClickableStatRow key={i} label={row.label} value={valueText} colorType={row.type} onClick={() => onFieldClick({ field: row.field!, label: row.label })} />
+          <ClickableStatRow key={i} label={row.label} value={valueText} colorType={row.type} trend={row.trend} invert={row.invert} onClick={() => onFieldClick({ field: row.field!, label: row.label })} />
         ) : (
           <Flex justify="space-between" align="center" key={i} style={gpStyles.statRow(row.type)}>
             <Text size="sm">{row.label}</Text>
-            <Text style={{ ...boldStyle, fontSize: '0.85rem' }}>{valueText}</Text>
+            <Flex align="center" gap={4}>
+              <Text style={{ ...boldStyle, fontSize: '0.85rem' }}>{valueText}</Text>
+              <TrendIcon trend={row.trend} invert={row.invert} size={13} />
+            </Flex>
           </Flex>
         );
       })}
       <Divider my="xs" />
       <Flex justify="space-between" align="center" style={gpStyles.totalRow}>
         <Text style={{ fontSize: '0.85rem' }}>Cash now</Text>
-        <Text style={{ fontSize: '0.95rem' }}>{fmt(v.cash)}</Text>
+        <Flex align="center" gap={4}>
+          <Text style={{ fontSize: '0.95rem' }}>{fmt(v.cash)}</Text>
+          <TrendIcon trend={computeTrend(v.cash, prevData?.variables.cash)} size={13} />
+        </Flex>
       </Flex>
       <Text size="xs" c="dimmed" style={{ fontStyle: 'italic', marginTop: 8 }}>
         Depreciation is a non-cash expense — added back to net profit to get actual cash position.
@@ -1724,10 +1965,12 @@ function CashWaterfallView({ data, onFieldClick }: CashWaterfallViewProps) {
 
 interface RevenueViewProps {
   data: PlayerTurnResult;
+  /** Previous turn's snapshot, for the trend arrow on every row — undefined on round 1. */
+  prevData?: PlayerTurnResult;
   onFieldClick: (target: { field: string; label: string }) => void;
 }
 
-function RevenueView({ data, onFieldClick }: RevenueViewProps) {
+function RevenueView({ data, prevData, onFieldClick }: RevenueViewProps) {
   const { variables: v, derived: d } = data;
 
   const volume = d.volume || 0;
@@ -1737,12 +1980,15 @@ function RevenueView({ data, onFieldClick }: RevenueViewProps) {
   return (
     <Stack gap="md" style={gpStyles.modalContent}>
       <Text style={{ ...boldStyle, fontSize: '0.8rem', marginBottom: 12 }}>REVENUE BREAKDOWN</Text>
-      <ClickableStatRow label="Volume" value={`${volume.toFixed(0)} t`} onClick={() => onFieldClick({ field: 'derived.volume', label: 'Volume' })} />
-      <ClickableStatRow label="× Price" value={`${fmt(price)} /t`} onClick={() => onFieldClick({ field: 'variables.price', label: 'Price' })} />
+      <ClickableStatRow label="Volume" value={`${volume.toFixed(0)} t`} trend={computeTrend(volume, prevData?.derived.volume)} onClick={() => onFieldClick({ field: 'derived.volume', label: 'Volume' })} />
+      <ClickableStatRow label="× Price" value={`${fmt(price)} /t`} trend={computeTrend(price, prevData?.variables.price)} onClick={() => onFieldClick({ field: 'variables.price', label: 'Price' })} />
       <Divider my="xs" />
       <Flex justify="space-between" style={gpStyles.totalRow}>
         <Text style={{ fontSize: '0.85rem' }}>Revenue</Text>
-        <Text style={{ fontSize: '0.95rem' }}>{fmt(revenue)}</Text>
+        <Flex align="center" gap={4}>
+          <Text style={{ fontSize: '0.95rem' }}>{fmt(revenue)}</Text>
+          <TrendIcon trend={computeTrend(revenue, prevData?.derived.revenue)} size={13} />
+        </Flex>
       </Flex>
       <Text size="xs" c="dimmed" style={{ fontStyle: 'italic' }}>
         Volume is set by your market share, capped by installed capacity — see SHARES for the breakdown.
@@ -1755,40 +2001,53 @@ function RevenueView({ data, onFieldClick }: RevenueViewProps) {
 
 interface EquityViewProps {
   data: PlayerTurnResult;
+  /** Previous turn's snapshot, for the trend arrow on every row — undefined on round 1. */
+  prevData?: PlayerTurnResult;
   onFieldClick: (target: { field: string; label: string }) => void;
 }
 
-function EquityView({ data, onFieldClick }: EquityViewProps) {
+/** FORMULAS §5: equity = cash + receivables + assets + intangibleAssets + reserves - debt; marketEquity = max(0, equity - legalExposure). Shared by EquityView's current- and previous-turn calls, so the two totals' trend arrows are diffed against the same formula rather than a persisted field. */
+function computeEquity(data: PlayerTurnResult) {
   const { variables: v, derived: d } = data;
-
-  // FORMULAS §5: equity = cash + receivables + assets + intangibleAssets + reserves - debt
   const bookEquity = v.cash + d.receivables + v.assets + v.intangibleAssets + v.reserves - v.debt;
-  const LEGAL_EXPOSURE = v.legalExposure ?? 0;
-  // FORMULAS §5: marketEquity = max(0, equity - legalExposure)
-  const MARKET_EQUITY = Math.max(0, bookEquity - LEGAL_EXPOSURE);
+  const legalExposure = v.legalExposure ?? 0;
+  const marketEquity = Math.max(0, bookEquity - legalExposure);
+  return { bookEquity, legalExposure, marketEquity };
+}
+
+function EquityView({ data, prevData, onFieldClick }: EquityViewProps) {
+  const { variables: v, derived: d } = data;
+  const cur = computeEquity(data);
+  const prev = prevData ? computeEquity(prevData) : undefined;
 
   return (
     <Stack gap={0} style={gpStyles.modalContent}>
       <Text style={{ ...boldStyle, fontSize: '0.8rem', marginBottom: 12 }}>BALANCE SHEET</Text>
-      <ClickableStatRow label="Cash" value={fmt(v.cash)} colorType="plus" onClick={() => onFieldClick({ field: 'variables.cash', label: 'CASH' })} />
-      <ClickableStatRow label="Receivables" value={fmt(d.receivables)} colorType="plus" onClick={() => onFieldClick({ field: 'derived.receivables', label: 'Receivables' })} />
-      <ClickableStatRow label="Assets" value={fmt(v.assets)} colorType="plus" onClick={() => onFieldClick({ field: 'variables.assets', label: 'Assets' })} />
-      <ClickableStatRow label="Intangible assets" value={fmt(v.intangibleAssets)} colorType="plus" onClick={() => onFieldClick({ field: 'variables.intangibleAssets', label: 'Intangible assets' })} />
-      <ClickableStatRow label="Reserves" value={fmt(v.reserves)} colorType="plus" onClick={() => onFieldClick({ field: 'variables.reserves', label: 'Reserves' })} />
-      <ClickableStatRow label="Debt" value={`-${fmt(v.debt)}`} colorType="minus" onClick={() => onFieldClick({ field: 'variables.debt', label: 'Debt' })} />
+      <ClickableStatRow label="Cash" value={fmt(v.cash)} colorType="plus" trend={computeTrend(v.cash, prevData?.variables.cash)} onClick={() => onFieldClick({ field: 'variables.cash', label: 'CASH' })} />
+      <ClickableStatRow label="Receivables" value={fmt(d.receivables)} colorType="plus" trend={computeTrend(d.receivables, prevData?.derived.receivables)} onClick={() => onFieldClick({ field: 'derived.receivables', label: 'Receivables' })} />
+      <ClickableStatRow label="Assets" value={fmt(v.assets)} colorType="plus" trend={computeTrend(v.assets, prevData?.variables.assets)} onClick={() => onFieldClick({ field: 'variables.assets', label: 'Assets' })} />
+      <ClickableStatRow label="Intangible assets" value={fmt(v.intangibleAssets)} colorType="plus" trend={computeTrend(v.intangibleAssets, prevData?.variables.intangibleAssets)} onClick={() => onFieldClick({ field: 'variables.intangibleAssets', label: 'Intangible assets' })} />
+      <ClickableStatRow label="Reserves" value={fmt(v.reserves)} colorType="plus" trend={computeTrend(v.reserves, prevData?.variables.reserves)} onClick={() => onFieldClick({ field: 'variables.reserves', label: 'Reserves' })} />
+      <ClickableStatRow label="Debt" value={`-${fmt(v.debt)}`} colorType="minus" trend={computeTrend(v.debt, prevData?.variables.debt)} invert onClick={() => onFieldClick({ field: 'variables.debt', label: 'Debt' })} />
 
       <Divider my="xs" />
       <Flex justify="space-between" style={gpStyles.totalRow}>
         <Text style={{ fontSize: '0.85rem' }}>Equity (book value)</Text>
-        <Text style={{ fontSize: '0.95rem' }}>{fmt(bookEquity)}</Text>
+        <Flex align="center" gap={4}>
+          <Text style={{ fontSize: '0.95rem' }}>{fmt(cur.bookEquity)}</Text>
+          <TrendIcon trend={computeTrend(cur.bookEquity, prev?.bookEquity)} size={13} />
+        </Flex>
       </Flex>
 
       {/* Market equity */}
       <Stack gap={0} mt="md" pt="md" style={{ borderTop: '1px solid var(--mantine-color-gray-2)' }}>
-        <ClickableStatRow label="Legal exposure (discount)" value={`-${fmt(LEGAL_EXPOSURE)}`} colorType="minus" onClick={() => onFieldClick({ field: 'variables.legalExposure', label: 'Legal exposure' })} />
+        <ClickableStatRow label="Legal exposure (discount)" value={`-${fmt(cur.legalExposure)}`} colorType="minus" trend={computeTrend(cur.legalExposure, prev?.legalExposure)} invert onClick={() => onFieldClick({ field: 'variables.legalExposure', label: 'Legal exposure' })} />
         <Flex justify="space-between" style={gpStyles.totalRow}>
           <Text style={{ fontSize: '0.85rem' }}>Market equity (stock price basis)</Text>
-          <Text style={{ fontSize: '0.95rem' }}>{fmt(MARKET_EQUITY)}</Text>
+          <Flex align="center" gap={4}>
+            <Text style={{ fontSize: '0.95rem' }}>{fmt(cur.marketEquity)}</Text>
+            <TrendIcon trend={computeTrend(cur.marketEquity, prev?.marketEquity)} size={13} />
+          </Flex>
         </Flex>
       </Stack>
 
@@ -1804,16 +2063,22 @@ function EquityView({ data, onFieldClick }: EquityViewProps) {
 interface ShareViewProps {
   data: PlayerTurnResult;
   rivals?: PlayerTurnResult[];
+  /** Previous turn's snapshot for `data`, for the trend arrow on every own-field row — undefined on round 1. */
+  prevData?: PlayerTurnResult;
+  /** Previous turn's snapshot per rival, keyed by playerId — for the trend arrow on each rival's market-share row. */
+  prevRivals?: Map<string, PlayerTurnResult>;
   onFieldClick: (target: { field: string; label: string }) => void;
 }
 
-function ShareView({ data, rivals, onFieldClick }: ShareViewProps) {
+function ShareView({ data, rivals, prevData, prevRivals, onFieldClick }: ShareViewProps) {
   const { variables: v, derived: d } = data;
   const outrageDemandWeight = 0.5;
 
   // Build market share visualization with rivals
   const allPlayers = [data, ...(rivals || [])];
   const totalMarketShare = allPlayers.reduce((sum, p) => sum + (p.derived.marketShare || 0), 0) || 1;
+  const netDemand = v.demand - outrageDemandWeight * v.outrage;
+  const prevNetDemand = prevData ? prevData.variables.demand - outrageDemandWeight * prevData.variables.outrage : undefined;
 
   return (
     <Stack gap="md" style={gpStyles.modalContent}>
@@ -1822,10 +2087,10 @@ function ShareView({ data, rivals, onFieldClick }: ShareViewProps) {
       {/* Factor grid */}
       <Flex wrap="wrap" gap="xs">
         {[
-          { label: 'PRICE (LOWER = BETTER)', value: `${fmt(v.price)}/t`, field: 'variables.price' },
-          { label: 'PROCESSING LEVEL', value: pct(v.processingLevel), field: 'variables.processingLevel' },
-          { label: 'SUPPLY SECURITY', value: pct(v.supplySecurity), field: 'variables.supplySecurity' },
-          { label: 'PROCESS LOSS (LOWER = BETTER)', value: pct(v.processLoss), field: 'variables.processLoss' },
+          { label: 'PRICE (LOWER = BETTER)', value: `${fmt(v.price)}/t`, field: 'variables.price', trend: computeTrend(v.price, prevData?.variables.price), invert: true },
+          { label: 'PROCESSING LEVEL', value: pct(v.processingLevel), field: 'variables.processingLevel', trend: computeTrend(v.processingLevel, prevData?.variables.processingLevel) },
+          { label: 'SUPPLY SECURITY', value: pct(v.supplySecurity), field: 'variables.supplySecurity', trend: computeTrend(v.supplySecurity, prevData?.variables.supplySecurity) },
+          { label: 'PROCESS LOSS (LOWER = BETTER)', value: pct(v.processLoss), field: 'variables.processLoss', trend: computeTrend(v.processLoss, prevData?.variables.processLoss), invert: true },
         ].map((f) => (
           <Box
             key={f.label}
@@ -1835,7 +2100,10 @@ function ShareView({ data, rivals, onFieldClick }: ShareViewProps) {
             onClick={() => onFieldClick({ field: f.field, label: f.label })}
           >
             <Text style={{ fontSize: '0.65rem', color: '#6b7280' }}>{f.label}</Text>
-            <Text style={{ ...boldStyle, fontSize: '0.8rem', textDecoration: 'underline', textDecorationStyle: 'dotted', textUnderlineOffset: 3 }}>{f.value}</Text>
+            <Flex align="center" gap={4}>
+              <Text style={{ ...boldStyle, fontSize: '0.8rem', textDecoration: 'underline', textDecorationStyle: 'dotted', textUnderlineOffset: 3 }}>{f.value}</Text>
+              <TrendIcon trend={f.trend} invert={f.invert} size={12} />
+            </Flex>
           </Box>
         ))}
       </Flex>
@@ -1843,12 +2111,15 @@ function ShareView({ data, rivals, onFieldClick }: ShareViewProps) {
       {/* Demand breakdown */}
       <div style={{ padding: '12px', background: 'var(--mantine-color-gray-1)', border: '1px solid var(--mantine-color-gray-3)', borderRadius: 'var(--mantine-radius-sm)' }}>
         <Text style={{ ...boldStyle, fontSize: '0.7rem', marginBottom: 8 }}>DEMAND BREAKDOWN</Text>
-        <ClickableStatRow label="Marketing demand" value={`${v.demand} pts`} onClick={() => onFieldClick({ field: 'variables.demand', label: 'Marketing demand' })} />
-        <ClickableStatRow label={`Outrage penalty (${v.outrage} × ${outrageDemandWeight})`} value={`-${Math.round(outrageDemandWeight * v.outrage)} pts`} colorType="minus" onClick={() => onFieldClick({ field: 'variables.outrage', label: 'Outrage' })} />
+        <ClickableStatRow label="Marketing demand" value={`${v.demand} pts`} trend={computeTrend(v.demand, prevData?.variables.demand)} onClick={() => onFieldClick({ field: 'variables.demand', label: 'Marketing demand' })} />
+        <ClickableStatRow label={`Outrage penalty (${v.outrage} × ${outrageDemandWeight})`} value={`-${Math.round(outrageDemandWeight * v.outrage)} pts`} colorType="minus" trend={computeTrend(v.outrage, prevData?.variables.outrage)} invert onClick={() => onFieldClick({ field: 'variables.outrage', label: 'Outrage' })} />
         <Divider my="xs" />
         <Flex justify="space-between" style={gpStyles.totalRow}>
           <Text style={{ fontSize: '0.75rem' }}>Net demand</Text>
-          <Text style={{ fontSize: '0.8rem' }}>{Math.round(v.demand - outrageDemandWeight * v.outrage)} pts</Text>
+          <Flex align="center" gap={4}>
+            <Text style={{ fontSize: '0.8rem' }}>{Math.round(netDemand)} pts</Text>
+            <TrendIcon trend={computeTrend(netDemand, prevNetDemand)} size={12} />
+          </Flex>
         </Flex>
         <Text size="xs" c="dimmed" style={{ fontStyle: 'italic', marginTop: 8 }}>
           Outrage is currently costing you {Math.round(outrageDemandWeight * v.outrage)} demand points — dirty moves that spike outrage quietly shrink your market share.
@@ -1870,6 +2141,9 @@ function ShareView({ data, rivals, onFieldClick }: ShareViewProps) {
             const share = (p.derived.marketShare || 0) / totalMarketShare;
             const color = i === 0 ? '#dc2626' : i === 1 ? '#9ca3af' : '#d1d5db';
             // Only my own entry (index 0) is clickable — this is "player's own KPIs," not a rival comparison.
+            // The trend arrow, unlike the click, is shown for every player — it's a quick
+            // read of "who's gaining/losing share," not a graph-opening affordance.
+            const prevShare = i === 0 ? prevData?.derived.marketShare : prevRivals?.get(p.playerId)?.derived.marketShare;
             return (
               <Flex
                 key={p.playerId}
@@ -1881,6 +2155,7 @@ function ShareView({ data, rivals, onFieldClick }: ShareViewProps) {
               >
                 <Box h={8} w={8} style={{ background: color, borderRadius: '50%' }} />
                 <Text size="xs" style={i === 0 ? { textDecoration: 'underline', textDecorationStyle: 'dotted', textUnderlineOffset: 3 } : undefined}>{p.playerName} {pct(share)}</Text>
+                <TrendIcon trend={computeTrend(p.derived.marketShare || 0, prevShare)} size={11} />
               </Flex>
             );
           })}
@@ -1890,16 +2165,22 @@ function ShareView({ data, rivals, onFieldClick }: ShareViewProps) {
       {/* Capacity cap */}
       <div style={{ padding: '12px', background: 'var(--mantine-color-gray-1)', border: '1px solid var(--mantine-color-gray-3)', borderRadius: 'var(--mantine-radius-sm)' }}>
         <Text style={{ ...boldStyle, fontSize: '0.7rem', marginBottom: 4 }}>CAPACITY CAP</Text>
-        <Text size="sm">
-          <Text component="span" style={{ cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted', textUnderlineOffset: 3 }} title="Click for history + prediction" onClick={() => onFieldClick({ field: 'variables.installedCapacity', label: 'Installed capacity' })}>
-            Installed capacity {v.installedCapacity?.toFixed(0)}t
+        <Flex align="center" gap={4} wrap="wrap">
+          <Text size="sm">
+            <Text component="span" style={{ cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted', textUnderlineOffset: 3 }} title="Click for history + prediction" onClick={() => onFieldClick({ field: 'variables.installedCapacity', label: 'Installed capacity' })}>
+              Installed capacity {v.installedCapacity?.toFixed(0)}t
+            </Text>
           </Text>
-          {' × '}
-          <Text component="span" style={{ cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted', textUnderlineOffset: 3 }} title="Click for history + prediction" onClick={() => onFieldClick({ field: 'variables.capacityUtilization', label: 'Capacity utilization' })}>
-            {(v.capacityUtilization * 100).toFixed(0)}% utilization
+          <TrendIcon trend={computeTrend(v.installedCapacity, prevData?.variables.installedCapacity)} size={12} />
+          <Text size="sm">
+            {' × '}
+            <Text component="span" style={{ cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted', textUnderlineOffset: 3 }} title="Click for history + prediction" onClick={() => onFieldClick({ field: 'variables.capacityUtilization', label: 'Capacity utilization' })}>
+              {(v.capacityUtilization * 100).toFixed(0)}% utilization
+            </Text>
           </Text>
-          {' = '}{(v.installedCapacity * v.capacityUtilization)?.toFixed(0)}t ceiling
-        </Text>
+          <TrendIcon trend={computeTrend(v.capacityUtilization, prevData?.variables.capacityUtilization)} size={12} />
+          <Text size="sm">{' = '}{(v.installedCapacity * v.capacityUtilization)?.toFixed(0)}t ceiling</Text>
+        </Flex>
         {d.volume && d.marketShare && (
           <Text size="xs" c="dimmed" style={{ fontStyle: 'italic', marginTop: 4 }}>
             Your demand-based share would support {(d.marketShare * 10000).toFixed(0)}t — capacity is the bottleneck this turn.
@@ -1914,31 +2195,49 @@ function ShareView({ data, rivals, onFieldClick }: ShareViewProps) {
 
 interface ThreatViewProps {
   data: PlayerTurnResult;
+  /** Previous turn's snapshot, for the trend arrow on every row — undefined on round 1. */
+  prevData?: PlayerTurnResult;
   onFieldClick: (target: { field: string; label: string }) => void;
 }
 
-function ThreatView({ data, onFieldClick }: ThreatViewProps) {
-  const { variables: v } = data;
+// FORMULAS §7: risk = 100 * (w1*(ler/0.8) + w2*(scrutiny/100) + w3*(|outrage|/100))
+const THREAT_W1 = 0.5, THREAT_W2 = 0.25, THREAT_W3 = 0.25;
+const THREAT_LEGAL_EXPOSURE_RATIO_CAP = 0.8;
 
-  // FORMULAS §7: risk = 100 * (w1*(ler/0.8) + w2*(scrutiny/100) + w3*(|outrage|/100))
-  const w1 = 0.5, w2 = 0.25, w3 = 0.25;
-  const legalExposureRatioCap = 0.8;
+/** The three weighted terms behind the Threat Level gauge — shared by ThreatView's
+ * current- and previous-turn calls so the total's trend arrow is diffed against the same
+ * formula rather than a persisted field. */
+function computeThreatTerms(v: PlayerVariables) {
   const ler = v.legalExposureRatio ?? 0;
-  const legalTerm = w1 * (ler / legalExposureRatioCap) * 100;
-  const scrutinyTerm = w2 * (v.scrutiny / 100) * 100;
-  const outrageTerm = w3 * (Math.abs(v.outrage) / 100) * 100;
+  const legalTerm = THREAT_W1 * (ler / THREAT_LEGAL_EXPOSURE_RATIO_CAP) * 100;
+  const scrutinyTerm = THREAT_W2 * (v.scrutiny / 100) * 100;
+  const outrageTerm = THREAT_W3 * (Math.abs(v.outrage) / 100) * 100;
+  return { ler, legalTerm, scrutinyTerm, outrageTerm };
+}
+
+function ThreatView({ data, prevData, onFieldClick }: ThreatViewProps) {
+  const { variables: v } = data;
+  const cur = computeThreatTerms(v);
+  const prev = prevData ? computeThreatTerms(prevData.variables) : undefined;
 
   return (
     <Stack gap={0} style={gpStyles.modalContent}>
       <Text style={{ ...boldStyle, fontSize: '0.8rem', marginBottom: 12 }}>GLOBAL RISK GAUGE BREAKDOWN</Text>
-      <ClickableStatRow label={`Legal exposure ratio (${(ler * 100).toFixed(0)}%, weight 0.5)`} value={legalTerm.toFixed(1)} onClick={() => onFieldClick({ field: 'variables.legalExposureRatio', label: 'Legal exposure ratio' })} />
-      <ClickableStatRow label="Scrutiny (weight 0.25)" value={scrutinyTerm.toFixed(1)} onClick={() => onFieldClick({ field: 'variables.scrutiny', label: 'Scrutiny' })} />
-      <ClickableStatRow label="Outrage (weight 0.25)" value={outrageTerm.toFixed(1)} onClick={() => onFieldClick({ field: 'variables.outrage', label: 'Outrage' })} />
+      <ClickableStatRow label={`Legal exposure ratio (${(cur.ler * 100).toFixed(0)}%, weight 0.5)`} value={cur.legalTerm.toFixed(1)} trend={computeTrend(cur.legalTerm, prev?.legalTerm)} invert onClick={() => onFieldClick({ field: 'variables.legalExposureRatio', label: 'Legal exposure ratio' })} />
+      <ClickableStatRow label="Scrutiny (weight 0.25)" value={cur.scrutinyTerm.toFixed(1)} trend={computeTrend(cur.scrutinyTerm, prev?.scrutinyTerm)} invert onClick={() => onFieldClick({ field: 'variables.scrutiny', label: 'Scrutiny' })} />
+      <ClickableStatRow label="Outrage (weight 0.25)" value={cur.outrageTerm.toFixed(1)} trend={computeTrend(cur.outrageTerm, prev?.outrageTerm)} invert onClick={() => onFieldClick({ field: 'variables.outrage', label: 'Outrage' })} />
 
       <Divider my="xs" />
       <Flex justify="space-between" style={gpStyles.totalRow}>
         <Text style={{ fontSize: '0.85rem' }}>Threat level</Text>
-        <Text style={{ fontSize: '0.95rem' }}>{Math.round(legalTerm + scrutinyTerm + outrageTerm)}</Text>
+        <Flex align="center" gap={4}>
+          <Text style={{ fontSize: '0.95rem' }}>{Math.round(cur.legalTerm + cur.scrutinyTerm + cur.outrageTerm)}</Text>
+          <TrendIcon
+            trend={computeTrend(cur.legalTerm + cur.scrutinyTerm + cur.outrageTerm, prev ? prev.legalTerm + prev.scrutinyTerm + prev.outrageTerm : undefined)}
+            invert
+            size={13}
+          />
+        </Flex>
       </Flex>
 
       <Text size="xs" c="dimmed" style={{ fontStyle: 'italic', marginTop: 8 }}>
@@ -1994,7 +2293,10 @@ function RiskBreakdownView({ caseData, vars }: RiskBreakdownViewProps) {
 
 interface RivalFullReportViewProps {
   rival: PlayerTurnResult;
+  /** Previous turn's snapshot for this rival, for the trend arrow on every row — undefined on round 1 or if this is the first time this rival has been seen. */
+  prevRival?: PlayerTurnResult;
   decisions: DecisionDefinition[];
+  onFieldClick: (target: { field: string; label: string; targetPlayerId: string }) => void;
 }
 
 /** Narrative "annual report" blurbs for a rival's active decisions — the flavor-text
@@ -2014,17 +2316,35 @@ function buildAnnualReport(
   return reports;
 }
 
-function RivalFullReportView({ rival, decisions }: RivalFullReportViewProps) {
+/** Fields where the trend arrow reads "up = bad" (costs, debt) rather than the default "up = good". */
+const RIVAL_REPORT_INVERT_FIELDS = new Set(['variables.debt', 'variables.operatingExpenses', 'variables.staffCost', 'variables.materialCostPerTon', 'derived.depreciation', 'derived.financeCost', 'derived.taxCost']);
+
+function RivalFullReportView({ rival, prevRival, decisions, onFieldClick }: RivalFullReportViewProps) {
   const { variables: v, derived: d } = rival;
   const { socket } = useSocketStore();
   const { annualReports, annualReportLoading, setAnnualReportLoading } = useGameStore();
 
-  const rows = [
-    ['Cash', fmt(v.cash)], ['Revenue', fmt(d.revenue)], ['Equity', fmt(d.equity)], ['Stock value', fmt(d.stockValue)], ['Debt', fmt(v.debt)],
-    ['Assets', fmt(v.assets)], ['Intangible assets', fmt(v.intangibleAssets)], ['Reserves', fmt(v.reserves)],
-    ['Receivables', fmt(d.receivables)], ['Operating expenses', fmt(v.operatingExpenses)], ['Staff cost', fmt(v.staffCost)],
-    ['Material cost / ton', fmt(v.materialCostPerTon)], ['Depreciation', fmt(d.depreciation)],
-    ['Finance cost', fmt(d.financeCost)], ['Tax cost', fmt(d.taxCost)], ['Other income', fmt(v.otherIncome)],
+  // Each row is clickable — opens a stacked modal with that field's real history graph
+  // for this rival (see KpiHistoryGraph). No prediction for rivals, history only. The
+  // trend arrow (unlike the graph) uses only prevRival — one turn's worth of "since last
+  // time you looked" comparison, not the full persisted history.
+  const rows: Array<{ label: string; field: string; value: string }> = [
+    { label: 'Cash', field: 'variables.cash', value: fmt(v.cash) },
+    { label: 'Revenue', field: 'derived.revenue', value: fmt(d.revenue) },
+    { label: 'Equity', field: 'derived.equity', value: fmt(d.equity) },
+    { label: 'Stock value', field: 'derived.stockValue', value: fmt(d.stockValue) },
+    { label: 'Debt', field: 'variables.debt', value: fmt(v.debt) },
+    { label: 'Assets', field: 'variables.assets', value: fmt(v.assets) },
+    { label: 'Intangible assets', field: 'variables.intangibleAssets', value: fmt(v.intangibleAssets) },
+    { label: 'Reserves', field: 'variables.reserves', value: fmt(v.reserves) },
+    { label: 'Receivables', field: 'derived.receivables', value: fmt(d.receivables) },
+    { label: 'Operating expenses', field: 'variables.operatingExpenses', value: fmt(v.operatingExpenses) },
+    { label: 'Staff cost', field: 'variables.staffCost', value: fmt(v.staffCost) },
+    { label: 'Material cost / ton', field: 'variables.materialCostPerTon', value: fmt(v.materialCostPerTon) },
+    { label: 'Depreciation', field: 'derived.depreciation', value: fmt(d.depreciation) },
+    { label: 'Finance cost', field: 'derived.financeCost', value: fmt(d.financeCost) },
+    { label: 'Tax cost', field: 'derived.taxCost', value: fmt(d.taxCost) },
+    { label: 'Other income', field: 'variables.otherIncome', value: fmt(v.otherIncome) },
   ];
 
   // Static text renders instantly; the AI-narrated version (server round trip to the
@@ -2051,10 +2371,16 @@ function RivalFullReportView({ rival, decisions }: RivalFullReportViewProps) {
     <Stack gap="lg" style={gpStyles.modalContent}>
       <Stack gap={0}>
         <Text style={{ ...boldStyle, fontSize: '0.75rem', color: '#6b7280', marginBottom: 8 }}>FINANCIAL STATEMENT — {rival.playerName}</Text>
-        {rows.map(([label, value]) => (
-          <Flex justify="space-between" key={label} style={gpStyles.statRow()}>
-            <Text size="sm">{label}</Text><Text style={boldStyle}>{value}</Text>
-          </Flex>
+        {rows.map((row) => (
+          <ClickableStatRow
+            key={row.label}
+            label={row.label}
+            value={row.value}
+            trend={prevRival ? computeTrend(getKpiFieldValue(rival, row.field), getKpiFieldValue(prevRival, row.field)) : undefined}
+            invert={RIVAL_REPORT_INVERT_FIELDS.has(row.field)}
+            title="Click for history"
+            onClick={() => onFieldClick({ field: row.field, label: row.label, targetPlayerId: rival.playerId })}
+          />
         ))}
       </Stack>
       <Stack gap={0}>
@@ -2081,22 +2407,20 @@ function RivalFullReportView({ rival, decisions }: RivalFullReportViewProps) {
   );
 }
 
-// ── Rival Field View (trend display) ───────────────────
+// ── Rival Field View (history graph) ───────────────────
 
 interface RivalFieldViewProps {
   rival: PlayerTurnResult;
   field: string;
+  label: string;
+  socket: Socket | null;
 }
 
-function RivalFieldView({ rival, field }: RivalFieldViewProps) {
-  // In production this would show historical trend data from filed statements
+function RivalFieldView({ rival, field, label, socket }: RivalFieldViewProps) {
   return (
     <Stack gap="md">
-      <Text style={{ ...boldStyle, fontSize: '0.8rem', marginBottom: 12 }}>{field.toUpperCase()} TREND — {rival.playerName}</Text>
-      <Box p="md" style={{ background: 'var(--mantine-color-gray-1)', border: '1px solid var(--mantine-color-gray-3)', borderRadius: 'var(--mantine-radius-sm)', textAlign: 'center' }}>
-        <Text style={boldStyle}>{fmt((rival.derived as any)[field] ?? (rival.variables as any)[field] ?? 0)}</Text>
-        <Text size="xs" c="dimmed" style={{ fontStyle: 'italic' }}>Historical trend data will appear here once multi-turn tracking is implemented.</Text>
-      </Box>
+      <Text style={{ ...boldStyle, fontSize: '0.8rem', marginBottom: 8 }}>{label} — HISTORY — {rival.playerName}</Text>
+      <KpiHistoryGraph field={field} label={label} socket={socket} targetPlayerId={rival.playerId} />
     </Stack>
   );
 }

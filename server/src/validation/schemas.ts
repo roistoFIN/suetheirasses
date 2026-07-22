@@ -224,6 +224,86 @@ export function validateAnnualReportRequest(data: unknown): AnnualReportRequestP
   return annualReportRequestSchema.parse(data);
 }
 
+/**
+ * Zod schema for the `game:getKpiHistory` Socket.IO event payload — `targetPlayerId` is
+ * optional (omitted means "my own data"); when present it's treated as a rival lookup.
+ */
+export const kpiHistoryRequestSchema = z.object({
+  targetPlayerId: z.string().min(1).max(100).optional(),
+});
+
+/** Inferred TypeScript type for validated KPI-history request payloads. */
+export type KpiHistoryRequestPayload = z.infer<typeof kpiHistoryRequestSchema>;
+
+/**
+ * Validates and parses raw data against the KPI-history-request schema.
+ *
+ * @param data - Raw payload from the `game:getKpiHistory` Socket.IO event.
+ * @returns Validated `KpiHistoryRequestPayload` object.
+ * @throws ZodValidationError if the payload fails any constraint.
+ */
+export function validateKpiHistoryRequest(data: unknown): KpiHistoryRequestPayload {
+  return kpiHistoryRequestSchema.parse(data);
+}
+
+/** Zod schema for the `game:makeOffer` Socket.IO event payload — propose or counter a settlement amount on a case. */
+export const makeOfferSchema = z.object({
+  caseId: z.string().min(1).max(100),
+  amount: z.number().positive(),
+});
+
+/** Inferred TypeScript type for validated make-offer payloads. */
+export type MakeOfferPayload = z.infer<typeof makeOfferSchema>;
+
+/**
+ * Validates and parses raw data against the make-offer schema.
+ *
+ * @param data - Raw payload from the `game:makeOffer` Socket.IO event.
+ * @returns Validated `MakeOfferPayload` object.
+ * @throws ZodValidationError if the payload fails any constraint.
+ */
+export function validateMakeOffer(data: unknown): MakeOfferPayload {
+  return makeOfferSchema.parse(data);
+}
+
+/** Zod schema for the `game:acceptOffer` Socket.IO event payload — accept the other party's most recent offer on a case. */
+export const acceptOfferSchema = z.object({
+  caseId: z.string().min(1).max(100),
+});
+
+/** Inferred TypeScript type for validated accept-offer payloads. */
+export type AcceptOfferPayload = z.infer<typeof acceptOfferSchema>;
+
+/**
+ * Validates and parses raw data against the accept-offer schema.
+ *
+ * @param data - Raw payload from the `game:acceptOffer` Socket.IO event.
+ * @returns Validated `AcceptOfferPayload` object.
+ * @throws ZodValidationError if the payload fails any constraint.
+ */
+export function validateAcceptOffer(data: unknown): AcceptOfferPayload {
+  return acceptOfferSchema.parse(data);
+}
+
+/** Zod schema for the `game:goToCourt` Socket.IO event payload — end negotiation on a case and send it to trial. */
+export const goToCourtSchema = z.object({
+  caseId: z.string().min(1).max(100),
+});
+
+/** Inferred TypeScript type for validated go-to-court payloads. */
+export type GoToCourtPayload = z.infer<typeof goToCourtSchema>;
+
+/**
+ * Validates and parses raw data against the go-to-court schema.
+ *
+ * @param data - Raw payload from the `game:goToCourt` Socket.IO event.
+ * @returns Validated `GoToCourtPayload` object.
+ * @throws ZodValidationError if the payload fails any constraint.
+ */
+export function validateGoToCourt(data: unknown): GoToCourtPayload {
+  return goToCourtSchema.parse(data);
+}
+
 // ============================================================
 // Admin Portal — decision library + game config (REST, not socket events).
 // Structural validation for the decision shape (mirrors submitDecisionsSchema's

@@ -255,8 +255,14 @@ export interface LegalCaseData {
   adjustedProbability?: number;
   stakes: number;
   status: 'negotiating' | 'awaiting_trial' | 'resolved';
-  offers: Array<{ by: 'me' | 'them'; amount: number }>;
-  myOffer?: number;
+  /** Settlement offer history — a single neutral list, identical for both parties (this
+   * same `LegalCaseData` object is persisted into both the plaintiff's and defendant's
+   * own `engineState.legalCases`, see CLAUDE.md). `by` names the role that made the
+   * offer, not a viewer-relative "me"/"them" — each client derives "You"/"Them" locally
+   * by comparing `by` against its own role in the case. The defendant always moves
+   * first (`offers.length === 0`); after that, whichever role did *not* make the most
+   * recent offer is the one allowed to respond (counter, accept, or go to court). */
+  offers: Array<{ by: 'plaintiff' | 'defendant'; amount: number }>;
   /** How many turns this case has spent at status 'negotiating' — see `GameSettings.negotiationPeriodTurns`. */
   turnsNegotiating: number;
   /** 'won'/'lost' = decided at trial; 'settled'/'cancelled' = resolved via bankruptcy waterfall (FORMULAS §16). */
@@ -356,11 +362,23 @@ export interface KpiSnapshotPoint {
   riskGauge: number;
 }
 
-/** Response for `game:kpiHistoryResult` — sent only to the requesting socket, always this player's own data. */
+/** Request payload for `game:getKpiHistory` — `targetPlayerId` omitted (or equal to the
+ * requester's own id) means "my own data" (history + 3-turn prediction); any other id in
+ * the same room is treated as a rival lookup (history only, no prediction — see
+ * `GameEngine.getKpiHistory`). */
+export interface GetKpiHistoryPayload {
+  targetPlayerId?: string;
+}
+
+/** Response for `game:kpiHistoryResult` — sent only to the requesting socket. `playerId`
+ * identifies whose data this is (self or a rival), so a client juggling more than one
+ * open graph at once can tell a response apart from a stale request for a different
+ * player. */
 export interface KpiHistoryResponse {
+  playerId: string;
   history: KpiSnapshotPoint[];
-  /** Up to 3 points, fewer if `bankruptAtRound` cuts the simulation short. */
+  /** Up to 3 points, fewer if `bankruptAtRound` cuts the simulation short. Always empty for a rival lookup — predicting a rival's future from their own decisions isn't offered, only real history. */
   predicted: KpiSnapshotPoint[];
-  /** Set if the prediction simulation shows this player going bankrupt within the predicted window — `predicted` then has fewer than 3 points, stopping at the last turn that still had a solvent outcome. */
+  /** Set if the prediction simulation shows this player going bankrupt within the predicted window — `predicted` then has fewer than 3 points, stopping at the last turn that still had a solvent outcome. Never set for a rival lookup (no prediction is run). */
   bankruptAtRound?: number;
 }

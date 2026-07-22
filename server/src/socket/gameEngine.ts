@@ -25,7 +25,7 @@ import {
   type GameReadyUpdateResponse,
   type KpiHistoryResponse,
 } from '@suetheirasses/shared';
-import { validateRoomJoin, validateSubmitDecisions, validateDigDeeper, validateFileLawsuit, validateRoomRejoin, validateAnnualReportRequest, validateChatMessage, validateGameReady, validateRoomSetInviteOnly } from '../validation/schemas.js';
+import { validateRoomJoin, validateSubmitDecisions, validateDigDeeper, validateFileLawsuit, validateRoomRejoin, validateAnnualReportRequest, validateChatMessage, validateGameReady, validateRoomSetInviteOnly, validateKpiHistoryRequest, validateMakeOffer, validateAcceptOffer, validateGoToCourt } from '../validation/schemas.js';
 import { GameLoop } from '../engine/gameLoop.js';
 import { generateAnnualReportBlurb } from '../services/llmService.js';
 
@@ -181,6 +181,82 @@ export class GameEngine {
   }
 
   /**
+   * Make (or counter) a settlement offer on a case still `'negotiating'` — instant,
+   * outside the turn-resolution cycle, same pattern as `digDeeper`/`fileLawsuit`. Unlike
+   * those single-player actions, a case touches BOTH parties: on success, both parties'
+   * Company rows are written and both parties' sockets (not just the requester's) get
+   * the update, via `persistLegalCaseAction`/`emitLegalCaseUpdate`.
+   */
+  async makeOffer(roomId: string, playerId: string, caseId: string, amount: number): Promise<import('../engine/gameLoop.js').LegalCaseActionOutcome> {
+    const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
+    const outcome = this.gameLoop.makeOffer(playerId, caseId, amount, dbPlayers);
+    if (outcome.success) {
+      await this.persistLegalCaseAction(outcome);
+      this.emitLegalCaseUpdate(roomId, outcome);
+    }
+    return outcome;
+  }
+
+  /** Accept the other party's most recent offer — settles the case immediately. Same two-party persist/emit shape as `makeOffer`. */
+  async acceptOffer(roomId: string, playerId: string, caseId: string): Promise<import('../engine/gameLoop.js').LegalCaseActionOutcome> {
+    const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
+    const outcome = this.gameLoop.acceptOffer(playerId, caseId, dbPlayers);
+    if (outcome.success) {
+      await this.persistLegalCaseAction(outcome);
+      this.emitLegalCaseUpdate(roomId, outcome);
+    }
+    return outcome;
+  }
+
+  /** End negotiation and send a case to trial — only marks it `awaiting_trial`; the verdict is drawn the next time this room's turn actually resolves. Same two-party persist/emit shape as `makeOffer`. */
+  async goToCourt(roomId: string, playerId: string, caseId: string): Promise<import('../engine/gameLoop.js').LegalCaseActionOutcome> {
+    const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
+    const outcome = this.gameLoop.goToCourt(playerId, caseId, dbPlayers);
+    if (outcome.success) {
+      await this.persistLegalCaseAction(outcome);
+      this.emitLegalCaseUpdate(roomId, outcome);
+    }
+    return outcome;
+  }
+
+  /** Writes both parties' Company rows for a successful `makeOffer`/`acceptOffer`/`goToCourt` outcome. `cash`/`variables` are only included in a party's write when they're actually present on that side's update (a settlement) — omitted entirely for an offer or a court decision, which never move cash. */
+  private async persistLegalCaseAction(
+    outcome: Extract<import('../engine/gameLoop.js').LegalCaseActionOutcome, { success: true }>,
+  ): Promise<void> {
+    for (const side of [outcome.plaintiff, outcome.defendant]) {
+      await this.prisma.company.update({
+        where: { playerId: side.playerId },
+        data: {
+          engineState: side.engineState as any,
+          ...(side.cash !== undefined ? { cash: side.cash, variables: side.variables as any } : {}),
+        },
+      });
+    }
+  }
+
+  /** Sends the updated case to both parties' sockets — never a room-wide broadcast, since
+   * nobody but the two parties on a case has any business seeing it. Each recipient gets
+   * their OWN `newCash` (undefined for a recipient whose cash didn't move). Silently
+   * skips a party who's currently disconnected (`socketId` cleared by
+   * `markPlayerDisconnected`) — they'll see the persisted update on reconnect or the
+   * next `turn:resolved` either way. */
+  private emitLegalCaseUpdate(
+    roomId: string,
+    outcome: Extract<import('../engine/gameLoop.js').LegalCaseActionOutcome, { success: true }>,
+  ): void {
+    const roomState = this.rooms.get(roomId);
+    if (!roomState) return;
+    for (const side of [outcome.plaintiff, outcome.defendant]) {
+      const socketId = roomState.players.get(side.playerId)?.socketId;
+      if (!socketId) continue;
+      this.io.to(socketId).emit(ServerEvents.GAME_LEGAL_CASE_UPDATE, {
+        case: outcome.case,
+        newCash: side.cash,
+      });
+    }
+  }
+
+  /**
    * AI-narrated "annual report" text for one rival's active decisions — on demand
    * (opened from the Full Filing modal), never part of turn resolution. Re-derives the
    * rival's active decisions server-side from their Company row rather than trusting
@@ -211,20 +287,27 @@ export class GameEngine {
   }
 
   /**
-   * This player's own KPI history (persisted `KpiSnapshot` rows, oldest round first) plus
-   * a 3-turn-ahead prediction (`GameLoop.predictFutureKpis`) — on demand, opened by
-   * clicking any KPI card or breakdown line item in `GamePhase.tsx`. Always "my own
-   * data" — there's no rival variant of this, unlike `getAnnualReport`. Returns `null`
-   * only if the room itself is unknown; if the player has since gone bankrupt (excluded
-   * from `loadActiveCompanyPlayers`), `predicted` just comes back empty rather than the
-   * whole call failing — `history` is still real and worth returning.
+   * KPI history (persisted `KpiSnapshot` rows, oldest round first) for either the
+   * requesting player themselves (`includePrediction: true`, adds a 3-turn-ahead
+   * `GameLoop.predictFutureKpis` projection) or a rival in the same room
+   * (`includePrediction: false`, history only — predicting a rival's future from their
+   * own decisions isn't offered, only real history). On demand, opened by clicking any
+   * KPI card or breakdown line item in `GamePhase.tsx`, for either your own KPIs or a
+   * rival's Full Filing report / mini-stats. Returns `null` only if the room itself is
+   * unknown. The `kpiSnapshot` query is scoped to `player: { roomId }` — the same
+   * distrust-the-client, scope-via-room pattern `getAnnualReport` uses — so a
+   * `targetPlayerId` for a player in a different room (or no longer in this one) just
+   * comes back with an empty `history` rather than leaking another room's data or
+   * erroring. If the player has since gone bankrupt (excluded from
+   * `loadActiveCompanyPlayers`), `predicted` just comes back empty rather than the whole
+   * call failing — `history` is still real and worth returning.
    */
-  async getKpiHistory(roomId: string, playerId: string): Promise<KpiHistoryResponse | null> {
+  async getKpiHistory(roomId: string, targetPlayerId: string, includePrediction: boolean): Promise<KpiHistoryResponse | null> {
     const roomState = this.rooms.get(roomId);
     if (!roomState) return null;
 
     const rows = await this.prisma.kpiSnapshot.findMany({
-      where: { playerId },
+      where: { playerId: targetPlayerId, player: { roomId } },
       orderBy: { round: 'asc' },
     });
     const history = rows.map((r) => ({
@@ -234,10 +317,14 @@ export class GameEngine {
       riskGauge: r.riskGauge,
     }));
 
-    const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
-    const prediction = this.gameLoop.predictFutureKpis(playerId, roomState.room.currentPhaseRound, dbPlayers, 3);
+    if (!includePrediction) {
+      return { playerId: targetPlayerId, history, predicted: [] };
+    }
 
-    return { history, predicted: prediction.predicted, bankruptAtRound: prediction.bankruptAtRound };
+    const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
+    const prediction = this.gameLoop.predictFutureKpis(targetPlayerId, roomState.room.currentPhaseRound, dbPlayers, 3);
+
+    return { playerId: targetPlayerId, history, predicted: prediction.predicted, bankruptAtRound: prediction.bankruptAtRound };
   }
 
   /**
@@ -1711,6 +1798,102 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
       }
     });
 
+    // Make (or counter) a settlement offer on a case still 'negotiating' — instant,
+    // outside the turn-resolution cycle. On success, GameEngine.makeOffer already emits
+    // game:legalCaseUpdate to both parties (including this socket) — nothing further to
+    // send here. Only a failure needs an explicit response, to just this socket.
+    socket.on(ClientEvents.GAME_MAKE_OFFER, async (payload: unknown) => {
+      const roomId = engine.getPlayerRoom(socket.id);
+      if (!roomId) return;
+
+      const roomState = engine.rooms.get(roomId);
+      if (!roomState || roomState.room.status !== RoomStatus.GAME_PHASE) return;
+
+      const player = Array.from(roomState.players.values()).find(
+        (p: Player) => p.socketId === socket.id,
+      );
+      if (!player) return;
+
+      try {
+        const { caseId, amount } = validateMakeOffer(payload);
+        const outcome = await engine.makeOffer(roomId, player.id, caseId, amount);
+        if (!outcome.success) {
+          socket.emit(ServerEvents.ERROR, {
+            code: 'MAKE_OFFER_FAILED',
+            message: outcome.reason,
+          });
+        }
+      } catch (error: any) {
+        socket.emit(ServerEvents.ERROR, {
+          code: 'INVALID_MAKE_OFFER_REQUEST',
+          message: error.message || 'Invalid offer request',
+        });
+      }
+    });
+
+    // Accept the other party's most recent offer — settles the case immediately. Same
+    // "success already broadcast, only failure needs a response" shape as game:makeOffer.
+    socket.on(ClientEvents.GAME_ACCEPT_OFFER, async (payload: unknown) => {
+      const roomId = engine.getPlayerRoom(socket.id);
+      if (!roomId) return;
+
+      const roomState = engine.rooms.get(roomId);
+      if (!roomState || roomState.room.status !== RoomStatus.GAME_PHASE) return;
+
+      const player = Array.from(roomState.players.values()).find(
+        (p: Player) => p.socketId === socket.id,
+      );
+      if (!player) return;
+
+      try {
+        const { caseId } = validateAcceptOffer(payload);
+        const outcome = await engine.acceptOffer(roomId, player.id, caseId);
+        if (!outcome.success) {
+          socket.emit(ServerEvents.ERROR, {
+            code: 'ACCEPT_OFFER_FAILED',
+            message: outcome.reason,
+          });
+        }
+      } catch (error: any) {
+        socket.emit(ServerEvents.ERROR, {
+          code: 'INVALID_ACCEPT_OFFER_REQUEST',
+          message: error.message || 'Invalid accept-offer request',
+        });
+      }
+    });
+
+    // End negotiation and send a case to trial — either party may call this at any time
+    // while the case is negotiating. Same "success already broadcast, only failure needs
+    // a response" shape as game:makeOffer.
+    socket.on(ClientEvents.GAME_GO_TO_COURT, async (payload: unknown) => {
+      const roomId = engine.getPlayerRoom(socket.id);
+      if (!roomId) return;
+
+      const roomState = engine.rooms.get(roomId);
+      if (!roomState || roomState.room.status !== RoomStatus.GAME_PHASE) return;
+
+      const player = Array.from(roomState.players.values()).find(
+        (p: Player) => p.socketId === socket.id,
+      );
+      if (!player) return;
+
+      try {
+        const { caseId } = validateGoToCourt(payload);
+        const outcome = await engine.goToCourt(roomId, player.id, caseId);
+        if (!outcome.success) {
+          socket.emit(ServerEvents.ERROR, {
+            code: 'GO_TO_COURT_FAILED',
+            message: outcome.reason,
+          });
+        }
+      } catch (error: any) {
+        socket.emit(ServerEvents.ERROR, {
+          code: 'INVALID_GO_TO_COURT_REQUEST',
+          message: error.message || 'Invalid go-to-court request',
+        });
+      }
+    });
+
     // Request AI-narrated "annual report" text for one rival — on demand (opened from
     // the Full Filing modal), outside the turn-resolution cycle, result goes only to
     // this socket. Never blocks/broadcasts anything else in the room.
@@ -1745,11 +1928,11 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
       }
     });
 
-    // Request this player's own KPI history + 3-turn prediction — on demand (opened by
-    // clicking any KPI card or breakdown line item in GamePhase.tsx), outside the
-    // turn-resolution cycle. No payload — always "my own data," result goes only to
-    // this socket.
-    socket.on(ClientEvents.GAME_GET_KPI_HISTORY, async () => {
+    // Request KPI history — either this player's own (+ 3-turn prediction) or a rival's
+    // (history only) — on demand (opened by clicking any KPI card or breakdown line item
+    // in GamePhase.tsx), outside the turn-resolution cycle. Result goes only to this
+    // socket, never broadcast.
+    socket.on(ClientEvents.GAME_GET_KPI_HISTORY, async (payload: unknown) => {
       const roomId = engine.getPlayerRoom(socket.id);
       if (!roomId) return;
 
@@ -1761,9 +1944,18 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
       );
       if (!player) return;
 
-      const response = await engine.getKpiHistory(roomId, player.id);
-      if (!response) return;
-      socket.emit(ServerEvents.GAME_KPI_HISTORY_RESULT, response);
+      try {
+        const { targetPlayerId } = validateKpiHistoryRequest(payload);
+        const isSelf = !targetPlayerId || targetPlayerId === player.id;
+        const response = await engine.getKpiHistory(roomId, isSelf ? player.id : targetPlayerId, isSelf);
+        if (!response) return;
+        socket.emit(ServerEvents.GAME_KPI_HISTORY_RESULT, response);
+      } catch (error: any) {
+        socket.emit(ServerEvents.ERROR, {
+          code: 'INVALID_KPI_HISTORY_REQUEST',
+          message: error.message || 'Invalid KPI history request',
+        });
+      }
     });
 
     // Voluntary forfeit — "Leave Game" button, GAME_PHASE only. Instant bankruptcy

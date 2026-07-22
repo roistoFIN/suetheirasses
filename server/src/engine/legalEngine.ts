@@ -65,7 +65,6 @@ export class LegalEngine {
       stakes,
       status: 'negotiating',
       offers: [],
-      myOffer: undefined,
       turnsNegotiating: 0,
       verdict: undefined,
       createdAt: new Date(),

@@ -13,6 +13,7 @@ import {
   type GameDeckResponse,
   type DigDeeperResultPayload,
   type AnnualReportEntry,
+  type LegalCaseData,
 } from '@suetheirasses/shared';
 
 interface GameState {
@@ -46,6 +47,8 @@ interface GameState {
   applyDigDeeperResult: (playerId: string, data: DigDeeperResultPayload) => void;
   /** Instant, out-of-band lawsuit-filing-fee response — patches just the requesting player's cash, same "don't wait for the next turn:resolved" reasoning as applyDigDeeperResult. */
   applyFileLawsuitResult: (playerId: string, newCash: number) => void;
+  /** Instant, out-of-band settlement-negotiation response (`game:legalCaseUpdate`, from `game:makeOffer`/`game:acceptOffer`/`game:goToCourt`) — patches the updated case into every matching player's `legalCases` in `turnResults` (the plaintiff's and the defendant's, whichever are present — this event only ever reaches the two parties on the case), and this client's own cash if `newCash` is set (a settlement). */
+  applyLegalCaseUpdate: (updatedCase: LegalCaseData, newCash?: number) => void;
 
   /** AI-narrated "annual report" text per rival, keyed by rivalPlayerId — requested on demand from the Full Filing modal. */
   annualReports: Map<string, AnnualReportEntry[]>;
@@ -176,6 +179,20 @@ export const useGameStore = create<GameState>((set) => ({
       const players = state.turnResults.players.map((p) =>
         p.playerId !== playerId ? p : { ...p, variables: { ...p.variables, cash: newCash } },
       );
+      return { turnResults: { ...state.turnResults, players } };
+    }),
+  applyLegalCaseUpdate: (updatedCase, newCash) =>
+    set((state) => {
+      if (!state.turnResults || !state.player) return {};
+      const myId = state.player.id;
+      const players = state.turnResults.players.map((p) => {
+        if (p.playerId !== updatedCase.plaintiffId && p.playerId !== updatedCase.defendantId) return p;
+        const legalCases = p.legalCases.map((c) => (c.id === updatedCase.id ? updatedCase : c));
+        if (p.playerId === myId && newCash !== undefined) {
+          return { ...p, legalCases, variables: { ...p.variables, cash: newCash } };
+        }
+        return { ...p, legalCases };
+      });
       return { turnResults: { ...state.turnResults, players } };
     }),
   setAnnualReportLoading: (rivalPlayerId) =>

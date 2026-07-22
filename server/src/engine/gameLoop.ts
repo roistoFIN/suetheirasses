@@ -164,6 +164,30 @@ export type LawsuitFilingFeeOutcome =
       variables: PlayerVariables;
     };
 
+/** One party's persisted-state update from a `makeOffer`/`acceptOffer`/`goToCourt` call —
+ * always needs its `engineState` written (the case changed inside it, even if nothing
+ * else did); `cash`/`variables` are only present for the party whose cash actually moved
+ * (a settlement, from `acceptOffer` or Step 8b's stale-offer auto-settle), same "must
+ * stay in sync with the `cash` column" requirement as `DigDeeperOutcome.variables`. */
+export interface LegalCaseSideUpdate {
+  playerId: string;
+  cash?: number;
+  variables?: PlayerVariables;
+  engineState: CompanyPersistUpdate['engineState'];
+}
+
+/** Result of a `makeOffer`/`acceptOffer`/`goToCourt` call — a two-party, out-of-band
+ * mutation (not part of turn resolution). On success, the caller (`GameEngine`) persists
+ * both `plaintiff` and `defendant` updates and emits `case` to both parties' sockets. */
+export type LegalCaseActionOutcome =
+  | { success: false; reason: 'case_not_found' | 'not_negotiating' | 'not_a_party' | 'not_your_turn' | 'no_offer_to_accept' | 'invalid_amount' }
+  | {
+      success: true;
+      case: LegalCaseData;
+      plaintiff: LegalCaseSideUpdate;
+      defendant: LegalCaseSideUpdate;
+    };
+
 /** Result of a `predictFutureKpis` call — up to `turnsAhead` future points, fewer if the simulation shows the player going bankrupt partway through. */
 export interface KpiPrediction {
   predicted: KpiSnapshotPoint[];
@@ -449,6 +473,13 @@ export class GameLoop {
     // turnsNegotiating 0 and shouldn't be incremented in the same turn it's created.
     const negotiatingBeforeFiling = allCases.filter(c => c.status === 'negotiating');
 
+    // Tracks cash actually RECEIVED this turn via case transfers per plaintiff — the
+    // "case-siirrot: saatu" line of the operating cash flow (FORMULAS §5), feeding the
+    // §16 bankruptcy waterfall pool. Declared here (rather than down at Step 9, where it
+    // used to live) since a stale-offer auto-settlement in Step 8b is just as real a
+    // same-turn cash receipt as a trial payout — both write into this same map.
+    const legalReceivedThisTurn = new Map<string, number>();
+
     // ── Step 8 — Deliberate lawsuit filings (FORMULAS §6) ─────────────────────
     // Lawsuits are never automatic — a player must choose to sue a specific target
     // over a specific ground drawn from that target's actually-deployed decisions,
@@ -475,25 +506,57 @@ export class GameLoop {
       }
     }
 
-    // ── Step 8b — Negotiation timeout (design addition, not in FORMULAS.md) ───
+    // ── Step 8b — Negotiation timeout / stale-offer auto-settle (design addition,
+    // not in FORMULAS.md) ──────────────────────────────────────────────────────
     // FORMULAS.md doesn't model a negotiation phase at all — a case is just "resolved
     // this turn" via a probability draw. The 'negotiating' status and its offer/accept
-    // UI (client-side, not yet wired to any server action — see REQUIREMENTS.md) are
-    // a richer addition than spec, but nothing ever moved a case out of 'negotiating'
-    // between two solvent players: the only other exit was the bankruptcy waterfall
-    // (Step 10b) cancelling/settling it if a party fell. A case between two players
-    // who both stayed solvent would sit at 'negotiating' forever, never reaching a
-    // verdict. This forces it to trial after `negotiationPeriodTurns` turns instead —
-    // the existing trial-resolution loop right below reads the very same `allCases`
-    // objects this mutates, so a case crossing the threshold resolves in this SAME
-    // turn (not "starts waiting, resolves next turn") — exactly like a case that was
-    // already `awaiting_trial` coming in gets resolved this turn too. The client never
-    // observes an `awaiting_trial` snapshot for a case that timed out this way; it
-    // just jumps straight from its last `negotiating` turn to a verdict.
+    // flow (`makeOffer`/`acceptOffer`/`goToCourt` below — instant, out-of-band actions,
+    // not part of this turn cycle) are a richer addition than spec. Two distinct things
+    // can leave a case dangling at a turn boundary, and each gets a different fallback:
+    //
+    // 1. A live offer was left on the table — someone made an offer (or counter) and
+    //    the round ended before the other side responded (accepted, countered, or went
+    //    to court). Rather than let it linger, the standing offer is treated as
+    //    accepted: the case settles right here for the last offer's amount, no
+    //    probability draw needed. This is the *only* way a case can settle besides an
+    //    explicit `acceptOffer` call — same cash-transfer shape (defendant pays
+    //    plaintiff), tracked in `legalReceivedThisTurn` exactly like a trial payout so
+    //    the §16 bankruptcy pool sees it as real income received this turn.
+    // 2. Nobody ever engaged at all (`offers` still empty) — the original gap this step
+    //    was built to close: nothing else would ever move a case out of 'negotiating'
+    //    between two solvent players (the only other exit was the bankruptcy waterfall
+    //    at Step 10b cancelling/settling it if a party fell), so it would sit forever.
+    //    This keeps the original fixed-timeout fallback, unchanged: after
+    //    `negotiationPeriodTurns` turns of silence, force to trial. The existing
+    //    trial-resolution loop right below reads the very same `allCases` objects this
+    //    mutates, so a case crossing the threshold resolves in this SAME turn (not
+    //    "starts waiting, resolves next turn") — the client never observes an
+    //    `awaiting_trial` snapshot for a case that timed out this way.
+    //
+    // A case with active back-and-forth (every offer answered before its turn boundary)
+    // never reaches branch 2's cap — by construction, any exchange that never explicitly
+    // accepts or goes to court always has an unanswered offer sitting at the next
+    // boundary check, so branch 1 settles it first. The cap only ever fires for a case
+    // nobody ever makes a single offer on.
     const negotiationPeriodTurns = this.config.gameSettings.negotiationPeriodTurns;
     for (const case_ of negotiatingBeforeFiling) {
       case_.turnsNegotiating += 1;
-      if (case_.turnsNegotiating >= negotiationPeriodTurns) {
+      if (case_.offers.length > 0) {
+        const lastOffer = case_.offers[case_.offers.length - 1];
+        const defCtx = ctxs.get(case_.defendantId);
+        const pltCtx = ctxs.get(case_.plaintiffId);
+        if (defCtx && pltCtx) {
+          defCtx.vars.cash -= lastOffer.amount;
+          pltCtx.vars.cash += lastOffer.amount;
+          legalReceivedThisTurn.set(
+            case_.plaintiffId,
+            (legalReceivedThisTurn.get(case_.plaintiffId) ?? 0) + lastOffer.amount,
+          );
+        }
+        case_.status = 'resolved';
+        case_.verdict = 'settled';
+        case_.resolvedAt = new Date();
+      } else if (case_.turnsNegotiating >= negotiationPeriodTurns) {
         case_.status = 'awaiting_trial';
       }
     }
@@ -526,10 +589,9 @@ export class GameLoop {
     }
 
     // ── Step 9 — Process resolved cases & apply cash settlements (FORMULAS §5, §16) ──
-    // Apply verdict cash flows: loser pays stakes to winner. Track amounts actually
-    // RECEIVED this turn per player — this is the "case-siirrot: saatu" line of the
-    // operating cash flow (FORMULAS §5) and feeds the §16 bankruptcy waterfall pool.
-    const legalReceivedThisTurn = new Map<string, number>();
+    // Apply verdict cash flows: loser pays stakes to winner. `legalReceivedThisTurn`
+    // (declared up at Step 8b, which can also write into it) tracks amounts actually
+    // RECEIVED this turn per player.
     for (const trial of casesResolvedThisTurn) {
       if (!trial.verdict) continue;
       const defCtx = ctxs.get(trial.defendantId);
@@ -912,6 +974,111 @@ export class GameLoop {
   }
 
   /**
+   * Make (or counter) a settlement offer on a case still `'negotiating'` — like
+   * `digDeeper`/`chargeLawsuitFilingFee`, an instant, out-of-band action independent of
+   * the turn timer, not part of `resolveTurn`. Unlike those, this touches TWO players'
+   * persisted state at once (a case lives in both the plaintiff's and defendant's own
+   * `engineState.legalCases`, see the Step 7 dedup comment above) — the caller
+   * (`GameEngine.makeOffer`) must persist both `plaintiff` and `defendant` updates.
+   *
+   * The defendant always moves first (`offers.length === 0`); after that, only the
+   * role that did *not* make the most recent offer may respond. `amount` is bounded to
+   * `(0, stakes]` — there's no reason to offer more than what's actually at stake.
+   */
+  makeOffer(playerId: string, caseId: string, amount: number, players: EngineDataInput[]): LegalCaseActionOutcome {
+    const found = this.findCaseAndParties(caseId, players);
+    if (!found) return { success: false, reason: 'case_not_found' };
+    const { case: case_, plaintiff, defendant } = found;
+
+    if (case_.status !== 'negotiating') return { success: false, reason: 'not_negotiating' };
+    const role = this.roleInCase(playerId, case_);
+    if (!role) return { success: false, reason: 'not_a_party' };
+    if (role !== this.roleOnMove(case_)) return { success: false, reason: 'not_your_turn' };
+    if (!Number.isFinite(amount) || amount <= 0 || amount > case_.stakes) {
+      return { success: false, reason: 'invalid_amount' };
+    }
+
+    const updatedCase: LegalCaseData = { ...case_, offers: [...case_.offers, { by: role, amount }] };
+
+    return {
+      success: true,
+      case: updatedCase,
+      plaintiff: { playerId: plaintiff.playerId, engineState: this.serializeEngineStateForCase(plaintiff.engineState, updatedCase) },
+      defendant: { playerId: defendant.playerId, engineState: this.serializeEngineStateForCase(defendant.engineState, updatedCase) },
+    };
+  }
+
+  /**
+   * Accept the other party's most recent offer on a case still `'negotiating'` —
+   * settles immediately for that amount (defendant pays plaintiff), same shape as Step
+   * 8b's stale-offer auto-settle inside `resolveTurn`, just triggered explicitly instead
+   * of by a turn boundary. Only the party who did *not* make that offer may accept it
+   * (can't accept your own offer).
+   */
+  acceptOffer(playerId: string, caseId: string, players: EngineDataInput[]): LegalCaseActionOutcome {
+    const found = this.findCaseAndParties(caseId, players);
+    if (!found) return { success: false, reason: 'case_not_found' };
+    const { case: case_, plaintiff, defendant } = found;
+
+    if (case_.status !== 'negotiating') return { success: false, reason: 'not_negotiating' };
+    if (case_.offers.length === 0) return { success: false, reason: 'no_offer_to_accept' };
+    const role = this.roleInCase(playerId, case_);
+    if (!role) return { success: false, reason: 'not_a_party' };
+    const lastOffer = case_.offers[case_.offers.length - 1];
+    if (lastOffer.by === role) return { success: false, reason: 'not_your_turn' };
+
+    const updatedCase: LegalCaseData = { ...case_, status: 'resolved', verdict: 'settled', resolvedAt: new Date() };
+    const newPlaintiffCash = plaintiff.vars.cash + lastOffer.amount;
+    const newDefendantCash = defendant.vars.cash - lastOffer.amount;
+
+    return {
+      success: true,
+      case: updatedCase,
+      plaintiff: {
+        playerId: plaintiff.playerId,
+        cash: newPlaintiffCash,
+        variables: this.stripInternal({ ...plaintiff.vars, cash: newPlaintiffCash }),
+        engineState: this.serializeEngineStateForCase(plaintiff.engineState, updatedCase),
+      },
+      defendant: {
+        playerId: defendant.playerId,
+        cash: newDefendantCash,
+        variables: this.stripInternal({ ...defendant.vars, cash: newDefendantCash }),
+        engineState: this.serializeEngineStateForCase(defendant.engineState, updatedCase),
+      },
+    };
+  }
+
+  /**
+   * End negotiation on a case still `'negotiating'` and send it to trial — either party
+   * may call this at any time, regardless of whose turn it is to respond (unlike
+   * `makeOffer`/`acceptOffer`); walking away from the table is a unilateral decision in
+   * a way that offering/accepting aren't. Only marks the case `'awaiting_trial'` — no
+   * verdict is drawn here. The next time this room's `resolveTurn` actually runs, the
+   * existing trial-resolution loop picks up any `'awaiting_trial'` case the same way it
+   * already does for one that got there via Step 8b's timeout, so there's exactly one
+   * verdict-drawing code path for both origins.
+   */
+  goToCourt(playerId: string, caseId: string, players: EngineDataInput[]): LegalCaseActionOutcome {
+    const found = this.findCaseAndParties(caseId, players);
+    if (!found) return { success: false, reason: 'case_not_found' };
+    const { case: case_, plaintiff, defendant } = found;
+
+    if (case_.status !== 'negotiating') return { success: false, reason: 'not_negotiating' };
+    const role = this.roleInCase(playerId, case_);
+    if (!role) return { success: false, reason: 'not_a_party' };
+
+    const updatedCase: LegalCaseData = { ...case_, status: 'awaiting_trial' };
+
+    return {
+      success: true,
+      case: updatedCase,
+      plaintiff: { playerId: plaintiff.playerId, engineState: this.serializeEngineStateForCase(plaintiff.engineState, updatedCase) },
+      defendant: { playerId: defendant.playerId, engineState: this.serializeEngineStateForCase(defendant.engineState, updatedCase) },
+    };
+  }
+
+  /**
    * Predict this player's own KPI trajectory `turnsAhead` turns into the future — by
    * literally reusing `resolveTurn` itself, sandboxed behind a synthetic room id that
    * can never collide with (or read/clear) any real room's `this.submissions` entry.
@@ -1030,6 +1197,88 @@ export class GameLoop {
       depreciationLedger: (raw.depreciationLedger ?? []) as DepreciationEntry[],
       legalCases: (raw.legalCases ?? []) as LegalCaseData[],
       investigations: (raw.investigations ?? {}) as Record<string, number>,
+    };
+  }
+
+  /**
+   * Locate a case by id and load both parties' full state — shared lookup for
+   * `makeOffer`/`acceptOffer`/`goToCourt`. Since the same case is persisted into both
+   * the plaintiff's and defendant's own `engineState.legalCases` (Step 7's dedup
+   * comment), it's found by scanning whichever loaded player happens to have it; `null`
+   * if the case doesn't exist in any loaded player's state, or if — which shouldn't
+   * happen while a case is still `'negotiating'`, since either party going bankrupt
+   * resolves it via the Step 10b waterfall first — one of the two parties named on the
+   * case isn't in `players` at all (e.g. already eliminated).
+   */
+  private findCaseAndParties(
+    caseId: string,
+    players: EngineDataInput[],
+  ): {
+    case: LegalCaseData;
+    plaintiff: { playerId: string; vars: PlayerVariables; engineState: CompanyEngineState };
+    defendant: { playerId: string; vars: PlayerVariables; engineState: CompanyEngineState };
+  } | null {
+    const byId = new Map<string, { vars: PlayerVariables; engineState: CompanyEngineState }>();
+    for (const p of players) {
+      if (!p.company) continue;
+      byId.set(p.id, {
+        vars: this.readVariables(p.company.variables as any),
+        engineState: this.readEngineState(p.company),
+      });
+    }
+
+    let found: LegalCaseData | undefined;
+    for (const state of byId.values()) {
+      found = state.engineState.legalCases.find(c => c.id === caseId);
+      if (found) break;
+    }
+    if (!found) return null;
+
+    const plaintiffState = byId.get(found.plaintiffId);
+    const defendantState = byId.get(found.defendantId);
+    if (!plaintiffState || !defendantState) return null;
+
+    return {
+      case: found,
+      plaintiff: { playerId: found.plaintiffId, ...plaintiffState },
+      defendant: { playerId: found.defendantId, ...defendantState },
+    };
+  }
+
+  /** Which role (if any) `playerId` has on this case. */
+  private roleInCase(playerId: string, case_: LegalCaseData): 'plaintiff' | 'defendant' | null {
+    if (playerId === case_.plaintiffId) return 'plaintiff';
+    if (playerId === case_.defendantId) return 'defendant';
+    return null;
+  }
+
+  /** Whichever role did *not* make the case's most recent offer is the one currently
+   * allowed to respond (counter or accept — `goToCourt` deliberately doesn't gate on
+   * this, see its own doc comment). The defendant always moves first, while `offers` is
+   * still empty. */
+  private roleOnMove(case_: LegalCaseData): 'plaintiff' | 'defendant' {
+    if (case_.offers.length === 0) return 'defendant';
+    const lastOffer = case_.offers[case_.offers.length - 1];
+    return lastOffer.by === 'plaintiff' ? 'defendant' : 'plaintiff';
+  }
+
+  /** Rebuilds one party's full persistable `engineState` (same serialized shape
+   * `CompanyPersistUpdate`/`DigDeeperOutcome.engineStateUpdate` use) with `updatedCase`
+   * spliced into their own `legalCases` by id — everything else (active decisions,
+   * depreciation ledger, investigations) carried through unchanged. */
+  private serializeEngineStateForCase(engineState: CompanyEngineState, updatedCase: LegalCaseData): CompanyPersistUpdate['engineState'] {
+    return {
+      activeDecisions: engineState.activeDecisions.map(d => ({
+        id: d.id,
+        definitionName: d.definition.decision,
+        deployedYear: d.deployedYear,
+        elapsedYears: d.elapsedYears,
+        isMatured: d.isMatured,
+        targetId: d.targetId,
+      })),
+      depreciationLedger: engineState.depreciationLedger,
+      legalCases: engineState.legalCases.map(c => (c.id === updatedCase.id ? updatedCase : c)),
+      investigations: engineState.investigations,
     };
   }
 

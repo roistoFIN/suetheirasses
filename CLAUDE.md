@@ -227,6 +227,35 @@ same way — don't assume a phase change ever tears the component down for you.
 full replacement for that in-flight turn, never a delta. Keep this in mind when touching
 either the client submission logic (`GamePhase.tsx`) or `GameLoop.submitDecisions`.
 
+### Queued (not-yet-resolved) decisions and lawsuits render as lightweight stand-ins, not by reusing the resolved-state cards
+
+"Active Strategies" and "Open Lawsuits" used to render only server-authoritative,
+already-resolved state (`myData.activeDecisions` / `myData.legalCases`) — nothing queued
+this turn (`pending.strategic`/`operational`/`lawsuits`, the exact same client-local state
+the Decision Deck and Sue modal already read/write) showed up there at all, even though
+both boxes are the natural place a player would look to confirm what they've picked. Both
+now merge `pending`'s entries into the same list, marked with the same red `QUEUED`
+`gpStyles.stamp` badge the Decision Deck already uses for consistency — but via two new,
+deliberately lightweight components (`QueuedDecisionCard`, `QueuedLawsuitCard`), not by
+stretching `ActiveDecisionCard`/`CaseCard` to accept a queued entry. A queued
+`SubmittedDecisionEntry` (`{ name, targetId? }`) has no `id`/`deployedYear`/maturity data
+yet — that only exists once a decision has actually been deployed by a turn resolving —
+and a queued `SubmittedLawsuitEntry` (`{ targetId, decisionName, groundName }`) has no
+`id`/`stakes`/`status`/`offers` yet either, since the real `LegalCaseData` isn't created
+until `LegalEngine.fileLawsuit` runs at the next turn resolution (Step 8). Don't try to
+paper over the shape mismatch with optional fields on the resolved-state components;
+these are two different lifecycle stages of the same thing, not one type with some fields
+sometimes missing.
+
+Both queued-card types carry their own removal action (`onCancel`/`onRemove`), reusing the
+exact same `pending` mutation the Decision Deck's toggle and the Sue modal's
+`handleRemoveQueued` already perform — `submitPending({ ...pending, [bucket]:
+pending[bucket].filter(...) })` — so cancelling from "Active Strategies"/"Open Lawsuits"
+is not a separate code path, just the same state update triggered from a third location.
+Since `game:submitDecisions` is full-replacement (see above), every one of these three
+locations independently calling `submitPending` with a locally-filtered copy of `pending`
+is exactly as correct as the two that already existed.
+
 ### Four exceptions to "everything happens in resolveTurn": Dig Deeper, reconnection, forfeit, and lawsuit filing fees
 
 Almost every gameplay effect only ever happens inside the turn-timer-driven
@@ -375,6 +404,84 @@ Two things worth knowing before touching this:
 `gameLoop.test.ts`'s `predictFutureKpis` suite includes a regression test that a queued
 decision for the *real* room still applies after a prediction runs — the thing this
 sandboxing approach exists to guarantee never breaks.
+
+**Rivals get the same graph, history only, never a prediction.** Every mini-stat in a
+rival's `RivalDossier` (CASH/REVENUE/EQUITY/STOCK VALUE/DEBT) and every row in their Full
+Filing report (`RivalFullReportView`) is clickable the same way your own KPIs are, opening
+the same `KpiHistoryGraph` — but by deliberate product decision (predicting a rival's
+future from *their own* decisions was considered and explicitly rejected), a rival lookup
+never calls `predictFutureKpis` at all; `GameEngine.getKpiHistory`'s third parameter,
+`includePrediction`, is `false` for any target other than the requester's own id, and the
+method returns early with `predicted: []` before touching `loadActiveCompanyPlayers` or
+the sandboxed `resolveTurn` machinery. `game:getKpiHistory`'s payload (`GetKpiHistoryPayload
+{ targetPlayerId? }`, validated by `validateKpiHistoryRequest`) carries which player's data
+is being asked for — omitted or equal to the caller's own id means self; anything else is
+treated as a rival lookup. The `kpiSnapshot.findMany` query itself is scoped to
+`player: { roomId }` (the same distrust-the-client, scope-via-room pattern `getAnnualReport`
+already uses) rather than a separate existence/membership check — a `targetPlayerId` for a
+player who isn't actually in this room just comes back with an empty `history`, never an
+error or another room's data.
+
+`KpiHistoryResponse` carries a `playerId` field specifically so the client can tell two
+concurrently-open graphs apart. `GamePhase.tsx` can have two `KpiHistoryGraph` instances
+mounted at once (a top-level graph plus a stacked sub-field one, e.g. your own CASH card
+open alongside a rival's Full Filing "Operating expenses" row) — each instance's response
+handler checks `payload.playerId === targetPlayerId` before applying a response, so a
+stale reply for a since-closed graph can never flash the wrong player's numbers into a
+still-open one. If you add a third place `KpiHistoryGraph` can be nested, keep this check;
+don't assume "the only listener for `game:kpiHistoryResult`" is safe to skip it.
+
+### Trend arrows (up/down/no-change) are computed client-side, from whatever the client already has in memory — no new server data
+
+Every KPI value on screen — the 4 top cards, Threat Level, every rival mini-stat, and
+every individual row inside every breakdown view (`CashWaterfallView`, `RevenueView`,
+`EquityView`, `ShareView`, `ThreatView`, `RivalFullReportView`) — shows a small up/down/
+no-change icon next to its value. This is deliberately **not** built on the KPI history
+feature above: it only ever diffs the current turn's snapshot against the *one* previous
+turn's snapshot already sitting in client state (`prevData`/`prevCompetitors` in
+`GamePhase.tsx`, populated by the existing turn-sync effect), via the pre-existing
+`computeTrend(current, previous)` helper — no new socket round trip, no new server
+endpoint. `computeTrend` returns `undefined` (nothing rendered) when there's no previous
+turn to compare against (round 1, or a rival never seen before), `'same'` when the two
+values are within `computeTrend`'s epsilon (a genuine "unchanged" reading, distinct from
+"no data yet"), and `'up'`/`'down'` otherwise.
+
+`TrendIcon` (`{ trend, invert, size }`) is the one component every one of the call sites
+above renders through — `IconTrendingUp`/`IconTrendingDown`/`IconMinus`, colored green/
+red/gray. `invert` flips which direction reads as "good": costs (Operating expenses,
+Staff cost, Debt, Depreciation, Finance cost, Tax cost, COGS), Outrage, Scrutiny, legal
+exposure ratio/Threat Level itself, and price/process-loss in the Share factor grid are
+all `invert`; everything else defaults to "up is good." Get this wrong for a new field
+and the arrow will be colored backwards, not merely mislabeled — check which direction is
+actually favorable before wiring a new row in.
+
+Two categories of row need a little more than "diff a persisted field":
+- **Computed-only rows with no backing `KpiSnapshot` field** (COGS, gross profit, EBITDA,
+  EBIT, profit before tax in `CashWaterfallView`; book/market equity totals in
+  `EquityView`; the three weighted terms + total in `ThreatView`; net demand in
+  `ShareView`) get their previous value by **recomputing the same formula against
+  `prevData`** rather than a field lookup — see `computeCashWaterfall`, `computeEquity`,
+  `computeThreatTerms`, each called once for the current turn and once (if `prevData`
+  exists) for the previous one, so the two totals a trend arrow diffs always come from
+  the exact same math. If you change one of these formulas, you're changing both calls at
+  once (they're one shared function) — no risk of the live value and its trend silently
+  drifting apart, but also no separate "trend formula" to keep in sync by hand.
+- **Rows with a real dot-path field** reuse `getKpiFieldValue` (originally written only
+  for `KpiSnapshotPoint` rows out of `KpiHistoryResponse`) — its parameter type was
+  loosened to a structural `{ variables, derived, riskGauge }` shape so it also accepts a
+  plain `PlayerTurnResult` (`prevData`/`prevRival`), which has the same three fields plus
+  extras TypeScript ignores. This is *not* a call to `game:getKpiHistory` — it's a pure
+  local read of whatever `PlayerTurnResult` object is already sitting in state.
+
+Rival trend arrows for the 5 mini-stats and Full Filing rows work exactly like your own,
+sourced from `prevCompetitors`/`prevRival` (only ever the *one* previous turn — not the
+full `KpiSnapshot` history a rival's clicked-through graph fetches separately). The market
+share bar in `ShareView` goes one step further: **every** player's row shows a trend arrow
+(sourced from `prevData` for your own row, `prevRivals.get(playerId)` for each rival's),
+even though only your own row is clickable — the arrow is a passive "who's gaining/losing
+share" read, not a graph-opening affordance, so it doesn't need the click restriction the
+history feature has (rival trend, unlike rival history, was never gated behind a decision
+about predicting anyone's future).
 
 ### Local LLM for narrated "annual report" text — best-effort, never load-bearing
 
@@ -624,25 +731,73 @@ silently reverting the deliberate-filing design — see README's *Lawsuits* sect
 `GameLoop`'s Step 8 / `LegalEngine.fileLawsuit` for context.
 
 FORMULAS.md doesn't model a negotiation phase at all — a filed case just resolves via a
-probability draw. This codebase's richer `'negotiating'` status (with a not-yet-wired
-offer/accept UI, tracked separately in `REQUIREMENTS.md`) is a further addition beyond
-spec, and until recently had a real gap: nothing ever moved a case out of `'negotiating'`
-between two players who both stayed solvent (the only other exit was the bankruptcy
-waterfall settling/cancelling it), so the pre-existing trial-resolution loop in
-`gameLoop.ts` (`for (const trial of allCases) { if (trial.status !== 'awaiting_trial')
-continue; ... }`) was **entirely unreachable in live play** — a case just sat at
-`'negotiating'` forever. Fixed with a Step 8b "negotiation timeout": each `LegalCaseData`
-tracks `turnsNegotiating` (incremented once per turn it's still negotiating; a case filed
-this same turn starts at 0, not 1 — see `negotiatingBeforeFiling`'s snapshot-before-filing
-ordering in `gameLoop.ts`), and once it reaches `gameSettings.negotiationPeriodTurns` (2 by
-default), the case's `status` is forced to `'awaiting_trial'` *in place*, before the
-existing trial-resolution loop runs later in the same `resolveTurn` call — so a case that
-crosses the threshold resolves to a verdict that same turn, not "starts waiting, resolves
-next turn." The client never observes an intermediate `awaiting_trial` snapshot for a case
-that timed out this way. If you build out the real offer/settlement UI later, this timeout
-should remain as the fallback for cases neither side actively settles — don't remove it
-without also confirming REQUIREMENTS.md's offer/accept flow gives every case some other
-path to resolution.
+probability draw. This codebase's richer `'negotiating'` status, with a real settlement
+negotiation flow on top (offer/counter/accept/go-to-court — see *"Settlement negotiation"*
+below), is a further addition beyond spec.
+
+### Settlement negotiation — a sixth exception to `resolveTurn`, plus a Step 8b fallback for whatever it doesn't resolve
+
+A filed case starts `status: 'negotiating'`. Getting it out of that status is split
+between two mechanisms, deliberately kept separate:
+
+**Live negotiation** (`GameLoop.makeOffer`/`acceptOffer`/`goToCourt`, called from
+`GameEngine.makeOffer`/`acceptOffer`/`goToCourt`) is instant and out-of-band — a sixth
+member of the *"exceptions to resolveTurn"* family above (`digDeeper`, reconnection,
+forfeit, lawsuit filing fees, and now this), fired over the socket the moment a player
+clicks a button in `NegotiationPanel` (`GamePhase.tsx`), never gated by the turn timer.
+Unlike every other exception, this one is **two-party**: a case is persisted into both
+the plaintiff's and the defendant's own `Company.engineState.legalCases` (see the
+`allCasesById` dedup section below), so every action here reads/writes *both* parties'
+rows in one call, via `GameLoop.findCaseAndParties` and `LegalCaseActionOutcome`'s paired
+`plaintiff`/`defendant` `LegalCaseSideUpdate`s. `GameEngine.persistLegalCaseAction` writes
+both Company rows; `GameEngine.emitLegalCaseUpdate` sends the updated case to both
+parties' sockets directly (via `roomState.players.get(playerId)?.socketId`) — **never a
+room-wide broadcast**, since nobody but the two parties on a case has any business seeing
+it. A disconnected party is silently skipped (their `socketId` is cleared by
+`markPlayerDisconnected`); they pick up the persisted state on reconnect or the next
+`turn:resolved` either way, same as every other instant action's disconnect handling.
+
+The rules, enforced entirely server-side (never trust the client's idea of whose turn it
+is): the **defendant always moves first** (`offers.length === 0`); after that, only the
+role that did *not* make the most recent offer may respond — with a counter-offer
+(`makeOffer` again) or by accepting it (`acceptOffer`, which settles the case immediately:
+defendant pays plaintiff the offer's exact amount, `verdict: 'settled'`). **`goToCourt` is
+never turn-gated** — either party can walk away and force a trial at any point, since
+that's a unilateral decision in a way offering/accepting aren't. Crucially, `goToCourt`
+only sets `status: 'awaiting_trial'` — it does **not** draw a verdict itself. The verdict
+is drawn the next time this room's `resolveTurn` actually runs (whenever the round timer
+or ready-up next triggers it), by the exact same trial-resolution loop that already
+handles a case forced to `awaiting_trial` any other way — one verdict-drawing code path,
+not two.
+
+**Step 8b, inside `resolveTurn`**, is what catches everything live negotiation doesn't
+resolve before a turn boundary — two distinct fallbacks for two distinct gaps:
+- **A pending, unanswered offer** (`offers.length > 0` when the boundary hits — nobody
+  accepted, countered, or went to court in time) is treated as accepted: the case settles
+  right there for the last offer's amount, same cash-transfer shape as `acceptOffer`. This
+  fires on the very *next* boundary after any offer is made — by construction, any
+  exchange that never explicitly accepts or goes to court always has an unanswered offer
+  sitting at the next check, so a case with active back-and-forth never reaches the second
+  fallback below; it always settles this way first.
+- **No offer ever made** (`offers` still empty) is the original gap this step was built to
+  close before live negotiation existed at all: nothing else would ever move a case out of
+  `'negotiating'` between two solvent players (the only other exit is the bankruptcy
+  waterfall at Step 10b cancelling/settling it if a party falls), so it would sit forever.
+  This keeps the original fixed-timeout fallback, unchanged: `turnsNegotiating` increments
+  once per boundary the case is still negotiating (a case filed this same turn starts at 0,
+  not 1 — see `negotiatingBeforeFiling`'s snapshot-before-filing ordering), and once it
+  reaches `gameSettings.negotiationPeriodTurns` (2 by default), `status` is forced to
+  `'awaiting_trial'` *in place*, before the existing trial-resolution loop runs later in
+  the same `resolveTurn` call — so a case that crosses the threshold resolves to a verdict
+  that same turn, not "starts waiting, resolves next turn." The client never observes an
+  intermediate `awaiting_trial` snapshot for a case that timed out this way.
+
+Both Step 8b branches write into `legalReceivedThisTurn` (declared up at Step 8b now,
+not down at Step 9 where it used to live) exactly like a trial payout does, since a
+same-turn settlement is just as real an income line for the §16 bankruptcy pool.
+`gameLoop.test.ts`'s `"negotiation turn-boundary fallbacks (Step 8b)"` suite covers both
+branches; the `makeOffer`/`acceptOffer`/`goToCourt` suites cover the live-negotiation
+turn-taking rules directly.
 
 ### A `LegalCaseData` lives in two players' `engineState` at once — dedupe by id when reconstructing `allCases`
 
@@ -659,6 +814,25 @@ lists client-side. `allCases` is built via a `Map<id, LegalCaseData>` specifical
 prevent this (`gameLoop.ts`'s Step 7) — keep that dedup if you ever touch how `allCases`
 is assembled; `gameLoop.test.ts`'s "should not duplicate a case across turns" regression
 test resolves 3 turns in a row and asserts the count stays at 1 the whole way.
+
+### A case's probability chip is defendant-only — the plaintiff's side is a deliberately unclickable "Unknown", not a second data source
+
+`CaseCard`'s header shows a colored percentage chip (`semaphoreLevel(displayProb)`,
+`displayProb` = `adjustedProbability` if the case has one, else `baseProbability`) only
+when `isDefendant` — a real number a defendant genuinely has visibility into, per
+FORMULAS §6/§9. For the *plaintiff*'s own copy of the same `LegalCaseData` (remember,
+per the section above, one case lives in both parties' `engineState`), there's
+deliberately no equivalent number to show — a plaintiff has no special insight into their
+own filed case's odds beyond what any rival's public filing already reveals, so showing
+one would either fabricate false precision or (worse) leak the same `adjustedProbability`
+math the defendant sees, which was never meant to be plaintiff-visible. The plaintiff
+side renders a `semColors.gray`-styled chip reading "Unknown" instead, via
+`gpStyles.semaphoreChip('gray', false)` — the second `clickable` argument (default
+`true`, only ever passed `false` here) drops the `cursor: pointer` styling, since there's
+no `RiskBreakdownView` to open for a probability that doesn't exist. This replaced an
+earlier "Investigate" button that opened the target's Full Filing report — removed by
+product decision as redundant (the identical Full Filing button already exists in the
+Competitor Intel panel for every rival, case or no case) rather than fixed in place.
 
 ### React `setState` updater callbacks must be pure — StrictMode will call them twice in dev
 

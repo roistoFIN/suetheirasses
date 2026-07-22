@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { GameLoop, type EngineDataInput } from './gameLoop';
 import { DEFAULT_FORMULA_SEEDS } from './defaultFormulas';
-import type { GameConfig, PlayerVariables } from '@suetheirasses/shared';
+import type { GameConfig, PlayerVariables, LegalCaseData } from '@suetheirasses/shared';
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -145,6 +145,41 @@ const twoPlayers = () => makePlayers([
   { id: 'player-1', name: 'Alice' },
   { id: 'player-2', name: 'Bob' },
 ]);
+
+/** A negotiating case between player-1 (defendant) and player-2 (plaintiff), for the
+ * makeOffer/acceptOffer/goToCourt tests below — bypasses filing a real lawsuit through
+ * resolveTurn, since those methods only need a case already sitting in engineState. */
+function makeCase(overrides: Partial<LegalCaseData> = {}): LegalCaseData {
+  return {
+    id: 'case-1',
+    roomId: 'room-1',
+    plaintiffId: 'player-2',
+    defendantId: 'player-1',
+    decisionName: 'Water Pumping',
+    groundName: 'Environmental Violation',
+    description: 'Sue for environmental damage',
+    baseProbability: 0.12,
+    adjustedProbability: undefined,
+    stakes: 20000,
+    status: 'negotiating',
+    offers: [],
+    turnsNegotiating: 0,
+    verdict: undefined,
+    createdAt: new Date('2024-01-01T00:00:00Z'),
+    resolvedAt: undefined,
+    ...overrides,
+  };
+}
+
+/** Builds the two-party fixture makeOffer/acceptOffer/goToCourt need — the same case
+ * object persisted into both parties' own engineState.legalCases, matching the real
+ * "one case lives in both parties' engineState" invariant `resolveTurn` maintains. */
+function playersWithCase(case_: LegalCaseData, cashByPlayer: Record<string, number> = {}): EngineDataInput[] {
+  return makePlayers([
+    { id: 'player-1', name: 'Alice', variables: makeVars({ cash: cashByPlayer['player-1'] ?? 100000 }), engineState: { legalCases: [case_] } },
+    { id: 'player-2', name: 'Bob', variables: makeVars({ cash: cashByPlayer['player-2'] ?? 100000 }), engineState: { legalCases: [case_] } },
+  ]);
+}
 
 // ── Tests ────────────────────────────────────────────────────
 
@@ -992,6 +1027,220 @@ describe('GameLoop', () => {
       const outcome = gameLoop.chargeLawsuitFilingFee('room-2', 'player-1', makeFeeFixture());
 
       expect(outcome.success).toBe(true);
+    });
+  });
+
+  describe('makeOffer', () => {
+    it('lets the defendant make the opening offer', () => {
+      const outcome = gameLoop.makeOffer('player-1', 'case-1', 10000, playersWithCase(makeCase()));
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.case.offers).toEqual([{ by: 'defendant', amount: 10000 }]);
+      expect(outcome.case.status).toBe('negotiating');
+      // Neither party's cash moves on an offer — only accepting one does.
+      expect(outcome.plaintiff.cash).toBeUndefined();
+      expect(outcome.defendant.cash).toBeUndefined();
+      // Both parties' own persisted copy of the case must carry the new offer.
+      expect(outcome.plaintiff.engineState.legalCases[0].offers).toEqual(outcome.case.offers);
+      expect(outcome.defendant.engineState.legalCases[0].offers).toEqual(outcome.case.offers);
+    });
+
+    it('rejects the plaintiff trying to make the opening offer — the defendant always moves first', () => {
+      const outcome = gameLoop.makeOffer('player-2', 'case-1', 10000, playersWithCase(makeCase()));
+
+      expect(outcome).toEqual({ success: false, reason: 'not_your_turn' });
+    });
+
+    it('lets the plaintiff counter after the defendant\'s opening offer', () => {
+      const case_ = makeCase({ offers: [{ by: 'defendant', amount: 10000 }] });
+      const outcome = gameLoop.makeOffer('player-2', 'case-1', 15000, playersWithCase(case_));
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.case.offers).toEqual([
+        { by: 'defendant', amount: 10000 },
+        { by: 'plaintiff', amount: 15000 },
+      ]);
+    });
+
+    it('rejects a party trying to counter their own just-made offer', () => {
+      const case_ = makeCase({ offers: [{ by: 'defendant', amount: 10000 }] });
+      const outcome = gameLoop.makeOffer('player-1', 'case-1', 12000, playersWithCase(case_));
+
+      expect(outcome).toEqual({ success: false, reason: 'not_your_turn' });
+    });
+
+    it('rejects an amount above the case\'s stakes', () => {
+      const outcome = gameLoop.makeOffer('player-1', 'case-1', 999999, playersWithCase(makeCase({ stakes: 20000 })));
+
+      expect(outcome).toEqual({ success: false, reason: 'invalid_amount' });
+    });
+
+    it('rejects a zero or negative amount', () => {
+      const outcome = gameLoop.makeOffer('player-1', 'case-1', 0, playersWithCase(makeCase()));
+
+      expect(outcome).toEqual({ success: false, reason: 'invalid_amount' });
+    });
+
+    it('rejects an offer on a case that has already left negotiation', () => {
+      const outcome = gameLoop.makeOffer('player-1', 'case-1', 10000, playersWithCase(makeCase({ status: 'awaiting_trial' })));
+
+      expect(outcome).toEqual({ success: false, reason: 'not_negotiating' });
+    });
+
+    it('rejects an unknown case id', () => {
+      const outcome = gameLoop.makeOffer('player-1', 'nonexistent-case', 10000, playersWithCase(makeCase()));
+
+      expect(outcome).toEqual({ success: false, reason: 'case_not_found' });
+    });
+
+    it('rejects a player who is neither the plaintiff nor the defendant on this case', () => {
+      const players = [
+        ...playersWithCase(makeCase()),
+        ...makePlayers([{ id: 'player-3', name: 'Carol' }]),
+      ];
+      const outcome = gameLoop.makeOffer('player-3', 'case-1', 10000, players);
+
+      expect(outcome).toEqual({ success: false, reason: 'not_a_party' });
+    });
+  });
+
+  describe('acceptOffer', () => {
+    it('settles the case at the last offer\'s amount, defendant paying plaintiff', () => {
+      const case_ = makeCase({ offers: [{ by: 'defendant', amount: 10000 }] });
+      const outcome = gameLoop.acceptOffer('player-2', 'case-1', playersWithCase(case_, { 'player-1': 100000, 'player-2': 50000 }));
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.case.status).toBe('resolved');
+      expect(outcome.case.verdict).toBe('settled');
+      expect(outcome.case.resolvedAt).toBeInstanceOf(Date);
+      expect(outcome.defendant.cash).toBe(90000);
+      expect(outcome.plaintiff.cash).toBe(60000);
+      expect(outcome.defendant.variables?.cash).toBe(90000);
+      expect(outcome.plaintiff.variables?.cash).toBe(60000);
+      // Both parties' own persisted copy must carry the resolved case.
+      expect(outcome.plaintiff.engineState.legalCases[0].status).toBe('resolved');
+      expect(outcome.defendant.engineState.legalCases[0].status).toBe('resolved');
+    });
+
+    it('rejects the party who made the offer trying to accept their own offer', () => {
+      const case_ = makeCase({ offers: [{ by: 'defendant', amount: 10000 }] });
+      const outcome = gameLoop.acceptOffer('player-1', 'case-1', playersWithCase(case_));
+
+      expect(outcome).toEqual({ success: false, reason: 'not_your_turn' });
+    });
+
+    it('rejects accepting when no offer has been made yet', () => {
+      const outcome = gameLoop.acceptOffer('player-2', 'case-1', playersWithCase(makeCase()));
+
+      expect(outcome).toEqual({ success: false, reason: 'no_offer_to_accept' });
+    });
+
+    it('accepts the most recent offer after a counter, not an earlier one', () => {
+      const case_ = makeCase({
+        offers: [
+          { by: 'defendant', amount: 10000 },
+          { by: 'plaintiff', amount: 15000 },
+        ],
+      });
+      const outcome = gameLoop.acceptOffer('player-1', 'case-1', playersWithCase(case_, { 'player-1': 100000, 'player-2': 50000 }));
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.defendant.cash).toBe(85000);
+      expect(outcome.plaintiff.cash).toBe(65000);
+    });
+  });
+
+  describe('goToCourt', () => {
+    it('lets the defendant end negotiation and send the case to trial without a verdict yet', () => {
+      const outcome = gameLoop.goToCourt('player-1', 'case-1', playersWithCase(makeCase()));
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.case.status).toBe('awaiting_trial');
+      expect(outcome.case.verdict).toBeUndefined();
+      expect(outcome.plaintiff.cash).toBeUndefined();
+      expect(outcome.defendant.cash).toBeUndefined();
+    });
+
+    it('lets the plaintiff end negotiation too — either party can walk away at any time, no turn-gating', () => {
+      // Even mid-exchange, with the defendant's offer still awaiting the plaintiff's
+      // response, the plaintiff can go straight to court instead of countering/accepting.
+      const case_ = makeCase({ offers: [{ by: 'defendant', amount: 10000 }] });
+      const outcome = gameLoop.goToCourt('player-2', 'case-1', playersWithCase(case_));
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.case.status).toBe('awaiting_trial');
+    });
+
+    it('rejects a case that has already left negotiation', () => {
+      const outcome = gameLoop.goToCourt('player-1', 'case-1', playersWithCase(makeCase({ status: 'resolved', verdict: 'settled' })));
+
+      expect(outcome).toEqual({ success: false, reason: 'not_negotiating' });
+    });
+
+    it('rejects a player who is neither the plaintiff nor the defendant on this case', () => {
+      const players = [
+        ...playersWithCase(makeCase()),
+        ...makePlayers([{ id: 'player-3', name: 'Carol' }]),
+      ];
+      const outcome = gameLoop.goToCourt('player-3', 'case-1', players);
+
+      expect(outcome).toEqual({ success: false, reason: 'not_a_party' });
+    });
+  });
+
+  describe('negotiation turn-boundary fallbacks (Step 8b)', () => {
+    it('auto-settles a case with a pending, unanswered offer at the very next turn boundary — the offer is treated as accepted', () => {
+      // The defendant offered 10000 last turn; nobody accepted/countered/went to court
+      // before this turn resolved. makeConfig's negotiationPeriodTurns is 2 — this must
+      // settle on this very first boundary check, not wait for the cap.
+      const case_ = makeCase({ offers: [{ by: 'defendant', amount: 10000 }] });
+      const withOffer = playersWithCase(case_, { 'player-1': 100000, 'player-2': 50000 });
+      // Identical fixture but with no case at all — isolates exactly the settlement's
+      // cash effect from everything else a turn's P&L/balance-sheet math also moves,
+      // by diffing this run against the one with the pending offer.
+      const withoutCase = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: makeVars({ cash: 100000 }) },
+        { id: 'player-2', name: 'Bob', variables: makeVars({ cash: 50000 }) },
+      ]);
+
+      const outcome = gameLoop.resolveTurn('room-1', 2, withOffer);
+      const baseline = gameLoop.resolveTurn('room-1', 2, withoutCase);
+
+      const aliceCase = outcome.result.players.find((p) => p.playerId === 'player-1')?.legalCases[0];
+      const bobCase = outcome.result.players.find((p) => p.playerId === 'player-2')?.legalCases[0];
+      expect(aliceCase?.status).toBe('resolved');
+      expect(aliceCase?.verdict).toBe('settled');
+      expect(bobCase?.status).toBe('resolved');
+      expect(bobCase?.verdict).toBe('settled');
+
+      const aliceCash = outcome.result.players.find((p) => p.playerId === 'player-1')!.variables.cash;
+      const bobCash = outcome.result.players.find((p) => p.playerId === 'player-2')!.variables.cash;
+      const aliceBaselineCash = baseline.result.players.find((p) => p.playerId === 'player-1')!.variables.cash;
+      const bobBaselineCash = baseline.result.players.find((p) => p.playerId === 'player-2')!.variables.cash;
+
+      // Defendant (Alice, player-1) paid the plaintiff (Bob, player-2) exactly the
+      // offer amount, on top of whatever the rest of the turn's math already did.
+      expect(aliceBaselineCash - aliceCash).toBeCloseTo(10000, 5);
+      expect(bobCash - bobBaselineCash).toBeCloseTo(10000, 5);
+    });
+
+    it('does not auto-settle a case with no offers yet on its first boundary check — the original negotiationPeriodTurns cap still applies', () => {
+      // No offer was ever made — must NOT be settled or forced to trial after just one
+      // turn (negotiationPeriodTurns is 2); this is the pre-existing timeout path,
+      // unaffected by the new offer-driven settle branch.
+      const players = playersWithCase(makeCase());
+
+      const outcome = gameLoop.resolveTurn('room-1', 2, players);
+
+      const aliceCase = outcome.result.players.find((p) => p.playerId === 'player-1')?.legalCases[0];
+      expect(aliceCase?.status).toBe('negotiating');
+      expect(aliceCase?.turnsNegotiating).toBe(1);
     });
   });
 

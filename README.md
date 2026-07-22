@@ -408,7 +408,10 @@ model KpiSnapshot {
 | `game:digDeeper` | `{ attackId }` | Pay `gameSettings.digDeeperCost` ($10,000 by default) to reveal the next tier of intel on one incoming attack — instant, outside the turn-resolution cycle. See *Attack Awareness & Dig Deeper* below. |
 | `game:fileLawsuit` | `{ targetId, decisionName, groundName }` | Pay `gameSettings.lawsuitFilingCost` ($15,000 by default) the instant a lawsuit is actually filed — instant, outside the turn-resolution cycle, same pattern as `game:digDeeper`. The client still separately queues the same entry via `game:submitDecisions` for the case itself to be created at the next turn resolution. See *Lawsuits* below. |
 | `game:getAnnualReport` | `{ rivalPlayerId }` | Request AI-narrated "annual report" text for one rival's active decisions — on demand, outside the turn-resolution cycle. See *AI-Narrated Annual Reports* below. |
-| `game:getKpiHistory` | — | Request this player's own KPI history (persisted `KpiSnapshot` rows) plus a 3-turn-ahead prediction — on demand, opened by clicking any KPI card or breakdown line item. No payload — always "my own data." See *KPI History & Prediction* below. |
+| `game:getKpiHistory` | `{ targetPlayerId? }` | Request KPI history (persisted `KpiSnapshot` rows) — on demand, opened by clicking any KPI card or breakdown line item. Omitted (or equal to the caller's own id) returns "my own data" plus a 3-turn-ahead prediction; any other id in the same room returns that rival's history only, no prediction. See *KPI History & Prediction* below. |
+| `game:makeOffer` | `{ caseId, amount }` | Make (or counter) a settlement offer on a case still `'negotiating'` — instant, outside the turn-resolution cycle. Only the party who did *not* make the most recent offer may call this (the defendant, if none has been made yet). See *Lawsuits* below. |
+| `game:acceptOffer` | `{ caseId }` | Accept the other party's most recent offer, settling the case immediately for that amount — instant. Only the party who did not make that offer may call this. |
+| `game:goToCourt` | `{ caseId }` | End negotiation and send a case to trial — instant. Either party may call this at any time while the case is `'negotiating'`; only marks it `awaiting_trial`, the verdict itself is still drawn at the next turn resolution. |
 | `game:leave` | — | Voluntary forfeit — GAME_PHASE only. Instant bankruptcy for the requesting player; the game continues for everyone else. See *Leave Game* below. |
 | `game:ready` | `{ ready }` | Toggle ready status for the in-flight turn — GAME_PHASE only. Once every active player is ready, the turn resolves immediately. See *Ready-Up* below. |
 | `chat:message` | `{ message }` | Send a chat message to the room — WAITING phase only. See *Lobby Features* above. |
@@ -433,11 +436,12 @@ model KpiSnapshot {
 | `game:digDeeperResult` | `{ attackId, cost, newCash, attack: IncomingAttackInfo }` | Sent only to the requesting socket, never broadcast — the newly-unlocked intel tier for one attack |
 | `game:fileLawsuitResult` | `{ cost, newCash }` | Sent only to the requesting socket, on a successful `game:fileLawsuit` charge — a failed charge (insufficient funds, per-turn limit reached) is reported via the generic `error` event instead, same convention as `game:digDeeper` |
 | `game:annualReportResult` | `{ rivalPlayerId, entries: AnnualReportEntry[] }` | Sent only to the requesting socket, never broadcast — AI-narrated (or static-fallback) flavor text for the rival's active decisions |
-| `game:kpiHistoryResult` | `{ history: KpiSnapshotPoint[], predicted: KpiSnapshotPoint[], bankruptAtRound? }` | Sent only to the requesting socket — this player's own persisted KPI history (oldest round first) plus up to 3 predicted future turns |
+| `game:kpiHistoryResult` | `{ playerId, history: KpiSnapshotPoint[], predicted: KpiSnapshotPoint[], bankruptAtRound? }` | Sent only to the requesting socket — persisted KPI history (oldest round first) for whichever player was requested (`playerId`). Self requests get up to 3 predicted future turns too; rival requests always come back with `predicted: []`. |
+| `game:legalCaseUpdate` | `{ case: LegalCaseData, newCash? }` | Sent to BOTH parties on a case (never broadcast to the room) whenever `game:makeOffer`/`game:acceptOffer`/`game:goToCourt` succeeds. `newCash` is per-recipient — present only for whichever party's cash actually just moved (a settlement), undefined for an offer or a court decision. A validation failure (not your turn, case not found, etc.) goes only to the requesting socket via `error` instead. |
 | `game:left` | — | Sent only to the requesting socket, confirming a successful `game:leave` forfeit — the client's cue to show the "lost" takeover with the forfeit-specific message |
 | `game:readyUpdate` | `{ readyPlayerIds: string[], activePlayerCount: number }` | Broadcast on every `game:ready` toggle, and reset to an empty `readyPlayerIds` at the start of every new round |
 | `chat:message` | `{ playerId, playerName, message, timestamp }` | Broadcast to the room in response to a `chat:message` from any player in it |
-| `error` | `{ code, message }` | Error occurred (e.g. `NOT_HOST`, `INVALID_DECISIONS`, `REJOIN_FAILED`, `ANNUAL_REPORT_FAILED`, `NOT_ENOUGH_PLAYERS`, `LEAVE_GAME_FAILED`, `INVALID_READY`, `INVALID_CHAT_MESSAGE`, `NAME_TAKEN`, `ROOM_FULL`, `ROOM_NOT_FOUND`, `KICKED_FROM_ROOM`, `LEAVE_ROOM_FAILED`, `INVALID_INVITE_ONLY`) |
+| `error` | `{ code, message }` | Error occurred (e.g. `NOT_HOST`, `INVALID_DECISIONS`, `REJOIN_FAILED`, `ANNUAL_REPORT_FAILED`, `NOT_ENOUGH_PLAYERS`, `LEAVE_GAME_FAILED`, `INVALID_READY`, `INVALID_CHAT_MESSAGE`, `NAME_TAKEN`, `ROOM_FULL`, `ROOM_NOT_FOUND`, `KICKED_FROM_ROOM`, `LEAVE_ROOM_FAILED`, `INVALID_INVITE_ONLY`, `MAKE_OFFER_FAILED`, `ACCEPT_OFFER_FAILED`, `GO_TO_COURT_FAILED`) — the three negotiation failure codes carry a `message` matching `LegalCaseActionOutcome`'s `reason` (`case_not_found`, `not_negotiating`, `not_a_party`, `not_your_turn`, `no_offer_to_accept`, `invalid_amount`) |
 
 ### API Type Definitions
 
@@ -783,6 +787,16 @@ deck mirrors `DecisionEngine.canDeploy`'s exclusion rules client-side (same deci
 maturing, forward/reverse `excludes`) so a card is visibly greyed out with a reason
 rather than letting a player queue a move the server would reject.
 
+Whatever's queued this turn also shows up in the **Active Strategies** box itself, not
+just inside the Decision Deck — a red `QUEUED` badge alongside the already-active
+decisions, with its own **Cancel** link right there (no need to reopen the deck just to
+back out of a pick). The same goes for a filed-but-not-yet-created lawsuit in the **Open
+Lawsuits** box: it appears as a `QUEUED` entry with a **Remove** link, alongside the
+`SUE THEIR ASSES` modal's own queued-lawsuits list, which still works the same way it
+always has. Both are the exact same `pending` client state the deck/Sue modal already
+read and write — cancelling from any of the three spots re-sends the same full-replacement
+`game:submitDecisions` payload with that one entry filtered out.
+
 Each 120s GAME_PHASE round, every player submits up to 1 strategic + 2 operational
 decision from a shared library of 45 decisions — spanning `Traditional`, `Grey Area`,
 and `Dirty` in nature. When the timer expires, `GameLoop` resolves the turn for all
@@ -833,6 +847,17 @@ deployed by the time the turn resolves), and is capped at
 `gameSettings.maxLawsuitsPerPlayerPerTurn` same as the filings themselves, so a player can't
 rack up fee charges for lawsuits that would be silently dropped at resolution anyway.
 
+A case's win probability is only ever shown to the **defendant** — their lawsuit card
+shows a colored percentage chip (green/yellow/red via `semaphoreLevel`, using
+`adjustedProbability` if the case has one, else `baseProbability`), clickable to
+`RiskBreakdownView` for the full weighted-factor breakdown. The **plaintiff** never sees a
+number for their own filed case — their card shows a gray, unclickable "Unknown" chip in
+the same spot, styled identically to the real thing so the two card layouts still line up
+visually. This used to be an "Investigate" button that opened the target's Full Filing
+report instead (redundant with the identical button already in the Competitor Intel
+panel) — replaced by product decision, since a plaintiff genuinely has no privileged
+insight into their own case's odds beyond what any rival's public filing already shows.
+
 `target.*` impact fields (FORMULAS §0 — the 9 fields like `target.cash`, `target.outrage`
 that route a decision's effect to the chosen target rather than the decision-maker, used
 by Buy Shares/Sell Shares and the offensive-sabotage decisions) route to the chosen
@@ -843,20 +868,36 @@ alongside the decision's own self-effects (`calcEngine.extractTargetImpacts`/
 
 A filed case starts at `status: 'negotiating'` — a richer addition than FORMULAS.md,
 which doesn't model a negotiation phase at all (§6 just resolves a case via a probability
-draw "this turn"). The lawsuit card shows an offer history, a counter-offer slider, and
-ACCEPT/COURT buttons for it, but as of now none of them do anything — there's no server
-action wired up behind any of them yet (tracked separately). Without a way out of
-`'negotiating'`, a case between two solvent players used to sit there forever, never
-reaching a verdict — the *only* other exit was the bankruptcy waterfall (§16) cancelling
-or settling it if a party fell. **Negotiation timeout** closes that gap: each case tracks
-`turnsNegotiating`, incremented once per turn it's still negotiating (a case filed this
-turn doesn't get incremented in the same turn it's created); once that hits
-`gameSettings.negotiationPeriodTurns` (2 by default), the case is forced to
-`awaiting_trial` and resolves via the existing trial logic in that same turn's
-resolution — the client never observes an intermediate `awaiting_trial` snapshot for a
-case that timed out this way, it just jumps from its last negotiating turn straight to a
-verdict. The lawsuit card shows a live countdown ("Goes to trial automatically in N more
-turn(s)") for exactly this reason, so the mechanic isn't invisible to players.
+draw "this turn"). Getting a case out of `'negotiating'` works one of three ways:
+
+- **Settle it live.** The **defendant always moves first** — they either make an opening
+  offer or go straight to court. Once an offer's on the table, only the side who *didn't*
+  make it can respond: counter with a new offer, **accept** it (settles immediately —
+  defendant pays plaintiff that exact amount, case resolved), or **go to court** (ends
+  negotiation for a trial verdict instead — see below). This is all instant, independent
+  of the turn timer, the same "fires over the socket right away" pattern as Dig Deeper —
+  `NegotiationPanel` in `GamePhase.tsx` is the UI, `game:makeOffer`/`game:acceptOffer`/
+  `game:goToCourt` the events. Going to court doesn't draw a verdict on the spot; it just
+  marks the case `awaiting_trial` — the actual probability draw happens the next time this
+  room's turn resolves, same trial logic every other `awaiting_trial` case goes through.
+- **Leave an offer hanging.** If a turn boundary arrives with an offer still unanswered
+  (nobody accepted, countered, or went to court in time), it's treated as accepted right
+  there — the case settles for that offer's amount. In practice this means any negotiation
+  with real back-and-forth resolves within about one round of being left unattended; it
+  never drags on turn after turn.
+- **Never engage at all.** If neither side ever makes a single offer, the original
+  **negotiation timeout** still applies, unchanged: each case tracks `turnsNegotiating`,
+  incremented once per turn it's still negotiating (a case filed this turn doesn't get
+  incremented in the same turn it's created); once that hits
+  `gameSettings.negotiationPeriodTurns` (2 by default), the case is forced to
+  `awaiting_trial` and resolves via the existing trial logic in that same turn's
+  resolution — the client never observes an intermediate `awaiting_trial` snapshot for a
+  case that timed out this way, it just jumps from its last negotiating turn straight to a
+  verdict.
+
+The lawsuit card shows a live hint for whichever of these applies — a countdown ("Goes to
+trial automatically in N more turn(s)") when nothing's been offered yet, or a warning that
+a pending offer will be treated as accepted once one has.
 
 ### Attack Awareness & Dig Deeper
 
@@ -984,10 +1025,10 @@ tracked-field row inside their breakdown views (e.g. Operating expenses/Staff co
 inside the Cash Waterfall, Volume/Price inside Revenue, each balance-sheet line inside
 Equity, each factor inside Shares) is clickable — it opens a graph combining this
 player's own actual history with a 3-turn-ahead prediction, via `game:getKpiHistory`
-(no payload, always "my own data") → `game:kpiHistoryResult`. History is one
-`KpiSnapshot` DB row per player per round, written alongside every turn resolution.
-Purely computed intermediate figures in the breakdown views (COGS, gross profit,
-EBITDA, EBIT, profit before tax, net profit, market equity, net demand) aren't
+(`{ targetPlayerId? }`, omitted means "my own data") → `game:kpiHistoryResult`. History
+is one `KpiSnapshot` DB row per player per round, written alongside every turn
+resolution. Purely computed intermediate figures in the breakdown views (COGS, gross
+profit, EBITDA, EBIT, profit before tax, net profit, market equity, net demand) aren't
 clickable — they're derived-of-derived inside the view itself, not a single tracked
 field anywhere.
 
@@ -1004,6 +1045,27 @@ projection shows the player going bankrupt within the window, the dashed line si
 stops at that round instead of showing further (meaningless) points. See CLAUDE.md's
 *"KPI history + prediction graphs"* section for how the prediction is implemented
 (reusing `resolveTurn` itself, sandboxed) without forking or approximating the engine.
+
+**Rivals get the same graph, history only.** Every mini-stat in a rival's dossier
+(CASH/REVENUE/EQUITY/STOCK VALUE/DEBT) and every row in their Full Filing report is
+clickable too, opening the identical `KpiHistoryGraph` with that rival's real
+`KpiSnapshot` history — but never a prediction, since projecting a rival's future from
+decisions you can't see wasn't offered. Pass `targetPlayerId: <rival's id>` in the
+`game:getKpiHistory` payload to request it. See CLAUDE.md's *"KPI history + prediction
+graphs"* section for how a rival lookup is scoped to the requester's own room.
+
+**Every KPI value also shows an up/down/no-change arrow** for its move since the previous
+turn — the 4 top cards, Threat Level, all 5 rival mini-stats, every breakdown row for both
+your own KPIs and a rival's Full Filing report, and every player's slice of the market
+share bar in SHARES. This is a separate, lighter-weight mechanism from the history graph
+above — it only ever compares the current turn to the one immediately before it (already
+in the client's memory), not the full persisted history, so it needs no extra server
+round trip. A green/red arrow means up/down is favorable/unfavorable for that particular
+field (costs and Threat Level read backwards — a red up-arrow on Operating expenses is
+bad, same as it looks); a gray dash means the value is holding steady, and no icon at all
+means there's nothing yet to compare against (round 1, or a rival you're seeing for the
+first time). See CLAUDE.md's *"Trend arrows"* section for exactly how each field's
+direction is decided.
 
 ### Admin Portal
 
@@ -1281,14 +1343,17 @@ npm run lint
 # a lawsuit persisted into both the plaintiff's and defendant's own engineState
 # doesn't get double-counted when reconstructed on a later turn, and a regression test
 # that a case forced to trial by the negotiation timeout resolves in the same turn it
-# crosses the threshold), gameEngine (incl. toggleReady, forfeitGame's ready-interaction,
-# promoteNewHostIfNeeded, leaveRoom, buildRoomSnapshot, and joinRoom's kickedNames
-# rejection), validation schemas, llmService, adminAuth middleware. No DB or live LLM
-# required (mocked Prisma, incl. mocked `formula` model; llmService's own network calls
-# are mocked via global.fetch). Also covers predictFutureKpis (KPI history/prediction
-# graphs) — incl. a regression test that a real room's queued decision still applies
-# after a prediction runs, proving the prediction's sandboxed room id never touches
-# real in-flight submissions.
+# crosses the threshold, plus the makeOffer/acceptOffer/goToCourt turn-taking rules and
+# Step 8b's stale-offer-auto-settle/no-offer-cap fallbacks), gameEngine (incl.
+# toggleReady, forfeitGame's ready-interaction, promoteNewHostIfNeeded, leaveRoom,
+# buildRoomSnapshot, joinRoom's kickedNames rejection, and makeOffer/acceptOffer's
+# two-party Company-row persistence + two-socket game:legalCaseUpdate emit), validation
+# schemas, llmService, adminAuth middleware. No DB or live LLM required (mocked Prisma,
+# incl. mocked `formula` model; llmService's own network calls are mocked via
+# global.fetch). Also covers predictFutureKpis (KPI history/prediction graphs) — incl.
+# a regression test that a real room's queued decision still applies after a prediction
+# runs, proving the prediction's sandboxed room id never touches real in-flight
+# submissions.
 npm test --workspace=server
 
 # Run frontend unit tests (Vitest) — Zustand stores, GamePhase utilities (incl.

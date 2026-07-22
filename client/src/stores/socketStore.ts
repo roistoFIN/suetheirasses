@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { io, Socket } from 'socket.io-client';
-import { ClientEvents, ServerEvents, type RoomJoinedResponse, type RoomRejoinPayload, type RoomUpdatedResponse, type PhaseChangedResponse, type GameOverResponse, type ErrorResponse, type TurnResolutionResult, type GameDeckResponse, type DigDeeperResultPayload, type FileLawsuitResultPayload, type AnnualReportResultPayload } from '@suetheirasses/shared';
+import { ClientEvents, ServerEvents, type RoomJoinedResponse, type RoomRejoinPayload, type RoomUpdatedResponse, type PhaseChangedResponse, type GameOverResponse, type ErrorResponse, type TurnResolutionResult, type GameDeckResponse, type DigDeeperResultPayload, type FileLawsuitResultPayload, type AnnualReportResultPayload, type LegalCaseUpdatePayload } from '@suetheirasses/shared';
 import { useGameStore } from './gameStore';
 
 interface SocketState {
@@ -243,6 +243,17 @@ export const useSocketStore = create<SocketState>((set, get) => ({
       console.log('Lawsuit filing fee charged:', data);
       const { player, applyFileLawsuitResult } = useGameStore.getState();
       if (player) applyFileLawsuitResult(player.id, data.newCash);
+    });
+
+    // Settlement negotiation update (game:makeOffer / game:acceptOffer / game:goToCourt),
+    // sent to both parties on the case, never broadcast to the room. Patches the case
+    // itself into turnResults for whichever of the two parties are present, plus this
+    // client's own cash if newCash is set (a settlement) — CaseCard/CounterOfferPanel
+    // read straight from turnResults, so nothing else needs to react to this directly.
+    socket.on(ServerEvents.GAME_LEGAL_CASE_UPDATE, (data: LegalCaseUpdatePayload) => {
+      console.log('Legal case update:', data.case.id, data.case.status);
+      const { applyLegalCaseUpdate } = useGameStore.getState();
+      applyLegalCaseUpdate(data.case, data.newCash);
     });
 
     socket.on(ServerEvents.GAME_ANNUAL_REPORT_RESULT, (data: AnnualReportResultPayload) => {

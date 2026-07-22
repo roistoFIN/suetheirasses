@@ -478,6 +478,103 @@ describe('gameStore', () => {
     });
   });
 
+  describe('applyLegalCaseUpdate', () => {
+    const makePlayer = (overrides: Partial<PlayerTurnResult> = {}): PlayerTurnResult => ({
+      playerId: 'player-1',
+      playerName: 'Alice',
+      variables: {
+        cash: 100000, assets: 1000000, intangibleAssets: 100000, debt: 0,
+        reserves: 0, operatingExpenses: 20000, staffCost: 10000,
+        materialCostPerTon: 500, otherIncome: 0, price: 700,
+        capacityUtilization: 1.0, processingLevel: 0.5, energyIntensity: 50,
+        moistureContent: 0.3, nutrientConsistency: 0.3, supplySecurity: 0.5,
+        logisticsCostPerTon: 50, processLoss: 0.1, installedCapacity: 350,
+        totalSharesOutstanding: 10000, shareOwnership: { self: 1.0 },
+        outrage: 0, scrutiny: 0, breakdowns: 0, contaminationRisk: 0,
+        odorComplaints: 0, tokenLiability: 0, carbonFootprint: 0,
+        stockVolume: 0, demand: 0,
+      },
+      derived: {
+        equity: 1200000, revenue: 245000, volume: 350, receivables: 30000,
+        financeCost: 5000, taxCost: 2800, depreciation: 3300, stockValue: 120,
+        marketShare: 0.33, competitiveness: 1.2,
+      },
+      activeDecisions: [],
+      legalCases: [],
+      riskGauge: 15,
+      incomingAttacks: [],
+      ...overrides,
+    });
+
+    const makeCase = (overrides: Partial<import('@suetheirasses/shared').LegalCaseData> = {}): import('@suetheirasses/shared').LegalCaseData => ({
+      id: 'case-1',
+      roomId: 'room-1',
+      plaintiffId: 'player-2',
+      defendantId: 'player-1',
+      decisionName: 'Water Pumping',
+      groundName: 'Environmental Violation',
+      description: 'x',
+      baseProbability: 0.12,
+      stakes: 20000,
+      status: 'negotiating',
+      offers: [{ by: 'defendant', amount: 10000 }],
+      turnsNegotiating: 0,
+      createdAt: new Date(),
+      ...overrides,
+    });
+
+    it('patches the updated case into both the plaintiff\'s and the defendant\'s own legalCases', () => {
+      const oldCase = makeCase();
+      const me = makePlayer({ legalCases: [oldCase] }); // player-1, the defendant
+      const rival = makePlayer({ playerId: 'player-2', playerName: 'Bob', legalCases: [oldCase] }); // the plaintiff
+      useGameStore.getState().handleTurnResolved({ round: 1, players: [me, rival], gameOver: false });
+
+      const settledCase = makeCase({ status: 'resolved', verdict: 'settled', resolvedAt: new Date() });
+      useGameStore.getState().applyLegalCaseUpdate(settledCase, 90000);
+
+      const updated = useGameStore.getState().turnResults!.players;
+      const updatedMe = updated.find((p) => p.playerId === 'player-1')!;
+      const updatedRival = updated.find((p) => p.playerId === 'player-2')!;
+
+      expect(updatedMe.legalCases[0].status).toBe('resolved');
+      expect(updatedRival.legalCases[0].status).toBe('resolved');
+      // Only MY (state.player.id === 'player-1') own cash is patched — the rival's stays
+      // untouched, same "acting player's own view only" convention as applyFileLawsuitResult.
+      expect(updatedMe.variables.cash).toBe(90000);
+      expect(updatedRival.variables.cash).toBe(100000);
+    });
+
+    it('does not set newCash when the update did not include one (an offer or a court decision)', () => {
+      const oldCase = makeCase();
+      const me = makePlayer({ legalCases: [oldCase] });
+      useGameStore.getState().handleTurnResolved({ round: 1, players: [me], gameOver: false });
+
+      const counteredCase = makeCase({ offers: [{ by: 'defendant', amount: 10000 }, { by: 'plaintiff', amount: 15000 }] });
+      useGameStore.getState().applyLegalCaseUpdate(counteredCase);
+
+      const updatedMe = useGameStore.getState().turnResults!.players.find((p) => p.playerId === 'player-1')!;
+      expect(updatedMe.legalCases[0].offers).toHaveLength(2);
+      expect(updatedMe.variables.cash).toBe(100000);
+    });
+
+    it('leaves a player who is not a party to the case untouched', () => {
+      const oldCase = makeCase();
+      const me = makePlayer({ legalCases: [oldCase] });
+      const bystander = makePlayer({ playerId: 'player-3', playerName: 'Carol', legalCases: [] });
+      useGameStore.getState().handleTurnResolved({ round: 1, players: [me, bystander], gameOver: false });
+
+      useGameStore.getState().applyLegalCaseUpdate(makeCase({ status: 'awaiting_trial' }));
+
+      const updatedBystander = useGameStore.getState().turnResults!.players.find((p) => p.playerId === 'player-3')!;
+      expect(updatedBystander).toEqual(bystander);
+    });
+
+    it('is a no-op when there are no turn results yet', () => {
+      expect(() => useGameStore.getState().applyLegalCaseUpdate(makeCase())).not.toThrow();
+      expect(useGameStore.getState().turnResults).toBeNull();
+    });
+  });
+
   describe('setGameOver', () => {
     it('should store game over data', () => {
       const gameOver: GameOverResponse = {

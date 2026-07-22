@@ -15,6 +15,7 @@
 - Did something to you should disappeared, if it lead to lawsuit queue
 - Queued decisions show in open decision -list
 - Queued lawsuits show in open lawsuits -list
+- SueTheirAsses_defenderWon and SueTheirAsses_settlementProposal images
 
 # Game over
 - Win or lose window even if bankrupt
@@ -24,3 +25,5 @@
 
 # Other
 - Spectator view
+- Cookies -hyväksyntä
+- Muut lakisääteiset?

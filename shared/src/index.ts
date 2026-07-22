@@ -1,4 +1,4 @@
-import type { DecisionDefinition, GameSettings, IncomingAttackInfo, AnnualReportEntry } from './gameTypes.js';
+import type { DecisionDefinition, GameSettings, IncomingAttackInfo, AnnualReportEntry, LegalCaseData } from './gameTypes.js';
 
 // ============================================================
 // Room & Phase Types
@@ -107,8 +107,14 @@ export enum ClientEvents {
   GAME_READY = 'game:ready',
   /** Charge `gameSettings.lawsuitFilingCost` the instant a player files a lawsuit (SueModal's "File" button) — instant, outside turn resolution, same pattern as `game:digDeeper`. The case itself is still only created/validated at the next turn resolution via `game:submitDecisions`. */
   GAME_FILE_LAWSUIT = 'game:fileLawsuit',
-  /** Request this player's own KPI history (persisted `KpiSnapshot` rows) plus a 3-turn-ahead prediction — on demand, opened by clicking any KPI card or breakdown line item. No payload — always "my own data," never a rival's. */
+  /** Request KPI history (persisted `KpiSnapshot` rows) — on demand, opened by clicking any KPI card or breakdown line item. `GetKpiHistoryPayload.targetPlayerId` omitted or equal to the caller's own id returns "my own data" plus a 3-turn-ahead prediction; any other id in the same room returns that rival's history only, no prediction. */
   GAME_GET_KPI_HISTORY = 'game:getKpiHistory',
+  /** Make a settlement offer on a `'negotiating'` case — either the defendant's opening offer, or either side's counter-offer. Instant, outside turn resolution, same pattern as `game:digDeeper`. Only the party who did *not* make the most recent offer (the defendant, if none has been made yet) may call this. */
+  GAME_MAKE_OFFER = 'game:makeOffer',
+  /** Accept the other party's most recent offer, settling the case immediately for that amount — instant, outside turn resolution. Only the party who did not make that offer may call this. */
+  GAME_ACCEPT_OFFER = 'game:acceptOffer',
+  /** End negotiation and send a case to trial — instant, outside turn resolution. Either party may call this at any time while the case is `'negotiating'`. Only marks the case `'awaiting_trial'`; the verdict itself is still drawn the next time the room's turn resolves (same trial-resolution step every `awaiting_trial` case already goes through), not immediately. */
+  GAME_GO_TO_COURT = 'game:goToCourt',
 }
 
 // Server → Client events
@@ -143,6 +149,8 @@ export enum ServerEvents {
   GAME_FILE_LAWSUIT_RESULT = 'game:fileLawsuitResult',
   /** Sent only to the requesting socket, in response to `game:getKpiHistory` — this player's own KPI history + 3-turn prediction. */
   GAME_KPI_HISTORY_RESULT = 'game:kpiHistoryResult',
+  /** Sent to BOTH parties on a case (not broadcast to the room) whenever `game:makeOffer`/`game:acceptOffer`/`game:goToCourt` succeeds — each recipient gets the same updated `LegalCaseData`, plus their own `newCash` if this update just settled the case (undefined for an offer or a court decision, which never move cash). A validation failure (not your turn, case not found, etc.) goes only to the requesting socket via `error`, same as `game:getKpiHistory`. */
+  GAME_LEGAL_CASE_UPDATE = 'game:legalCaseUpdate',
 }
 
 // ============================================================
@@ -190,6 +198,22 @@ export interface FileLawsuitPayload {
   targetId: string;
   decisionName: string;
   groundName: string;
+}
+
+/** Payload for `game:makeOffer` — propose (or counter) a settlement amount on a case still `'negotiating'`. */
+export interface MakeOfferPayload {
+  caseId: string;
+  amount: number;
+}
+
+/** Payload for `game:acceptOffer` — accept the other party's most recent offer on this case. */
+export interface AcceptOfferPayload {
+  caseId: string;
+}
+
+/** Payload for `game:goToCourt` — end negotiation on this case and send it to trial. */
+export interface GoToCourtPayload {
+  caseId: string;
 }
 
 // ===========================================================
@@ -291,6 +315,15 @@ export interface FileLawsuitResultPayload {
 export interface AnnualReportResultPayload {
   rivalPlayerId: string;
   entries: AnnualReportEntry[];
+}
+
+/** Response for `game:legalCaseUpdate` — sent to both parties on the case (never broadcast
+ * to the whole room). `newCash` is per-recipient: present only for the party whose cash
+ * actually just moved (a settlement via `game:acceptOffer`), undefined for an offer or a
+ * court decision. */
+export interface LegalCaseUpdatePayload {
+  case: LegalCaseData;
+  newCash?: number;
 }
 
 /** Broadcast for `chat:message` (server → client) — one chat message, sent to every player in the room. */

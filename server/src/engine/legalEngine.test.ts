@@ -219,7 +219,6 @@ describe('LegalEngine', () => {
       expect(result?.description).toBe('Sue for environmental damage');
       expect(result?.status).toBe('negotiating');
       expect(result?.offers).toHaveLength(0);
-      expect(result?.myOffer).toBeUndefined();
       expect(result?.verdict).toBeUndefined();
       expect(result?.adjustedProbability).toBeUndefined();
       expect(result?.createdAt).toBeInstanceOf(Date);
