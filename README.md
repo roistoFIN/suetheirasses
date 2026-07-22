@@ -797,10 +797,12 @@ that modal — a red `QUEUED` badge alongside the already-active decisions, with
 **Cancel** link right there (no need to reopen the deck just to back out of a pick). The
 box's header count (`"X strategic and Y operational"`) includes both active and queued
 decisions together. The same goes for a filed-but-not-yet-created lawsuit in the **Open
-Lawsuits** box: it appears as a `QUEUED` entry with a **Remove** link, alongside the
-`SUE THEIR ASSES` modal's own queued-lawsuits list, which still works the same way it
-always has. All of this reads and writes the exact same `pending` client state the deck/
-Sue modal already use — cancelling from any of these spots re-sends the same
+Lawsuits** box: it appears as a `QUEUED` entry with a **Remove** link there — the
+`SUE THEIR ASSES` modal itself shows only a queued-count line (not its own duplicate
+list of what's queued) and closes itself automatically the instant a lawsuit is
+successfully filed, since the Open Lawsuits box is where a player actually confirms/
+cancels a queued filing from that point on. All of this reads and writes the exact same
+`pending` client state the deck/Sue modal already use — cancelling re-sends the same
 full-replacement `game:submitDecisions` payload with that one entry filtered out.
 
 Each card in the box — active or still-queued — also shows the decision's own

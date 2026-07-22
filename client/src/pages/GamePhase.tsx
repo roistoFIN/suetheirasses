@@ -474,6 +474,10 @@ export default function GamePhase() {
   // identically-named ground, since the admin-editable decision library has no
   // uniqueness constraint on legal-risk names.
   const [sueSuggestion, setSueSuggestion] = useState<{ targetId: string; decisionName: string; groundName: string } | null>(null);
+  const closeSueModal = () => {
+    setSueModalOpen(false);
+    setSueSuggestion(null);
+  };
   const [riskInfoCase, setRiskInfoCase] = useState<LegalCaseData | null>(null);
   const [loading, setLoading] = useState(true);
   const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
@@ -821,7 +825,7 @@ export default function GamePhase() {
         {kpiSubFieldGraph && <KpiHistoryGraph field={kpiSubFieldGraph.field} label={kpiSubFieldGraph.label} socket={socket} targetPlayerId={kpiSubFieldGraph.targetPlayerId} />}
       </Modal>
 
-      <Modal opened={sueModalOpen} onClose={() => { setSueModalOpen(false); setSueSuggestion(null); }} size="lg" centered title={<Text style={{ ...boldStyle, fontSize: '0.9rem' }}>📋 SUE THEIR ASSES</Text>}>
+      <Modal opened={sueModalOpen} onClose={closeSueModal} size="lg" centered title={<Text style={{ ...boldStyle, fontSize: '0.9rem' }}>📋 SUE THEIR ASSES</Text>}>
         <SueModal
           competitors={competitors}
           decisions={decisions}
@@ -833,6 +837,7 @@ export default function GamePhase() {
           prefillGroundName={sueSuggestion?.groundName}
           cash={vars.cash}
           socket={socket}
+          onClose={closeSueModal}
         />
       </Modal>
 
@@ -2905,9 +2910,13 @@ interface SueModalProps {
   /** This player's current cash — used to disable filing (and explain why) when the flat filing fee isn't affordable. */
   cash: number;
   socket: Socket | null;
+  /** Called right after a lawsuit is successfully filed — the modal closes itself instead
+   * of staying open, since the newly-queued lawsuit now shows in the "Open Lawsuits" box
+   * (via `QueuedLawsuitCard`) the moment this modal is gone. */
+  onClose: () => void;
 }
 
-function SueModal({ competitors, decisions, gameSettings, pending, onSubmitPending, prefillTargetId, prefillDecisionName, prefillGroundName, cash, socket }: SueModalProps) {
+function SueModal({ competitors, decisions, gameSettings, pending, onSubmitPending, prefillTargetId, prefillDecisionName, prefillGroundName, cash, socket, onClose }: SueModalProps) {
   const [query, setQuery] = useState('');
   const [selectedGround, setSelectedGround] = useState<DerivedGround | null>(null);
   const [targetRival, setTargetRival] = useState<string>('');
@@ -2966,6 +2975,7 @@ function SueModal({ competitors, decisions, gameSettings, pending, onSubmitPendi
       });
       setSelectedGround(null);
       setQuery('');
+      onClose();
     };
     const onError = (data: { code: string; message: string }) => {
       if (data.code !== 'FILE_LAWSUIT_FAILED' && data.code !== 'INVALID_FILE_LAWSUIT') return;
@@ -2979,30 +2989,12 @@ function SueModal({ competitors, decisions, gameSettings, pending, onSubmitPendi
     socket.emit(ClientEvents.GAME_FILE_LAWSUIT, { targetId: filedTarget, decisionName: filedGround.decisionName, groundName: filedGround.groundName });
   };
 
-  const handleRemoveQueued = (index: number) => {
-    onSubmitPending({ ...pending, lawsuits: pending.lawsuits.filter((_, i) => i !== index) });
-  };
-
   return (
     <Stack gap="md">
       {gameSettings && (
         <Text size="xs" c="dimmed" style={boldStyle}>
           {pending.lawsuits.length}/{maxLawsuits} LAWSUITS QUEUED THIS TURN
         </Text>
-      )}
-
-      {pending.lawsuits.length > 0 && (
-        <Stack gap={4}>
-          {pending.lawsuits.map((l, i) => {
-            const t = competitors.find((c) => c.playerId === l.targetId);
-            return (
-              <Flex key={i} justify="space-between" align="center" style={{ padding: '6px 10px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6 }}>
-                <Text size="xs">{t?.playerName ?? l.targetId} — {l.groundName}</Text>
-                <Text size="xs" c="red" style={{ cursor: 'pointer', textDecoration: 'underline' }} title="The filing fee already charged is not refunded" onClick={() => handleRemoveQueued(i)}>Remove</Text>
-              </Flex>
-            );
-          })}
-        </Stack>
       )}
 
       {/* Target selection */}

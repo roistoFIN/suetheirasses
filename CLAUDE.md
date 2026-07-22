@@ -307,6 +307,33 @@ another effect that needs to react to "a new round has started," use `round`, ne
 `turnResults?.round` — the latter is one turn stale by design (it's *whatever last turn's
 snapshot said*, not "now").
 
+### `SueModal` no longer keeps its own queued-lawsuits list, and closes itself the instant a filing succeeds
+
+`SueModal` used to render its own itemized list of `pending.lawsuits` (target + ground,
+each with a "Remove" link) directly inside the modal, on top of the identical
+`QueuedLawsuitCard` list already rendered in the "Open Lawsuits" box behind it — the same
+`pending.lawsuits` array shown twice, in two different components, at the same time.
+Removed as redundant, the same call already made for `ActiveDecisionCard`/`CaseCard`'s
+one-line empty-state text (see *"Active Decisions"/"Open Lawsuits" have no empty-state
+text* above): once a lawsuit is filed, the Open Lawsuits box is where a player actually
+sees and manages it, so the modal doesn't need its own copy. The `X/Y LAWSUITS QUEUED
+THIS TURN` counter line stays (it's a limit reminder relevant to the modal's own `FILE
+LAWSUIT` button, not a duplicate listing), and `handleRemoveQueued` was deleted outright
+rather than left dead — nothing else in `SueModal` referenced it once its one caller (the
+removed list's "Remove" link) was gone.
+
+`SueModal` also now closes itself automatically the moment a lawsuit files successfully
+— a new required `onClose: () => void` prop, called from `handleFile`'s `onResult`
+callback right after the successful charge is folded into `pending`. The call site passes
+the exact same closing logic (`setSueModalOpen(false)` + clearing `sueSuggestion`) through
+a shared `closeSueModal` function used by both the wrapping `<Modal onClose=...>` and
+`SueModal`'s own `onClose` prop, so there's one place that defines "what closing this
+modal means," not two independent closures that could drift. A player who wants to file a
+second lawsuit the same turn re-opens the modal via the **SUE THEIR ASSES** button, the
+same as opening it the first time — this was a deliberate simplification, not an
+oversight: staying open only made sense when the modal needed to keep showing its own
+queued list, and that list is gone now.
+
 ### The Decision Deck lives in its own modal (MAKE IMPORTANT DECISIONS), not a standalone panel
 
 `DecisionDeckView` (filter chips, the queued-count line, every `DecisionCard`) used to
