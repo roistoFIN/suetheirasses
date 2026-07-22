@@ -684,6 +684,17 @@ stale reply for a since-closed graph can never flash the wrong player's numbers 
 still-open one. If you add a third place `KpiHistoryGraph` can be nested, keep this check;
 don't assume "the only listener for `game:kpiHistoryResult`" is safe to skip it.
 
+### "Active Decisions"/"Open Lawsuits" have no empty-state text — the header count already says zero
+
+Both boxes used to render a `<Text c="dimmed">No active decisions</Text>` / `No open
+lawsuits` line when their combined active+queued list was empty. Removed as redundant:
+the section title itself (`"Active Decisions (0 strategic and 0 operational)"`,
+`"Open Lawsuits (0)"`) already states the count, so an empty-state line under an
+already-zeroed header said the same thing twice. Both `SectionCard` bodies now always
+render their `Stack` unconditionally — when nothing's active or queued it just renders
+empty, no separate branch needed. If you add another list-in-a-box that already has a
+counted title, don't add a redundant "no items" placeholder underneath it either.
+
 ### `gpStyles.stamp` badges (QUEUED, INSTANT, xT, MATURED, PLAINTIFF/DEFENDANT) — overriding a Mantine `Badge`'s border without also taking over its centering breaks vertical centering
 
 `gpStyles.stamp(tone)` is the shared inline-style object behind every small bordered

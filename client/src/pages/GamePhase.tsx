@@ -715,25 +715,21 @@ export default function GamePhase() {
               <Button variant="filled" color="dark" onClick={() => setDecisionDeckModalOpen(true)} style={{ ...boldStyle }}>
                 MAKE IMPORTANT DECISIONS
               </Button>
-              {myData.activeDecisions.length === 0 && pending.strategic.length === 0 && pending.operational.length === 0 ? (
-                <Text c="dimmed" size="sm">No active decisions</Text>
-              ) : (
-                <Stack gap="sm">
-                  {(['strategic', 'operational'] as const).flatMap((bucket) =>
-                    pending[bucket].map((entry, i) => (
-                      <QueuedDecisionCard
-                        key={`${bucket}-${i}`}
-                        name={entry.name}
-                        targetName={entry.targetId ? (competitors.find((c) => c.playerId === entry.targetId)?.playerName ?? entry.targetId) : undefined}
-                        onCancel={() => submitPending({ ...pending, [bucket]: pending[bucket].filter((e) => e.name !== entry.name) })}
-                      />
-                    )),
-                  )}
-                  {myData.activeDecisions.map((d) => (
-                    <ActiveDecisionCard key={d.id} decision={d} />
-                  ))}
-                </Stack>
-              )}
+              <Stack gap="sm">
+                {(['strategic', 'operational'] as const).flatMap((bucket) =>
+                  pending[bucket].map((entry, i) => (
+                    <QueuedDecisionCard
+                      key={`${bucket}-${i}`}
+                      name={entry.name}
+                      targetName={entry.targetId ? (competitors.find((c) => c.playerId === entry.targetId)?.playerName ?? entry.targetId) : undefined}
+                      onCancel={() => submitPending({ ...pending, [bucket]: pending[bucket].filter((e) => e.name !== entry.name) })}
+                    />
+                  )),
+                )}
+                {myData.activeDecisions.map((d) => (
+                  <ActiveDecisionCard key={d.id} decision={d} />
+                ))}
+              </Stack>
             </Stack>
           </SectionCard>
         </Stack>
@@ -757,33 +753,29 @@ export default function GamePhase() {
               <Button variant="filled" color="red" onClick={() => setSueModalOpen(true)} style={{ ...boldStyle }}>
                 SUE THEIR ASSES (${(gameSettings?.lawsuitFilingCost ?? 0).toLocaleString()})
               </Button>
-              {myLegalCases.filter((c) => c.status !== 'resolved').length === 0 && pending.lawsuits.length === 0 ? (
-                <Text c="dimmed" size="sm">No open lawsuits</Text>
-              ) : (
-                <Stack gap="sm">
-                  {pending.lawsuits.map((entry, i) => (
-                    <QueuedLawsuitCard
-                      key={`pending-lawsuit-${i}`}
-                      entry={entry}
-                      targetName={competitors.find((c) => c.playerId === entry.targetId)?.playerName ?? entry.targetId}
-                      onRemove={() => submitPending({ ...pending, lawsuits: pending.lawsuits.filter((_, j) => j !== i) })}
+              <Stack gap="sm">
+                {pending.lawsuits.map((entry, i) => (
+                  <QueuedLawsuitCard
+                    key={`pending-lawsuit-${i}`}
+                    entry={entry}
+                    targetName={competitors.find((c) => c.playerId === entry.targetId)?.playerName ?? entry.targetId}
+                    onRemove={() => submitPending({ ...pending, lawsuits: pending.lawsuits.filter((_, j) => j !== i) })}
+                  />
+                ))}
+                {myLegalCases
+                  .filter((c) => c.status !== 'resolved')
+                  .map((c) => (
+                    <CaseCard
+                      key={c.id}
+                      caseData={c}
+                      myPlayerId={myData.playerId}
+                      playerNames={playerNames}
+                      negotiationPeriodTurns={gameSettings?.negotiationPeriodTurns}
+                      socket={socket}
+                      onRiskInfo={(caseItem) => setRiskInfoCase(caseItem)}
                     />
                   ))}
-                  {myLegalCases
-                    .filter((c) => c.status !== 'resolved')
-                    .map((c) => (
-                      <CaseCard
-                        key={c.id}
-                        caseData={c}
-                        myPlayerId={myData.playerId}
-                        playerNames={playerNames}
-                        negotiationPeriodTurns={gameSettings?.negotiationPeriodTurns}
-                        socket={socket}
-                        onRiskInfo={(caseItem) => setRiskInfoCase(caseItem)}
-                      />
-                    ))}
-                </Stack>
-              )}
+              </Stack>
             </Stack>
           </SectionCard>
 
