@@ -1910,10 +1910,22 @@ function AttackHintCard({ attack, cash, digDeeperCost, socket, onSueNow }: {
 }) {
   const fullyInvestigated = attack.investigationLevel >= 3;
   const canAfford = cash >= digDeeperCost;
-  const headline = attack.attackerName ? `⚠️ ${attack.attackerName} did something to you.` : '⚠️ Somebody did something to you.';
+  // Direct (target.*) attacks keep the original alarmed orange/⚠️ treatment — they're
+  // aimed specifically at you. Indirect ones (no target.* impacts at all, just a
+  // legalRisks-bearing decision some other player deployed — New Factory, Water Pumping,
+  // etc.) are background market activity, not a personal attack, so they get a calmer
+  // blue/ℹ️ treatment and different copy to match, but the same investigation/Dig
+  // Deeper/SUE NOW mechanics below are otherwise unchanged.
+  const headline = attack.isIndirect
+    ? (attack.attackerName ? `ℹ️ ${attack.attackerName} did something that indirectly affects you.` : 'ℹ️ Somebody did something that indirectly affects you.')
+    : (attack.attackerName ? `⚠️ ${attack.attackerName} did something to you.` : '⚠️ Somebody did something to you.');
+  const borderColor = attack.isIndirect ? '#2563eb' : '#ea580c';
+  const background = attack.isIndirect ? '#eff6ff' : '#fff7ed';
+  const suggestedBoxBorder = attack.isIndirect ? '#bfdbfe' : '#fed7aa';
+  const digButtonColor = attack.isIndirect ? 'blue' : 'orange';
 
   return (
-    <div style={{ padding: 10, border: '3px solid #ea580c', borderRadius: 8, background: '#fff7ed' }}>
+    <div style={{ padding: 10, border: `3px solid ${borderColor}`, borderRadius: 8, background }}>
       <Text style={{ ...boldStyle, fontSize: '0.8rem' }}>{headline}</Text>
 
       {attack.decisionName && (
@@ -1926,7 +1938,7 @@ function AttackHintCard({ attack, cash, digDeeperCost, socket, onSueNow }: {
       )}
 
       {attack.suggestedGroundName && (
-        <Box style={{ marginTop: 8, padding: 8, background: '#fff', border: '1px solid #fed7aa', borderRadius: 6 }}>
+        <Box style={{ marginTop: 8, padding: 8, background: '#fff', border: `1px solid ${suggestedBoxBorder}`, borderRadius: 6 }}>
           <Text style={{ ...boldStyle, fontSize: '0.75rem' }}>Suggested: {attack.suggestedGroundName}</Text>
           <Text size="xs" c="dimmed" style={{ lineHeight: 1.4 }}>{attack.suggestedGroundDescription}</Text>
           <Text size="xs" style={{ marginTop: 4 }}>Estimated success: <strong>{Math.round((attack.successProbability ?? 0) * 100)}%</strong></Text>
@@ -1947,7 +1959,7 @@ function AttackHintCard({ attack, cash, digDeeperCost, socket, onSueNow }: {
         <Button
           size="xs"
           variant="outline"
-          color="orange"
+          color={digButtonColor}
           fullWidth
           mt={8}
           disabled={!canAfford}

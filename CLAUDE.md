@@ -323,6 +323,65 @@ Since `game:submitDecisions` is full-replacement (see above), every one of these
 locations independently calling `submitPending` with a locally-filtered copy of `pending`
 is exactly as correct as the two that already existed.
 
+### Indirect effects — decisions with no `target.*` impacts still generate an incoming-attack-style hint, broadcast to everyone
+
+`buildIncomingAttacks` used to only ever surface a decision with real `target.*`
+impacts (`getTargetImpacts(...).size > 0`) — a genuine "attack" aimed at exactly one
+other player. That left the majority of the decision library completely invisible to
+everyone but its deployer: ~30 of 45 decisions (New Factory, Water Pumping, Night
+Dumping, Maintenance Neglect, Artificial Greenwashing, and more) have no `target.*`
+concept at all but still carry `legalRisks` — any player could already sue over one
+"blind" via SUE THEIR ASSES' whole-library ground list (see *SUE THEIR ASSES offers the
+whole decision library's grounds* below), but had zero signal that a rival had even
+deployed one, short of manually checking Competitor Intel every turn.
+
+`GameLoop.isIndirectEffect(def, targetImpacts)` is the classifier: `true` whenever
+`targetImpacts.size === 0 && def.legalRisks?.length > 0`. Deliberately mechanical (no
+`target.*` impacts), not based on the `offensiveAction` data flag — that flag turns out
+to be an unreliable, narrative-only label already: 3 decisions in the real library
+(Aggressive Sale, Channel Stuffing, Laxatives in Feed) are marked `offensiveAction: true`
+despite having no `target.*` impacts at all, so it doesn't cleanly separate "aimed at one
+player" from "not." A decision with neither `target.*` impacts nor `legalRisks` (only
+Sell Shares, in the real library) is neither direct nor indirect — nothing to reveal or
+sue over, so `buildIncomingAttacks` skips it entirely, generating no hint.
+
+Since an indirect decision has no single target, `buildIncomingAttacks` surfaces it to
+**every other active player**, not just one — the loop's existing `if (d.targetId !==
+pid) continue` guard only applies to the direct case now; an indirect instance is pushed
+for every `pid` other than the deployer. `IncomingAttackInfo.isIndirect` carries this
+through to the client, which is the only thing that changes client-side: the headline
+reads *"Somebody did something that indirectly affects you"* (a calmer blue card)
+instead of *"...did something to you"* (the alarmed orange one), everything else
+(investigation tiers, Dig Deeper, SUE NOW) renders identically. `revealAttack` picks
+between `decisionEngine.summarizeTargetImpacts` (the routed cross-player effect, for a
+direct attack) and the new `decisionEngine.summarizeOwnImpacts` (the decision's effect on
+its own deployer, since there's no `target.*` effect to describe for an indirect one) for
+tier 2's `effectSummary` based on the same `isIndirect` flag — both share a private
+`summarizeImpacts` formatting core in `decisionEngine.ts` so the "+X field" rendering
+stays in exactly one place.
+
+`digDeeper` and Step 8's `plaintiffFullyInvestigated` stamp both had to drop their
+"the attack must literally target me" gate for the indirect case — an indirect decision's
+`targetId` is always `undefined` (never set at deployment, since there's no target to
+pick), so the old `d.targetId === playerId` check could never match one at all. Both now
+branch on `isIndirectEffect` first: if indirect, any other active player may dig into it
+(matching that it was broadcast to all of them) and a `plaintiffFullyInvestigated` lookup
+matches by decision name alone within the defendant's own `activeDecisions` (no targeting
+relationship left to disambiguate by — the plaintiff/defendant pairing already scopes the
+search to the right company). If direct, both keep the original `targetId === playerId`
+requirement, unchanged. The heads-up shortcut (`effectiveInvestigationLevel`, above)
+applies identically to indirect effects — with only one other active player, "who
+deployed this" isn't ambiguous there either.
+
+This was a deliberate, discussed scope decision, not an unconstrained "notify on
+literally everything": mirroring the existing direct-attack detection (target.* presence)
+inverted, rather than either a hand-curated subset of "narratively harmful" decisions or
+a broader "anything that shifts market share/competitiveness" interpretation (which would
+have applied to nearly the entire deck, including routine self-investment decisions with
+no legal angle at all). The accepted tradeoff: since roughly two-thirds of the deck
+qualifies, a 3-4 player game can show several hint cards most turns — by design, not a
+bug to "fix" by capping or throttling later without a further product decision to do so.
+
 ### Dig Deeper's investigation ladder skips the free "who did this" tier in a heads-up (2-active-player) game
 
 `GameLoop.revealAttack`'s three investigation tiers (level 1: attacker identity, level 2:

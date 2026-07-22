@@ -39,19 +39,13 @@ function humanizeField(field: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-/**
- * Human-readable summary of a decision's current cross-player effect, e.g.
- * "+20 Outrage, -20% Capacity Utilization" — used at investigation tier 2 ("what
- * trouble it is") to describe an incoming attack without yet naming the attacker's
- * suggested lawsuit ground.
- */
-export function summarizeTargetImpacts(
-  impacts: Record<string, { type: 'absolute' | 'relative'; schedule: Record<number | string, number> }>,
+/** Shared formatting core for both summarizeTargetImpacts and summarizeOwnImpacts below. */
+function summarizeImpacts(
+  impacts: Map<string, { type: 'absolute' | 'relative'; schedule: Record<number | string, number> }>,
   elapsedYears: number,
 ): string {
-  const targetImpacts = extractTargetImpacts(impacts);
   const parts: string[] = [];
-  for (const [field, impact] of targetImpacts) {
+  for (const [field, impact] of impacts) {
     const value = getScheduleValue(impact.schedule, elapsedYears);
     if (value === 0) continue;
     const label = humanizeField(field);
@@ -62,6 +56,41 @@ export function summarizeTargetImpacts(
     }
   }
   return parts.join(', ');
+}
+
+/**
+ * Human-readable summary of a decision's current cross-player effect, e.g.
+ * "+20 Outrage, -20% Capacity Utilization" — used at investigation tier 2 ("what
+ * trouble it is") to describe a DIRECT incoming attack (one with real `target.*`
+ * impacts) without yet naming the attacker's suggested lawsuit ground.
+ */
+export function summarizeTargetImpacts(
+  impacts: Record<string, { type: 'absolute' | 'relative'; schedule: Record<number | string, number> }>,
+  elapsedYears: number,
+): string {
+  return summarizeImpacts(extractTargetImpacts(impacts), elapsedYears);
+}
+
+/**
+ * Human-readable summary of a decision's OWN effect on the player who deployed it, e.g.
+ * "-100000 Cash, +40% Installed Capacity" — the tier-2 counterpart to
+ * `summarizeTargetImpacts` for an INDIRECT hint (a decision with no `target.*` impacts
+ * at all, like New Factory or Water Pumping). There's no cross-player effect to
+ * describe for these — impacts routed to a specific other player's variables — so this
+ * summarizes what the decision did for its own deployer instead, which is what an
+ * investigating rival actually wants to know ("what did they gain from this that I might
+ * have grounds to sue over").
+ */
+export function summarizeOwnImpacts(
+  impacts: Record<string, { type: 'absolute' | 'relative'; schedule: Record<number | string, number> }>,
+  elapsedYears: number,
+): string {
+  const ownImpacts = new Map<string, { type: 'absolute' | 'relative'; schedule: Record<number | string, number> }>();
+  for (const [field, impact] of Object.entries(impacts)) {
+    if (field.startsWith('target.') || field.startsWith('competitor')) continue;
+    ownImpacts.set(field, impact);
+  }
+  return summarizeImpacts(ownImpacts, elapsedYears);
 }
 
 /** The recommended lawsuit ground for an incoming attack, with an estimated win probability. */

@@ -49,7 +49,7 @@ import {
   calculateLegalExposureRatio,
   applyTargetImpacts,
 } from './calcEngine.js';
-import { DecisionEngine, MAX_INVESTIGATION_LEVEL, summarizeTargetImpacts, pickBestGround } from './decisionEngine.js';
+import { DecisionEngine, MAX_INVESTIGATION_LEVEL, summarizeTargetImpacts, summarizeOwnImpacts, pickBestGround } from './decisionEngine.js';
 import type { DeployedDecision, TargetImpactResult } from './decisionEngine.js';
 import { LegalEngine } from './legalEngine.js';
 import { buildFormulaSet, type FormulaSet } from './formulaEngine.js';
@@ -518,10 +518,16 @@ export class GameLoop {
         // the underlying attack, and are they suing over its exact suggested ground? Mirrors
         // revealAttack's own level-3 computation exactly (same instance, same attacker vars),
         // since that's the live hint the plaintiff would have seen just before filing.
+        // Direct decisions must actually target the plaintiff; indirect ones (no target at
+        // all — see isIndirectEffect) just need to be an instance of the cited decision
+        // name on the cited defendant, since we're already scoped to `targetCtx`'s own
+        // decisions and there's no targeting relationship to further disambiguate by.
         let plaintiffFullyInvestigated = false;
-        const attackInstance = targetCtx.engineState.activeDecisions.find(
-          d => d.definition.decision === filing.decisionName && d.targetId === ctx.playerId,
-        );
+        const attackInstance = targetCtx.engineState.activeDecisions.find((d) => {
+          if (d.definition.decision !== filing.decisionName) return false;
+          const targetImpacts = this.decisionEngine.getTargetImpacts(d.definition.impacts);
+          return this.isIndirectEffect(d.definition, targetImpacts) || d.targetId === ctx.playerId;
+        });
         if (attackInstance) {
           const rawLevel = ctx.engineState.investigations[attackInstance.id] ?? 0;
           const level = this.effectiveInvestigationLevel(rawLevel, ctxs.size);
@@ -926,21 +932,24 @@ export class GameLoop {
     const me = byId.get(playerId);
     if (!me) return { success: false, reason: 'player_not_found' };
 
-    // The attacking decision instance lives in SOME OTHER player's activeDecisions,
-    // targeting this player — never trust the client past that.
-    let attacker: { id: string; name: string; decision: DeployedDecision } | null = null;
+    // The attacking decision instance lives in SOME OTHER player's activeDecisions —
+    // never trust the client past that. Direct ones must actually target this player;
+    // indirect ones (isIndirectEffect) have no target at all, so any other active
+    // player may legitimately dig into one (matches buildIncomingAttacks broadcasting
+    // it to everyone in the first place).
+    let attacker: { id: string; name: string; decision: DeployedDecision; isIndirect: boolean } | null = null;
     for (const [pid, state] of byId) {
       if (pid === playerId) continue;
-      const inst = state.engineState.activeDecisions.find(d => d.id === attackId && d.targetId === playerId);
-      if (inst) {
-        attacker = { id: pid, name: state.name, decision: inst };
-        break;
-      }
+      const inst = state.engineState.activeDecisions.find(d => d.id === attackId);
+      if (!inst) continue;
+      const targetImpacts = this.decisionEngine.getTargetImpacts(inst.definition.impacts);
+      const isIndirect = this.isIndirectEffect(inst.definition, targetImpacts);
+      if (!isIndirect && inst.targetId !== playerId) continue;
+      if (!isIndirect && targetImpacts.size === 0) continue;
+      attacker = { id: pid, name: state.name, decision: inst, isIndirect };
+      break;
     }
     if (!attacker) return { success: false, reason: 'invalid_attack' };
-
-    const targetImpacts = this.decisionEngine.getTargetImpacts(attacker.decision.definition.impacts);
-    if (targetImpacts.size === 0) return { success: false, reason: 'invalid_attack' };
 
     // byId's size is every active (non-bankrupt) player in the room, target included —
     // 2 means a heads-up game, where digDeeper's next raw level should skip straight to
@@ -959,7 +968,7 @@ export class GameLoop {
     const newInvestigations = { ...me.engineState.investigations, [attackId]: newLevel };
 
     const attackerVars = byId.get(attacker.id)!.vars;
-    const attack = this.revealAttack(attacker.id, attacker.name, attacker.decision, this.effectiveInvestigationLevel(newLevel, activePlayerCount), attackerVars);
+    const attack = this.revealAttack(attacker.id, attacker.name, attacker.decision, this.effectiveInvestigationLevel(newLevel, activePlayerCount), attackerVars, attacker.isIndirect);
 
     return {
       success: true,
@@ -1373,6 +1382,19 @@ export class GameLoop {
    * attacks against them, via `digDeeper`). A now-bankrupt attacker's decisions are
    * excluded — `attackerCtxIds` is the still-active player set for this turn.
    */
+  /**
+   * True for a decision with no `target.*` impacts at all (no single player it's routed
+   * to) that still carries `legalRisks` — New Factory's nuisance suit, Water Pumping's
+   * environmental suit, Night Dumping, etc. These broadcast an incoming-attack-style hint
+   * to EVERY other active player (see buildIncomingAttacks), not just one target, since
+   * there's no target to route it to. A decision with neither `target.*` impacts nor any
+   * `legalRisks` (e.g. Sell Shares) is neither direct nor indirect — nothing to reveal or
+   * sue over, so it never generates a hint at all.
+   */
+  private isIndirectEffect(def: DecisionDefinition, targetImpacts: Map<string, unknown>): boolean {
+    return targetImpacts.size === 0 && !!def.legalRisks && def.legalRisks.length > 0;
+  }
+
   private buildIncomingAttacks(pid: string, ctxs: Map<string, PlayerTurnContext>, attackerCtxIds: string[]): IncomingAttackInfo[] {
     const myInvestigations = ctxs.get(pid)!.engineState.investigations;
     const attacks: IncomingAttackInfo[] = [];
@@ -1380,12 +1402,16 @@ export class GameLoop {
       if (attackerId === pid) continue;
       const attackerCtx = ctxs.get(attackerId)!;
       for (const d of attackerCtx.engineState.activeDecisions) {
-        if (d.targetId !== pid) continue;
         const targetImpacts = this.decisionEngine.getTargetImpacts(d.definition.impacts);
-        if (targetImpacts.size === 0) continue;
+        const isIndirect = this.isIndirectEffect(d.definition, targetImpacts);
+        // Direct: only the specific player it targets sees it. Indirect: every other
+        // active player sees it (there's no single target) — see isIndirectEffect's doc
+        // comment for why decisions with neither trait are skipped entirely.
+        if (!isIndirect && d.targetId !== pid) continue;
+        if (!isIndirect && targetImpacts.size === 0) continue;
         const rawLevel = myInvestigations[d.id] ?? 0;
         const level = this.effectiveInvestigationLevel(rawLevel, attackerCtxIds.length);
-        attacks.push(this.revealAttack(attackerId, attackerCtx.playerName, d, level, attackerCtx.vars));
+        attacks.push(this.revealAttack(attackerId, attackerCtx.playerName, d, level, attackerCtx.vars, isIndirect));
       }
     }
     return attacks;
@@ -1406,9 +1432,15 @@ export class GameLoop {
     return activePlayerCount === 2 ? Math.min(rawLevel + 1, MAX_INVESTIGATION_LEVEL) : rawLevel;
   }
 
-  /** Builds the progressively-revealed intel for one incoming attack at the given investigation level. */
-  private revealAttack(attackerId: string, attackerName: string, decision: DeployedDecision, level: number, attackerVars: PlayerVariables): IncomingAttackInfo {
-    const info: IncomingAttackInfo = { attackId: decision.id, investigationLevel: level };
+  /**
+   * Builds the progressively-revealed intel for one incoming attack at the given
+   * investigation level. `isIndirect` (see isIndirectEffect's doc comment) only changes
+   * which impacts tier 2's `effectSummary` describes — the decision's own effects for an
+   * indirect one (there's no `target.*` effect to summarize), the routed cross-player
+   * effect for a direct one — everything else about the reveal ladder is identical.
+   */
+  private revealAttack(attackerId: string, attackerName: string, decision: DeployedDecision, level: number, attackerVars: PlayerVariables, isIndirect: boolean): IncomingAttackInfo {
+    const info: IncomingAttackInfo = { attackId: decision.id, investigationLevel: level, isIndirect };
     if (level >= 1) {
       info.attackerId = attackerId;
       info.attackerName = attackerName;
@@ -1416,7 +1448,9 @@ export class GameLoop {
     if (level >= 2) {
       info.decisionName = decision.definition.decision;
       info.decisionDescription = decision.definition.description;
-      info.effectSummary = summarizeTargetImpacts(decision.definition.impacts, decision.elapsedYears);
+      info.effectSummary = isIndirect
+        ? summarizeOwnImpacts(decision.definition.impacts, decision.elapsedYears)
+        : summarizeTargetImpacts(decision.definition.impacts, decision.elapsedYears);
     }
     if (level >= 3) {
       const best = pickBestGround(decision.definition, decision.elapsedYears, attackerVars, this.adminVars, this.formulas);

@@ -385,7 +385,7 @@ describe('gameStore', () => {
       activeDecisions: [],
       legalCases: [],
       riskGauge: 15,
-      incomingAttacks: [{ attackId: 'attack-1', investigationLevel: 0 }],
+      incomingAttacks: [{ attackId: 'attack-1', investigationLevel: 0, isIndirect: false }],
       ...overrides,
     });
 
@@ -398,7 +398,7 @@ describe('gameStore', () => {
         attackId: 'attack-1',
         cost: 10000,
         newCash: 90000,
-        attack: { attackId: 'attack-1', investigationLevel: 1, attackerId: 'player-3', attackerName: 'Carol' },
+        attack: { attackId: 'attack-1', investigationLevel: 1, isIndirect: false, attackerId: 'player-3', attackerName: 'Carol' },
       });
 
       const updated = useGameStore.getState().turnResults!.players;
@@ -406,7 +406,7 @@ describe('gameStore', () => {
       const updatedRival = updated.find((p) => p.playerId === 'player-2')!;
 
       expect(updatedMe.variables.cash).toBe(90000);
-      expect(updatedMe.incomingAttacks).toEqual([{ attackId: 'attack-1', investigationLevel: 1, attackerId: 'player-3', attackerName: 'Carol' }]);
+      expect(updatedMe.incomingAttacks).toEqual([{ attackId: 'attack-1', investigationLevel: 1, isIndirect: false, attackerId: 'player-3', attackerName: 'Carol' }]);
       // Other fields untouched.
       expect(updatedMe.variables.assets).toBe(1000000);
       // Other players untouched.
@@ -419,7 +419,7 @@ describe('gameStore', () => {
           attackId: 'attack-1',
           cost: 10000,
           newCash: 90000,
-          attack: { attackId: 'attack-1', investigationLevel: 1 },
+          attack: { attackId: 'attack-1', investigationLevel: 1, isIndirect: false },
         }),
       ).not.toThrow();
       expect(useGameStore.getState().turnResults).toBeNull();

@@ -3,10 +3,8 @@
 # Lobby
 
 # Game
-- No news from you have been sued
-- Dig deeper -uudelleenpohdinta. Ensiksi haittaa tehnyt pelaaja, sitten haitta, sitten nappi, jolla voi haastaa oikeuteen vain oikeilla caseilla
-- E.g. "Queued" and "Instant" and maybe other indicators of decisions (and maybe elsewhere also) look bad. The text overlaps lower border. Make the text to sit in the center of the box.
-- Indirect affects of other players' decisions must be risen to player's knowledge also like direct ones ("somebody did something to you"). Name indirect action "Somebody did something that indirectly affects you.". Also enable dig deeper functionality to these.
+- If there are two players left in the game (or two player game was started), the first dig deeper is not needed because it is obious who was it. It must Start straight from the second dig deeper round (done?)
+- Indirect affects of other players' decisions must be risen to player's knowledge also like direct ones ("somebody did something to you"). Name indirect action "Somebody did something that indirectly affects you.". Also enable dig deeper functionality to these. (done?)
 - Remove "No open lawsuits" from Open Lawsuits -box, it is displayed in topic. Same for "No active decisions" in Active Decisions -box
 - Add one dig deeper to open law suit, where player has been sued. With this dig deeper, the propability of success is shown. Before that it must be unknown.
 - Is the decision matured, if the affect continues? Maybe it is then "Ongoing"? For example "Hype Initial Coin Offering" outrage keeps groving forever. Selvitä, mitkä päätökset tuovat jatkuvan vaikutuksen ja varsinkin sellaiset, mitkä tuovat jatkuvan kasvun. Mieti, pitäisikö näitä rajoittaa.
@@ -21,6 +19,7 @@
 - Search -hakukenttä myös päätöksiin
 - No need to show queued law suit in SUE THEM buttons info view, since it goes to Open Lawsuits -box. Close the window automatically, when lawsuit is selected.
 - Rename "Next turn" news item "Turn has been changed"
+- Are decisions or law suits hard coded somewhere? They shouldn't since admin can add or remove them from admin portal
 
 # Game over
 - Win or lose window even if bankrupt

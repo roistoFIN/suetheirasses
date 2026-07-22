@@ -289,6 +289,18 @@ export interface LegalCaseData {
 export interface IncomingAttackInfo {
   /** Stable id of the attacking decision instance — pass back to `game:digDeeper`. */
   attackId: string;
+  /**
+   * False for a genuine `target.*`-bearing attack aimed specifically at the receiving
+   * player (Bot Attack, Social Astroturf, etc.) — only that one player ever sees it. True
+   * for a decision with no target concept at all but that still carries `legalRisks`
+   * (New Factory's nuisance suit, Water Pumping's environmental suit, Night Dumping,
+   * etc.) — every OTHER active player sees the same entry, since there's no single
+   * "victim" to route it to. Everything else about this type (investigation tiers, Dig
+   * Deeper, suing) works identically either way; this only changes what headline copy
+   * the client shows and which impacts `effectSummary` describes (the decision's own
+   * effects for an indirect one, since there's no `target.*` effect to summarize).
+   */
+  isIndirect: boolean;
   /** 0 = not yet investigated, 1-3 = how many "Dig Deeper" clicks have been spent on this attack. */
   investigationLevel: number;
   /** Revealed at investigationLevel >= 1 — who is behind it. */

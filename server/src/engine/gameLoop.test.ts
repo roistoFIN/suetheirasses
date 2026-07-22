@@ -541,6 +541,48 @@ describe('GameLoop', () => {
       // first paid dig is for.
       expect(bob.incomingAttacks[0].decisionName).toBeUndefined();
     });
+
+    it('should broadcast an indirect-effect hint (a non-targeted, legalRisks-bearing decision) to EVERY other active player, not just one', () => {
+      // Water Pumping has no target.* impacts at all — nobody is "the target" of it —
+      // but it does carry legalRisks (weight-fraud suits), so it should still surface
+      // as an incoming-attacks-style hint, just to everyone rather than one victim.
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+      });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
+        { id: 'player-1', name: 'Alice' },
+        { id: 'player-2', name: 'Bob' },
+        { id: 'player-3', name: 'Carol' },
+      ]));
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+      const bob = outcome.result.players.find((p) => p.playerId === 'player-2')!;
+      const carol = outcome.result.players.find((p) => p.playerId === 'player-3')!;
+
+      for (const rival of [bob, carol]) {
+        expect(rival.incomingAttacks).toHaveLength(1);
+        expect(rival.incomingAttacks[0].isIndirect).toBe(true);
+        expect(rival.incomingAttacks[0].investigationLevel).toBe(0);
+        // Un-investigated (3 active players, no heads-up shortcut) — nothing revealed yet.
+        expect(rival.incomingAttacks[0].attackerId).toBeUndefined();
+      }
+      // Alice deployed it, so it's not "incoming" to herself.
+      expect(alice.incomingAttacks).toHaveLength(0);
+    });
+
+    it('should NOT surface a hint at all for a decision with neither target.* impacts nor any legalRisks', () => {
+      // New Factory (this test file's fixture definition, not the real game data) has
+      // no target.* impacts and no legalRisks — nothing to reveal or sue over, so it's
+      // neither a direct nor an indirect hint, just silent.
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [{ name: 'New Factory' }], operational: [], lawsuits: [],
+      });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+      const bob = outcome.result.players.find((p) => p.playerId === 'player-2')!;
+
+      expect(bob.incomingAttacks).toHaveLength(0);
+    });
   });
 
   describe('resolveTurn — financial calculations', () => {
@@ -803,6 +845,40 @@ describe('GameLoop', () => {
 
         const bobCase = outcome.result.players.find((p) => p.playerId === 'player-2')?.legalCases[0];
         expect(bobCase?.plaintiffFullyInvestigated).toBe(false);
+      });
+
+      it('should also stamp plaintiffFullyInvestigated true for an INDIRECT decision (no targetId at all) fully dug in before suing the right ground', () => {
+        // Water Pumping never sets targetId — the old lookup (d.targetId === ctx.playerId)
+        // could never match it, so this path used to be structurally impossible to earn
+        // regardless of investigation depth. Alice deploys it this same turn; Bob (an
+        // otherwise-uninvolved bystander here, not Water Pumping's "victim" — it has none)
+        // fully investigates it and sues over the real suggested ground.
+        gameLoop.submitDecisions('room-1', 'player-1', {
+          strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+        });
+
+        // First turn: deploy Water Pumping and capture its freshly generated instance id.
+        const deployOutcome = gameLoop.resolveTurn('room-1', 1, withBotAttack());
+        const wpInstance = deployOutcome.result.players
+          .find((p) => p.playerId === 'player-1')!.activeDecisions
+          .find((d) => d.decisionName === 'Water Pumping')!;
+
+        // Second turn: Bob is already fully dug into that specific instance, and sues
+        // over its real suggested ground.
+        const persistedAlice = deployOutcome.companyUpdates.find((u) => u.playerId === 'player-1')!;
+        gameLoop.submitDecisions('room-1', 'player-2', {
+          strategic: [], operational: [],
+          lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
+        });
+        const players2 = makePlayers([
+          { id: 'player-1', name: 'Alice', variables: persistedAlice.variables, engineState: persistedAlice.engineState },
+          { id: 'player-2', name: 'Bob', engineState: { investigations: { [wpInstance.id]: 3 } } },
+          { id: 'player-3', name: 'Carol' },
+        ]);
+        const outcome2 = gameLoop.resolveTurn('room-1', 2, players2);
+
+        const bobCase = outcome2.result.players.find((p) => p.playerId === 'player-2')?.legalCases[0];
+        expect(bobCase?.plaintiffFullyInvestigated).toBe(true);
       });
     });
   });
@@ -1168,6 +1244,87 @@ describe('GameLoop', () => {
       const outcome = gameLoop.digDeeper('player-2', ATTACK_ID, makeHeadsUpFixture({ victimInvestigations: { [ATTACK_ID]: 2 } }));
 
       expect(outcome).toEqual({ success: false, reason: 'already_fully_investigated' });
+    });
+  });
+
+  describe('digDeeper — indirect effects (no target.* impacts, just legalRisks)', () => {
+    // Water Pumping has no targetId concept at all — Alice deploys it for her own
+    // benefit, and it's Bob (or anyone else active) digging into background market
+    // activity, not investigating a personal attack. Carol keeps this non-heads-up,
+    // matching the direct-attack digDeeper describe block above.
+    const WATER_PUMPING_ID = 'wp-1';
+    function makeIndirectFixture(overrides: { investigatorInvestigations?: Record<string, number> } = {}): EngineDataInput[] {
+      return makePlayers([
+        {
+          id: 'player-1',
+          name: 'Alice',
+          engineState: {
+            activeDecisions: [
+              { id: WATER_PUMPING_ID, definitionName: 'Water Pumping', deployedYear: 1, elapsedYears: 0, isMatured: false },
+            ],
+          },
+        },
+        {
+          id: 'player-2',
+          name: 'Bob',
+          variables: makeVars({ cash: 100000 }),
+          engineState: { investigations: overrides.investigatorInvestigations ?? {} },
+        },
+        { id: 'player-3', name: 'Carol' },
+      ]);
+    }
+
+    it('dig 1 reveals only the deployer\'s identity, same as a direct attack', () => {
+      const outcome = gameLoop.digDeeper('player-2', WATER_PUMPING_ID, makeIndirectFixture());
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.attack.isIndirect).toBe(true);
+      expect(outcome.attack.investigationLevel).toBe(1);
+      expect(outcome.attack.attackerId).toBe('player-1');
+      expect(outcome.attack.attackerName).toBe('Alice');
+      expect(outcome.attack.decisionName).toBeUndefined();
+    });
+
+    it('dig 2 summarizes the deployer\'s OWN effects (there is no target.* effect to summarize)', () => {
+      const outcome = gameLoop.digDeeper('player-2', WATER_PUMPING_ID, makeIndirectFixture({ investigatorInvestigations: { [WATER_PUMPING_ID]: 1 } }));
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.attack.investigationLevel).toBe(2);
+      expect(outcome.attack.decisionName).toBe('Water Pumping');
+      expect(outcome.attack.effectSummary).toContain('Material Cost Per Ton');
+      expect(outcome.attack.suggestedGroundName).toBeUndefined();
+    });
+
+    it('dig 3 adds the suggested lawsuit ground and a success probability, same mechanism as a direct attack', () => {
+      const outcome = gameLoop.digDeeper('player-2', WATER_PUMPING_ID, makeIndirectFixture({ investigatorInvestigations: { [WATER_PUMPING_ID]: 2 } }));
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.attack.investigationLevel).toBe(3);
+      expect(outcome.attack.suggestedGroundName).toBe('Environmental Violation');
+      expect(outcome.attack.successProbability).toBeGreaterThan(0);
+    });
+
+    it('lets any other active player dig in, not just a single "victim" (there is none)', () => {
+      // Carol digs instead of Bob — should work exactly the same, since indirect
+      // effects have no single target to gate digging by.
+      const outcome = gameLoop.digDeeper('player-3', WATER_PUMPING_ID, makePlayers([
+        { id: 'player-1', name: 'Alice', engineState: { activeDecisions: [{ id: WATER_PUMPING_ID, definitionName: 'Water Pumping', deployedYear: 1, elapsedYears: 0, isMatured: false }] } },
+        { id: 'player-2', name: 'Bob' },
+        { id: 'player-3', name: 'Carol', variables: makeVars({ cash: 100000 }) },
+      ]));
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.attack.attackerId).toBe('player-1');
+    });
+
+    it('fails with invalid_attack — the deployer cannot dig into their own indirect decision', () => {
+      const outcome = gameLoop.digDeeper('player-1', WATER_PUMPING_ID, makeIndirectFixture());
+
+      expect(outcome).toEqual({ success: false, reason: 'invalid_attack' });
     });
   });
 

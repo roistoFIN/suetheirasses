@@ -967,6 +967,44 @@ Once fully investigated (tier 3), the button disables — no further charge. The
 also disabled client-side whenever cash is below `digDeeperCost`; the server enforces the
 same rule independently, so it's never possible to Dig Deeper into bankruptcy.
 
+**Indirect effects get the same hint, broadcast to everyone instead of one target.** Most
+of the decision library has no `target.*` impacts at all — no single player it's aimed
+at — but roughly two-thirds of those still carry `legalRisks` (New Factory's nuisance
+suit, Water Pumping's environmental suit, Night Dumping, Maintenance Neglect, Artificial
+Greenwashing, and so on). Deploying one of these used to be completely invisible to
+everyone but the deployer, even though any player could already sue over it "blind" via
+SUE THEIR ASSES' whole-library ground list (see below). `GameLoop.isIndirectEffect`
+flags a decision instance as indirect whenever it has zero `target.*` impacts AND at
+least one `legalRisks` entry; `buildIncomingAttacks` then surfaces it to **every other
+active player**, not just one victim, since there's no target to route it to. A decision
+with neither trait (no `target.*` impacts and no `legalRisks`, e.g. Sell Shares) gets no
+hint at all — nothing to reveal or sue over.
+
+Everything else about the mechanic is identical to a direct attack — same 3-tier
+investigation ladder (including the heads-up shortcut below), same `Company.
+engineState.investigations` tracking keyed by decision instance id, same **SUE NOW**
+flow once tier 3 is reached, same `digDeeper` cost/charge path — with two differences:
+tier 2's effect summary describes the decision's own effect on its deployer (via
+`decisionEngine.summarizeOwnImpacts`) rather than a `target.*` effect (there isn't one),
+and the client headline reads *"Somebody did something that indirectly affects you"*
+(a calmer blue card, not the alarmed orange one) instead of *"...did something to you."*
+`digDeeper` also drops its "must actually target me" check for an indirect attack — any
+other active player may dig into one, matching the fact that it was broadcast to all of
+them in the first place.
+
+**Heads-up (2-active-player) games skip tier 1 for free.** With only one other player
+still standing, "who attacked me" was never actually ambiguous — paying to learn it is a
+wasted dig, not real investigation. `GameLoop.effectiveInvestigationLevel` bumps the
+persisted investigation level up by one tier whenever exactly 2 players are active, so the
+attacker's identity is visible immediately with zero digs, the first paid dig jumps
+straight to tier 2 (what the decision does), and the second paid dig reaches tier 3
+(suggested ground + odds) — only 2 paid digs total instead of 3. The persisted level
+itself still just counts up by 1 per dig; only what a given level reveals shifts. If the
+game later has more than 2 active players again, the normal 3-tier ladder applies as
+usual — this is re-evaluated from the current active-player count on every call, not
+locked in once a game goes heads-up. This applies identically to indirect effects — with
+only one other player in the game, an indirect decision's deployer isn't ambiguous either.
+
 **Heads-up (2-active-player) games skip tier 1 for free.** With only one other player
 still standing, "who attacked me" was never actually ambiguous — paying to learn it is a
 wasted dig, not real investigation. `GameLoop.effectiveInvestigationLevel` bumps the
