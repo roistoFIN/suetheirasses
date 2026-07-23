@@ -23,5 +23,15 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+    // Native OS file-change events (inotify) have proven unreliable for this dev
+    // setup — HMR would silently stop picking up edits (including to
+    // ../shared/src, outside this package's own root) after the dev server had
+    // been running a while, requiring a manual restart to see any further change.
+    // Polling doesn't depend on inotify at all, trading a small CPU cost for not
+    // going stale. Keep this if you ever revisit dev server config here.
+    watch: {
+      usePolling: true,
+      interval: 300,
+    },
   },
 });

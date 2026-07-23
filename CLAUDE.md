@@ -89,6 +89,34 @@ No test script exists at the root that runs backend + frontend unit tests togeth
 run `npm test --workspace=server` and `npm --workspace=client exec vitest run`
 separately, or use `test:all` for the Docker-dependent API+E2E suites.
 
+**`npm run dev:server` uses `nodemon` (polling), not bare `tsx watch`** — a real, repeatedly
+reproduced problem: `tsx watch`'s (and, separately, Vite's default) native-OS-file-event
+watching would silently go stale after the dev server had been running for a while,
+stopping restarts/HMR for **any** further edit (not just cross-package ones — even edits
+to `server/src/index.ts` itself stopped triggering a restart), with no error and no
+indication anything was wrong short of "I edited the code and nothing changed." The only
+fix at the time was killing and restarting the dev processes. Root cause was never pinned
+to one deterministic trigger (every short-window isolated test — bare `tsx watch`, `npm
+run dev:server` alone, `concurrently` alone, the full chain freshly started — reliably
+detected changes; only long-uptime, real-world sessions on this machine actually went
+stale, most plausibly tied to something like laptop suspend/resume invalidating native
+file-change-event state, though that's inference, not a confirmed repro). Since the
+trigger couldn't be pinned down, the fix is to stop depending on native OS file-change
+events at all: `server/nodemon.json` configures `nodemon` (not `tsx watch` directly) with
+`legacyWatch: true` — polling-based change detection, immune to whatever class of native
+watcher staleness was happening — watching both `src` and `../shared/src` (nodemon, unlike
+bare `tsx watch`, takes an explicit `watch` list, so this was also the fix for cross-package
+`shared/src` edits never reaching the server) and re-execing `tsx src/index.ts` on each
+change. `client/vite.config.ts`'s `server.watch: { usePolling: true, interval: 300 }` is
+the equivalent fix on the client side, for the exact same reason (Vite's HMR file-watcher
+is chokidar-based and has the same native-event dependency `usePolling` bypasses). Verified
+live end-to-end after this fix: editing `shared/src/index.ts` while a real browser page is
+open produces genuine `[vite] hot updated: ...` console messages, and editing `server/src/`
+triggers `[nodemon] restarting due to changes...` — both confirmed via a real dev-server
+session, not just config inspection. If you ever revisit this dev-server setup and are
+tempted to simplify back to plain `tsx watch` (nodemon is one more moving part), know that
+this is exactly the failure mode that reintroduces.
+
 ## Architecture
 
 ### Two-layer server split: room/DB/broadcast lifecycle vs. pure turn math

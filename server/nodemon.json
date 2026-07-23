@@ -1,0 +1,7 @@
+{
+  "watch": ["src", "../shared/src"],
+  "ext": "ts,json",
+  "exec": "tsx src/index.ts",
+  "legacyWatch": true,
+  "delay": 300
+}
