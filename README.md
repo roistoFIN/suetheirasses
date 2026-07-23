@@ -774,7 +774,8 @@ zero decisions applied and nothing persisted, so there's no blank "waiting" scre
 the first round's timer.
 
 The client renders the actual Decision Deck from `game:deck` — filterable by level
-(Strategic/Operational) and nature (Traditional/Grey Area/Dirty), one card per decision
+(Strategic/Operational) and nature (Traditional/Grey Area/Dirty), each its own row of
+filter chips (two independent filters, not one combined chip group), one card per decision
 with its description, an **EFFECTS** panel, and a DEPLOY button. The effects panel
 answers "what does this do, when does it start, how long does it last": a maturity
 badge (`INSTANT` or `MATURES IN Nt`, from the max explicit year key across the

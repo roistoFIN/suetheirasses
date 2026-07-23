@@ -1470,19 +1470,25 @@ function DecisionDeckView({ decisions, gameSettings, myData, competitors, pendin
 
   return (
     <Stack gap="md">
-      {/* Filter chips */}
-      <Flex wrap="wrap" gap="xs">
-        {['All', 'Strategic', 'Operational'].map((lvl) => (
-          <Badge key={lvl} style={gpStyles.filterChip(filterLevel === lvl)} onClick={() => setFilterLevel(lvl)}>
-            {lvl}
-          </Badge>
-        ))}
-        {['All', 'Traditional', 'Grey Area', 'Dirty'].map((nat) => (
-          <Badge key={nat} style={gpStyles.filterChip(filterNature === nat)} onClick={() => setFilterNature(nat)}>
-            {nat}
-          </Badge>
-        ))}
-      </Flex>
+      {/* Filter chips — level (Strategic/Operational) and nature (Traditional/Grey Area/
+          Dirty) are two independent filters, so each gets its own row rather than
+          wrapping together into one line as if they were a single chip group. */}
+      <Stack gap={6}>
+        <Flex wrap="wrap" gap="xs">
+          {['All', 'Strategic', 'Operational'].map((lvl) => (
+            <Badge key={lvl} style={gpStyles.filterChip(filterLevel === lvl)} onClick={() => setFilterLevel(lvl)}>
+              {lvl}
+            </Badge>
+          ))}
+        </Flex>
+        <Flex wrap="wrap" gap="xs">
+          {['All', 'Traditional', 'Grey Area', 'Dirty'].map((nat) => (
+            <Badge key={nat} style={gpStyles.filterChip(filterNature === nat)} onClick={() => setFilterNature(nat)}>
+              {nat}
+            </Badge>
+          ))}
+        </Flex>
+      </Stack>
 
       {gameSettings && (
         <Text size="xs" c="dimmed" style={boldStyle}>

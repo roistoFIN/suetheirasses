@@ -350,6 +350,15 @@ Since `game:submitDecisions` is full-replacement (see above), every one of these
 locations independently calling `submitPending` with a locally-filtered copy of `pending`
 is exactly as correct as the two that already existed.
 
+`DecisionDeckView`'s filter chips are two independent filters — level (`All`/`Strategic`/
+`Operational`, driving `filterLevel`) and nature (`All`/`Traditional`/`Grey Area`/`Dirty`,
+driving `filterNature`) — and are rendered as two separate `Flex wrap="wrap"` rows inside
+a `Stack`, not one combined row. They used to be siblings inside a single `Flex`, which
+only visually read as two clusters because of array order; at narrow widths the level
+group's own wrap could land a nature chip on the same line as a level chip, reading as one
+undifferentiated set of pills. Keep them in separate row containers if you add a third
+filter dimension later — one `Flex` per filter, not one `Flex` per screen.
+
 ### "Active Decisions"' already-active and queued cards show the same description + SHOW DETAILS panel as the Decision Deck — via a shared `DecisionDetails` sub-component, not by duplicating `DecisionCard`
 
 `ActiveDecisionCard` and `QueuedDecisionCard` used to show only a decision's name and
