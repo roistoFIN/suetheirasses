@@ -64,6 +64,17 @@ export interface GameSettings {
    * not-yet-built) offer/settlement UI, a case between two solvent players had no path
    * out of 'negotiating' at all and would sit unresolved forever. */
   negotiationPeriodTurns: number;
+  /** Statute of limitations, in years elapsed since a decision was deployed — once a
+   * target's cited decision instance has been active this long (`elapsedYears >=` this
+   * value), suing over it is time-barred: the case still gets created (same "real but
+   * hopeless" shape as guessing a decision the target never deployed at all), but its
+   * probability of winning is forced to 0, both at actual filing (`LegalEngine.fileLawsuit`)
+   * and in the "suggested ground" estimate `pickBestGround` surfaces via Dig Deeper/SUE
+   * NOW — so the suggestion a player sees never quotes odds a real filing wouldn't honor.
+   * Independent of a decision's own `isMatured` (FORMULAS §9 maturity, which is about
+   * when an impact schedule locks in, not legal liability) — a decision can be long
+   * matured and still well within the limitations window, or vice versa. */
+  statuteOfLimitationsYears: number;
 }
 
 export interface PlayerStartingValues {

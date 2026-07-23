@@ -386,6 +386,7 @@ const gameSettingsSchema = z.object({
   digDeeperCost: z.number(),
   negotiationPeriodTurns: z.number(),
   lawsuitFilingCost: z.number(),
+  statuteOfLimitationsYears: z.number(),
 });
 
 const playerStartingValuesSchema = z.object({

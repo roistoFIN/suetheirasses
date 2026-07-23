@@ -248,6 +248,45 @@ describe('LegalEngine', () => {
 
       expect(result?.plaintiffFullyInvestigated).toBe(true);
     });
+
+    describe('statute of limitations', () => {
+      it('should still price a real probability just under the limit', () => {
+        const targetActive = [{ decisionName: 'Water Pumping', elapsedYears: 9 }];
+        const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1', false, 10);
+
+        expect(result?.baseProbability).toBeCloseTo(0.18, 4);
+      });
+
+      it('should still create a case — a hopeless, 0%-probability one — once elapsedYears reaches the limit', () => {
+        const targetActive = [{ decisionName: 'Water Pumping', elapsedYears: 10 }];
+        const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1', false, 10);
+
+        expect(result).not.toBeNull();
+        expect(result?.groundName).toBe('Environmental Violation');
+        expect(result?.baseProbability).toBe(0);
+      });
+
+      it('should stay 0% for a decision aged well past the limit', () => {
+        const targetActive = [{ decisionName: 'Water Pumping', elapsedYears: 25 }];
+        const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1', false, 10);
+
+        expect(result?.baseProbability).toBe(0);
+      });
+
+      it('should not time-bar anything when the caller omits the limit (defaults to Infinity, pre-feature behavior)', () => {
+        const targetActive = [{ decisionName: 'Water Pumping', elapsedYears: 999 }];
+        const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1', false);
+
+        expect(result?.baseProbability).toBeCloseTo(0.18, 4);
+      });
+
+      it('should still set real stakes for a time-barred case — only the probability is zeroed', () => {
+        const targetActive = [{ decisionName: 'Water Pumping', elapsedYears: 10 }];
+        const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', targetActive, 'room-1', false, 10);
+
+        expect(result?.stakes).toBe(22050);
+      });
+    });
   });
 
   describe('resolveProbability', () => {

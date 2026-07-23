@@ -44,7 +44,15 @@ export class LegalEngine {
    *
    * When the target genuinely did deploy the cited decision, probability scales with how
    * long it's been active, using the same year-keyed schedule convention as decision
-   * impacts (FORMULAS §6, §9).
+   * impacts (FORMULAS §6, §9) — up to `statuteOfLimitationsYears` (`GameSettings.
+   * statuteOfLimitationsYears`, default 10): once the target's cited instance has been
+   * active at least that long, the ground is time-barred and treated exactly like a
+   * wrong guess — a real case still gets created, `baseProbability` just forced to 0.
+   * This is deliberately independent of the decision's own `isMatured` (FORMULAS §9
+   * maturity governs when an impact schedule locks in, not legal liability) — a
+   * long-matured decision can still be well within the limitations window, and vice
+   * versa. Defaulted to `Infinity` (never time-barred) so existing callers/tests that
+   * don't pass it keep the pre-feature behavior.
    *
    * `plaintiffFullyInvestigated` is computed by the caller (`GameLoop.resolveTurn`'s
    * Step 8, which has access to both the filing player's own investigation state and
@@ -60,6 +68,7 @@ export class LegalEngine {
     targetActiveDecisions: TargetableDecisionInstance[],
     roomId: string,
     plaintiffFullyInvestigated: boolean,
+    statuteOfLimitationsYears = Infinity,
   ): LegalCaseData | null {
     const def = this.definitions.get(decisionName);
     if (!def?.legalRisks) return null;
@@ -68,7 +77,8 @@ export class LegalEngine {
     if (!risk) return null;
 
     const targetInstance = targetActiveDecisions.find(d => d.decisionName === decisionName);
-    const probability = targetInstance ? getScheduleValue(risk.probability, targetInstance.elapsedYears) : 0;
+    const timeBarred = !!targetInstance && targetInstance.elapsedYears >= statuteOfLimitationsYears;
+    const probability = targetInstance && !timeBarred ? getScheduleValue(risk.probability, targetInstance.elapsedYears) : 0;
     const stakes = Math.abs(risk.impact.schedule['default'] ?? risk.impact.schedule[1] ?? 0);
 
     return {

@@ -268,6 +268,7 @@ describe('Validation Schemas', () => {
         digDeeperCost: 10000,
         negotiationPeriodTurns: 2,
         lawsuitFilingCost: 15000,
+        statuteOfLimitationsYears: 10,
       },
       playerStartingValues: {
         cash: 100000, assets: 50000, intangibleAssets: 10000, debt: 20000, reserves: 30000,

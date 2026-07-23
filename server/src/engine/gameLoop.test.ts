@@ -55,6 +55,7 @@ function makeConfig(overrides: Partial<GameConfig> = {}): GameConfig {
       digDeeperCost: 10000,
       negotiationPeriodTurns: 2,
       lawsuitFilingCost: 15000,
+      statuteOfLimitationsYears: 10,
     },
     playerStartingValues: {
       cash: 100000,
@@ -778,6 +779,45 @@ describe('GameLoop', () => {
       expect(aliceCases![0].baseProbability).toBe(0);
     });
 
+    it('should force baseProbability to 0 for a CORRECT ground once the target\'s decision instance is past the statute of limitations (makeConfig: 10 years)', () => {
+      // Unlike the wrong-guess test above, Alice genuinely deployed Water Pumping — the
+      // ground is real, just too old to sue over (elapsedYears already at the 10-year cap).
+      const players = makePlayers([
+        { id: 'player-1', name: 'Alice', engineState: { activeDecisions: [{ id: 'wp-1', definitionName: 'Water Pumping', deployedYear: 1, elapsedYears: 10, isMatured: true }] } },
+        { id: 'player-2', name: 'Bob' },
+      ]);
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [], operational: [],
+        lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
+      });
+
+      const outcome = gameLoop.resolveTurn('room-1', 11, players);
+
+      const aliceCases = outcome.result.players.find((p) => p.playerId === 'player-1')?.legalCases;
+      expect(aliceCases).toHaveLength(1);
+      expect(aliceCases![0].groundName).toBe('Environmental Violation');
+      expect(aliceCases![0].baseProbability).toBe(0);
+    });
+
+    it('should still price a real, non-zero probability for a correct ground just under the statute of limitations', () => {
+      // Step 2 (advanceAndApply) increments elapsedYears BEFORE Step 8 reads it for
+      // filing, so an instance that's 8 years old entering this turn is 9 by the time
+      // the lawsuit is priced — still one year under makeConfig's 10-year cap.
+      const players = makePlayers([
+        { id: 'player-1', name: 'Alice', engineState: { activeDecisions: [{ id: 'wp-1', definitionName: 'Water Pumping', deployedYear: 1, elapsedYears: 8, isMatured: true }] } },
+        { id: 'player-2', name: 'Bob' },
+      ]);
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [], operational: [],
+        lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
+      });
+
+      const outcome = gameLoop.resolveTurn('room-1', 10, players);
+
+      const aliceCases = outcome.result.players.find((p) => p.playerId === 'player-1')?.legalCases;
+      expect(aliceCases![0].baseProbability).toBeGreaterThan(0);
+    });
+
     describe('plaintiffFullyInvestigated (persisted at filing time)', () => {
       // Bot Attack targets whoever `targetId` names and carries exactly one legal
       // ground ('CFAA Digital Sabotage Lawsuit') — Alice deploys it against Bob. Carol is
@@ -1050,14 +1090,14 @@ describe('GameLoop', () => {
     // these tests exercise the plain, un-shortcut 1-2-3 progression. The heads-up
     // (exactly 2 active players) shortcut has its own dedicated describe block below.
     const ATTACK_ID = 'attack-1';
-    function makeAttackFixture(overrides: { victimCash?: number; victimInvestigations?: Record<string, number> } = {}): EngineDataInput[] {
+    function makeAttackFixture(overrides: { victimCash?: number; victimInvestigations?: Record<string, number>; attackerElapsedYears?: number } = {}): EngineDataInput[] {
       return makePlayers([
         {
           id: 'player-1',
           name: 'Alice',
           engineState: {
             activeDecisions: [
-              { id: ATTACK_ID, definitionName: 'Bot Attack', deployedYear: 1, elapsedYears: 0, isMatured: true, targetId: 'player-2' },
+              { id: ATTACK_ID, definitionName: 'Bot Attack', deployedYear: 1, elapsedYears: overrides.attackerElapsedYears ?? 0, isMatured: true, targetId: 'player-2' },
             ],
           },
         },
@@ -1112,6 +1152,15 @@ describe('GameLoop', () => {
       expect(outcome.attack.suggestedGroundName).toBe('CFAA Digital Sabotage Lawsuit');
       expect(outcome.attack.successProbability).toBeGreaterThan(0);
       expect(outcome.attack.successProbability).toBeLessThanOrEqual(1);
+    });
+
+    it('dig 3 still names a suggested ground but quotes 0% once the attack is past the statute of limitations (makeConfig: 10 years)', () => {
+      const outcome = gameLoop.digDeeper('player-2', ATTACK_ID, makeAttackFixture({ victimInvestigations: { [ATTACK_ID]: 2 }, attackerElapsedYears: 10 }));
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.attack.suggestedGroundName).toBe('CFAA Digital Sabotage Lawsuit');
+      expect(outcome.attack.successProbability).toBe(0);
     });
 
     it('sequential digs accumulate cost — the second dig charges from the already-decremented cash', () => {

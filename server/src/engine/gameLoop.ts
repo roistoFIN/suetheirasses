@@ -544,7 +544,7 @@ export class GameLoop {
           const rawLevel = ctx.engineState.investigations[attackInstance.id] ?? 0;
           const level = this.effectiveInvestigationLevel(rawLevel, ctxs.size);
           if (level >= MAX_INVESTIGATION_LEVEL) {
-            const best = pickBestGround(attackInstance.definition, attackInstance.elapsedYears, targetCtx.vars, this.adminVars, this.formulas);
+            const best = pickBestGround(attackInstance.definition, attackInstance.elapsedYears, targetCtx.vars, this.adminVars, this.formulas, this.config.gameSettings.statuteOfLimitationsYears);
             plaintiffFullyInvestigated = best?.name === filing.groundName;
           }
         }
@@ -557,6 +557,7 @@ export class GameLoop {
           targetActiveDecisions,
           roomId,
           plaintiffFullyInvestigated,
+          this.config.gameSettings.statuteOfLimitationsYears,
         );
         if (newCase) allCases.push(newCase);
       }
@@ -1509,7 +1510,7 @@ export class GameLoop {
         : summarizeTargetImpacts(decision.definition.impacts, decision.elapsedYears);
     }
     if (level >= 3) {
-      const best = pickBestGround(decision.definition, decision.elapsedYears, attackerVars, this.adminVars, this.formulas);
+      const best = pickBestGround(decision.definition, decision.elapsedYears, attackerVars, this.adminVars, this.formulas, this.config.gameSettings.statuteOfLimitationsYears);
       if (best) {
         info.suggestedGroundName = best.name;
         info.suggestedGroundDescription = best.description;

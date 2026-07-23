@@ -106,6 +106,13 @@ export interface SuggestedGround {
  * `gameLoop.ts` Step 8) evaluated against the attacker's current scrutiny/legal
  * exposure — an estimate shown at investigation tier 3. Real trial probability is
  * still recomputed fresh at resolution time; this never substitutes for it.
+ *
+ * `statuteOfLimitationsYears` (`GameSettings.statuteOfLimitationsYears`, default 10)
+ * mirrors `LegalEngine.fileLawsuit`'s own time-bar: once `elapsedYears` reaches it, a
+ * ground's probability is floored to 0 here too, so a "SUE NOW" suggestion never quotes
+ * winnable-looking odds for a decision a real filing would immediately resolve to 0%
+ * for being too old. Defaulted so existing callers/tests that don't pass it keep the
+ * pre-feature behavior (never time-barred).
  */
 export function pickBestGround(
   def: DecisionDefinition,
@@ -113,11 +120,13 @@ export function pickBestGround(
   attackerVars: Pick<PlayerVariables, 'scrutiny' | 'legalExposureRatio'>,
   admin: AdminVariables,
   formulas: FormulaSet,
+  statuteOfLimitationsYears = Infinity,
 ): SuggestedGround | null {
   if (!def.legalRisks || def.legalRisks.length === 0) return null;
+  const timeBarred = elapsedYears >= statuteOfLimitationsYears;
   let best: SuggestedGround | null = null;
   for (const risk of def.legalRisks) {
-    const base = getScheduleValue(risk.probability, elapsedYears);
+    const base = timeBarred ? 0 : getScheduleValue(risk.probability, elapsedYears);
     // Same formula as real trial resolution (calcEngine's calculateAdjustedProbability
     // can exceed 1 for high scrutiny/exposure defendants, which trial resolution treats
     // as a guaranteed win — clamp to [0,1] here purely for a sane percentage display.

@@ -10,7 +10,8 @@
     "marketFixed": true,
     "digDeeperCost": 10000,
     "negotiationPeriodTurns": 2,
-    "lawsuitFilingCost": 15000
+    "lawsuitFilingCost": 15000,
+    "statuteOfLimitationsYears": 10
   },
 
   "playerStartingValues": {

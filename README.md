@@ -867,29 +867,41 @@ just as non-refundable as a correct guess that later loses at trial. Filing is c
 `gameSettings.maxLawsuitsPerPlayerPerTurn` same as the filings themselves, so a player can't
 rack up fee charges past what a turn will actually process.
 
-A case's win probability is always shown to the **defendant** — their lawsuit card shows
-a colored percentage chip (green/yellow/red via `semaphoreLevel`, using
-`adjustedProbability` if the case has one, else `baseProbability`), clickable to
-`RiskBreakdownView` for the full weighted-factor breakdown. The **plaintiff** only sees
-that same chip if they earned it: filing a case after fully "Dig Deeper"-investigating the
-underlying attack (investigation level 3) and suing over its exact suggested ground reveals
-the real number to them too — otherwise their card shows a gray, unclickable "Unknown" chip
-in the same spot, styled identically to the real thing so the two card layouts still line
-up visually. This is decided once, permanently, at the moment the case is filed (not
-recomputed from the player's live attack list on every render), so it can't flicker back to
-"Unknown" later just because the underlying attacking decision matures out or its deployer
-goes bankrupt. This used to be a flat "Unknown" for every plaintiff, with a separate
-"Investigate" button that opened the target's Full Filing report — that button was removed
-by product decision as redundant with the identical button already in the Competitor Intel
-panel, and the "always Unknown" default was later relaxed for plaintiffs who did the work
-of investigating first.
+Neither side sees a case's win probability for free — both start at a gray, unclickable
+"Unknown" chip and have to earn the real number, via two different routes. The
+**plaintiff** earns it *before* filing, by fully "Dig Deeper"-investigating the underlying
+attack (investigation level 3) and suing over its exact suggested ground. The
+**defendant** earns it *after* the fact, by paying `gameSettings.digDeeperCost` on the case
+itself (`game:digDeeperCase`) — a single one-shot reveal, unlike the plaintiff's 3-tier
+route. Once earned, either side's card shows the same colored percentage chip (green/
+yellow/red via `semaphoreLevel`, using `adjustedProbability` if the case has one, else
+`baseProbability`), clickable to `RiskBreakdownView` for the full weighted-factor
+breakdown. The plaintiff's flag is decided once, permanently, at the moment the case is
+filed (not recomputed from the player's live attack list on every render), so it can't
+flicker back to "Unknown" later just because the underlying attacking decision matures out
+or its deployer goes bankrupt; the defendant's flag is likewise permanent once paid for.
 
-A wrong guess (see above) is the clearest illustration of why this split matters: the
-**defendant** always sees the true `0%` on a hopeless case filed against them — they know
-perfectly well whether they actually did the thing being alleged — while the **plaintiff**,
-who merely gambled on a hunch, still sees "Unknown," since there's no attack they could
-have investigated to have earned the real number. The suspense is real on the filer's
-side even when the outcome, to the other party, obviously isn't.
+A wrong guess (see above) is the clearest illustration of why the plaintiff's route
+matters: a plaintiff who merely gambled on a hunch has no attack to have investigated, so
+they can never earn the real number that way — they stay "Unknown" until (if ever) they
+pay to dig into the case directly, same as any defendant would. The defendant, meanwhile,
+always *can* pay to see the true `0%` on a hopeless case filed against them, since they
+genuinely did (or didn't) do the thing being alleged and there's no attack-investigation
+prerequisite standing in their way.
+
+**Statute of limitations:** `gameSettings.statuteOfLimitationsYears` (10 by default,
+admin-editable) caps how long after deployment a decision instance can still be
+meaningfully sued over. Once a target's cited instance has been active at least that many
+years (`elapsedYears >= statuteOfLimitationsYears`), suing over it — even correctly, over
+a ground the target genuinely triggered — is time-barred: the case is still created (the
+same "real but hopeless" shape a wrong guess gets), just with `baseProbability` forced to
+`0`. The same cutoff applies to the "suggested ground" estimate `pickBestGround` computes
+for Dig Deeper's tier-3 reveal and the "SUE NOW" shortcut, so a suggestion never quotes
+winnable-looking odds for a decision a real filing would immediately zero out for being too
+old. This is independent of the decision's own maturity (FORMULAS §9 — maturity is about
+when an impact schedule locks in, not legal liability): a long-matured decision can still
+be well within the limitations window, and a still-maturing one could in principle be past
+it, if `statuteOfLimitationsYears` were ever set below a decision's own maturity time.
 
 `target.*` impact fields (FORMULAS §0 — the 9 fields like `target.cash`, `target.outrage`
 that route a decision's effect to the chosen target rather than the decision-maker, used

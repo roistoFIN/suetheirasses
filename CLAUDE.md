@@ -1131,14 +1131,14 @@ unknown decision or ground name entirely outside the library) — that's tamperi
 guessing; the real client only ever offers real decision+ground pairs.
 
 The existing `plaintiffFullyInvestigated` mechanism (see *A case's probability chip is
-defendant-only, unless the plaintiff earned it* above) already does exactly the right
-thing here with zero further changes needed: a wrong guess can never satisfy
-`plaintiffFullyInvestigated` (there's no real attacking decision instance targeting the
-plaintiff to have investigated in the first place), so the plaintiff's own card shows
-"Unknown" — they don't know it's hopeless. The **defendant** always sees the real number
-(here, a plain `0%`), since they know perfectly well whether they actually did the thing
-being alleged. This is the literal mechanic the user described: *"the one who sued doesn't
-know this, but the defendant does."*
+earned separately by each side* above) already does exactly the right thing here with
+zero further changes needed: a wrong guess can never satisfy `plaintiffFullyInvestigated`
+(there's no real attacking decision instance targeting the plaintiff to have investigated
+in the first place), so the plaintiff's own card shows "Unknown" — they don't know it's
+hopeless. The **defendant**, if they pay to dig into the case (`game:digDeeperCase`),
+sees the real number (here, a plain `0%`), since they know perfectly well whether they
+actually did the thing being alleged — they just have to spend the fee to have the game
+confirm it, same as for a genuine case.
 
 The `SueModal`'s "SUE NOW" shortcut (pre-fills a suggested ground from a fully-investigated
 attack) now needs a `decisionName` alongside the `groundName` it already passed, purely to
@@ -1167,6 +1167,63 @@ attack can't exist to dig into before a turn has deployed one) to match `resolve
 `findCaseAndParties` (used by `makeOffer`/`acceptOffer`/`goToCourt`) was deliberately left
 alone — a case can only exist after a turn has already resolved at least once, so its
 identical `readVariables` call is provably never reachable with unpopulated variables.
+
+### Statute of limitations — a decision can be sued over for only `gameSettings.statuteOfLimitationsYears` (default 10), independent of its own maturity
+
+Not in FORMULAS.md at all (grepped — no mention), a further addition beyond spec by the
+same kind of explicit product decision as the negotiation phase below. Once a target's
+cited decision instance has been active `elapsedYears >= statuteOfLimitationsYears`, suing
+over it is time-barred: the case still gets created — same "real but hopeless" shape a
+wrong guess already gets (see *SUE THEIR ASSES offers the whole decision library's
+grounds* above) — just with `baseProbability` forced to `0` rather than priced off the
+ground's real schedule. This is deliberately **independent of `isMatured`** (FORMULAS §9
+maturity governs when an impact schedule locks in — instant vs. multi-year — not legal
+liability): a decision can be long matured and still well within the limitations window,
+or, if an admin ever sets `statuteOfLimitationsYears` below a decision's own maturity
+time, time-barred before it's even matured.
+
+Two call sites needed the cutoff, not one — leaving either unpatched would make the game
+lie to the player:
+- **`LegalEngine.fileLawsuit`** — the actual case-creation math (`server/src/engine/
+  legalEngine.ts`). `targetInstance.elapsedYears >= statuteOfLimitationsYears` forces
+  `probability` to `0` before `getScheduleValue` would otherwise price it, exactly
+  mirroring the existing "no matching instance at all" branch right above it.
+- **`pickBestGround`** (`server/src/engine/decisionEngine.ts`) — the estimate Dig Deeper's
+  tier-3 reveal and the "SUE NOW" shortcut surface *before* a player files. Without the
+  same cutoff here, a suggestion could quote real, winnable-looking odds for a decision a
+  subsequent `fileLawsuit` call would immediately zero out for being too old — a
+  suggestion that lies about the very case it's suggesting. `elapsedYears >=
+  statuteOfLimitationsYears` floors each ground's `base` probability to `0` before the
+  scrutiny/legal-exposure adjustment (`calculateAdjustedProbability(0, ...)` is
+  multiplicative, so it stays `0` regardless of the attacker's own stats — same guarantee
+  `resolveProbability` already gives a wrong guess), letting the normal "highest
+  probability wins" comparison naturally prefer any non-expired ground over an expired
+  one, with no separate branch needed.
+
+Both `fileLawsuit` and `pickBestGround` take `statuteOfLimitationsYears` as a trailing,
+**defaulted** parameter (`= Infinity`) rather than a required one — neither function has
+any other way to reach `GameSettings` (see below), and defaulting means every pre-feature
+call site/test that doesn't pass it keeps compiling and behaving exactly as before,
+instead of every one of the ~15 existing `fileLawsuit` call sites in `legalEngine.test.ts`
+needing a mechanical update just to keep compiling. The two real production call sites
+(`GameLoop.resolveTurn`'s Step 8 filing loop, and `revealAttack`) both pass
+`this.config.gameSettings.statuteOfLimitationsYears` explicitly — since `GameLoop.
+updateConfig` reassigns `this.config` wholesale on every admin edit (see *Formulas are
+DB-backed* below for the equivalent live-reload story), a live `/admin` change to this
+value takes effect on the very next turn resolved anywhere, no restart needed, with zero
+changes required to `LegalEngine` itself (it has no constructor/config access at all,
+staying stateless except for `setDefinitions`).
+
+`GameSettings.statuteOfLimitationsYears` is a plain DB-backed admin field like
+`digDeeperCost`/`lawsuitFilingCost` — see *Decisions/config are DB-backed, not static
+JSON* below for the general story (seeded from `server/src/data/game_config.json`,
+editable live via `/admin`'s raw-JSON config editor, validated by `gameSettingsSchema` in
+`validation/schemas.ts`). Because Prisma's `GameConfigRow.gameSettings` is JSONB with no
+Postgres-level schema, adding this field required no migration — but an **already-seeded**
+dev database predates the key and needs `npm run db:seed` re-run (safe — it's an
+`upsert` that fully replaces `gameSettings` from the JSON file, not a merge) to actually
+have it; until then Prisma returns `undefined` for it at runtime despite the TS type
+claiming `number`, which is exactly what the `= Infinity` defaults above guard against.
 
 ### Settlement negotiation — a sixth exception to `resolveTurn`, plus a Step 8b fallback for whatever it doesn't resolve
 
@@ -1275,25 +1332,65 @@ prevent this (`gameLoop.ts`'s Step 7) — keep that dedup if you ever touch how 
 is assembled; `gameLoop.test.ts`'s "should not duplicate a case across turns" regression
 test resolves 3 turns in a row and asserts the count stays at 1 the whole way.
 
-### A case's probability chip is defendant-only, unless the plaintiff earned it by fully investigating before filing
+### Dig deeper on an open lawsuit — defendant pays to reveal a case's probability, a one-shot reveal reusing the two-party `makeOffer`/`acceptOffer`/`goToCourt` shape
+
+A case's probability used to be free, permanent intel for the defendant the instant it
+was filed. `GameLoop.digDeeperOnCase(playerId, caseId, players)` (`server/src/engine/
+gameLoop.ts`) changes that: the defendant now pays `gameSettings.digDeeperCost` (same fee
+as an incoming-attack investigation click) to flip a new per-case
+`LegalCaseData.defendantInvestigated` flag from `false` to `true`, which is what
+`knowsOdds` actually gates client-side (see *A case's probability chip is earned
+separately by each side* below). Unlike the 3-tier incoming-attack investigation ladder
+(`digDeeper`), this is a single one-shot reveal — there's only one thing to learn (the
+odds), not a progression of tiers, so one dig either succeeds (`already_investigated`
+after that) or fails outright (`not_defendant`, `insufficient_funds`).
+
+Reuses the exact two-party persist/emit shape `makeOffer`/`acceptOffer`/`goToCourt`
+already established, because a case lives in **both** parties' `engineState.legalCases`
+(see above) and both copies need the flag written back so they never diverge — even
+though only the defendant's cash moves. `digDeeperOnCase` calls the same private
+`findCaseAndParties` lookup those three methods use, returns the same
+`LegalCaseActionOutcome` shape (widened with three new failure reasons: `not_defendant`,
+`already_investigated`, `insufficient_funds`), and `GameEngine.digDeeperOnCase` calls the
+same `persistLegalCaseAction`/`emitLegalCaseUpdate` helpers those three already use —
+`game:digDeeperCase` requesting it, `game:legalCaseUpdate` (not a new event) announcing
+the result to both parties' sockets, exactly like an offer or a court decision would. No
+new client-side store plumbing was needed for this reason: `applyLegalCaseUpdate` already
+patches any updated case into `turnResults` by id, defendant-cash-move or not.
+
+Client-side, `CaseCard` renders a "🔍 Dig Deeper ($X)" button in place of the chip
+whenever `isDefendant && !knowsOdds`, styled and wired the same way `AttackHintCard`'s own
+Dig Deeper button already is (a local `digging`/`digError` `useState` pair, one-shot
+`socket.on(GAME_LEGAL_CASE_UPDATE)`/`socket.on(ERROR)` listeners registered right before
+the emit and torn down in the handler, matching `NegotiationPanel`'s `sendAction` pattern
+in the same file) — not a shared hook, since neither existing pattern was a hook to begin
+with.
+
+### A case's probability chip is earned separately by each side — the plaintiff before filing, the defendant after, via `game:digDeeperCase`
 
 `CaseCard`'s header shows a colored percentage chip (`semaphoreLevel(displayProb)`,
 `displayProb` = `adjustedProbability` if the case has one, else `baseProbability`) when
-`knowsOdds` is true — a real number the defendant always genuinely has visibility into,
-per FORMULAS §6/§9, and one the *plaintiff* only earns by having fully "Dig Deeper"-
-investigated (investigation level `MAX_INVESTIGATION_LEVEL`, i.e. 3) the underlying
-attack before suing over its exact suggested ground (see the *Attack Awareness & Dig
-Deeper* section — the same suggested-ground concept `pickBestGround` computes there).
-Otherwise the plaintiff side renders a `semColors.gray`-styled chip reading "Unknown"
+`knowsOdds` is true. `knowsOdds` is `isDefendant ? caseData.defendantInvestigated :
+caseData.plaintiffFullyInvestigated` — two independent flags, not one shared reveal.
+The *plaintiff* earns theirs by having fully "Dig Deeper"-investigated (investigation
+level `MAX_INVESTIGATION_LEVEL`, i.e. 3) the underlying attack before suing over its
+exact suggested ground (see the *Attack Awareness & Dig Deeper* section — the same
+suggested-ground concept `pickBestGround` computes there). The *defendant* earns theirs
+by paying `gameSettings.digDeeperCost` on the case itself (see *"Dig deeper on an open
+lawsuit reveals its probability of success"* below) — a case's probability used to be
+free, permanent intel for the defendant the instant it was filed; it no longer is.
+Whichever side hasn't earned it renders a `semColors.gray`-styled chip reading "Unknown"
 instead, via `gpStyles.semaphoreChip('gray', false)` — the second `clickable` argument
 (default `true`, only ever passed `false` here) drops the `cursor: pointer` styling,
 since there's no `RiskBreakdownView` to open for a probability the player hasn't earned.
-This replaced an earlier "Investigate" button that opened the target's Full Filing
-report — removed by product decision as redundant (the identical Full Filing button
-already exists in the Competitor Intel panel for every rival, case or no case) rather
-than fixed in place; suing over a decision that never targeted the plaintiff at all (no
-"attack" concept applies, e.g. a general risky decision like Water Pumping) always stays
-"Unknown", since there's nothing to have investigated.
+The plaintiff's route replaced an earlier "Investigate" button that opened the target's
+Full Filing report — removed by product decision as redundant (the identical Full Filing
+button already exists in the Competitor Intel panel for every rival, case or no case)
+rather than fixed in place; suing over a decision that never targeted the plaintiff at all
+(no "attack" concept applies, e.g. a general risky decision like Water Pumping) always
+stays "Unknown" on the plaintiff's side, since there's nothing to have investigated —
+their only route to the real number on such a case is the defendant-style dig, same as
+anyone filing on a hunch.
 
 **Why this is stamped server-side (`LegalCaseData.plaintiffFullyInvestigated`) at filing
 time, not recomputed client-side from `incomingAttacks` on every render:** a purely
