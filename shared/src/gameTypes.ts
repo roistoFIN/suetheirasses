@@ -505,9 +505,14 @@ export interface GetKpiHistoryPayload {
 export interface KpiHistoryResponse {
   playerId: string;
   history: KpiSnapshotPoint[];
-  /** Up to 3 points, fewer if `bankruptAtRound` cuts the simulation short. Always empty for a rival lookup — predicting a rival's future from their own decisions isn't offered, only real history. */
+  /** Up to 3 points, fewer if `bankruptAtRound` cuts the simulation short. When it does,
+   * the last point IS the bankrupt round itself — real (negative) cash and all, not the
+   * last still-solvent turn before it — so a player can actually see the line cross zero
+   * and react (e.g. sell shares) before it happens for real. Always empty for a rival
+   * lookup — predicting a rival's future from their own decisions isn't offered, only
+   * real history. */
   predicted: KpiSnapshotPoint[];
-  /** Set if the prediction simulation shows this player going bankrupt within the predicted window — `predicted` then has fewer than 3 points, stopping at the last turn that still had a solvent outcome. Never set for a rival lookup (no prediction is run). */
+  /** Set if the prediction simulation shows this player going bankrupt within the predicted window — `predicted` then stops at that round (see `predicted`'s own doc comment for why that round's real numbers are still included). Never set for a rival lookup (no prediction is run). */
   bankruptAtRound?: number;
 }
 

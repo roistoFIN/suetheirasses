@@ -1495,8 +1495,14 @@ export class GameLoop {
    *
    * Stops early (fewer than `turnsAhead` points, `bankruptAtRound` set) if the target
    * would go bankrupt partway through the simulation — nothing meaningful to project
-   * past that; `BankruptedPlayer.finalCash` isn't reused here since a bankrupt player
-   * has no equity/derived stats left to plot, just the one round number.
+   * past that turn. Unlike the general KPI-history persistence path, this DOES reuse
+   * `BankruptedPlayer.finalVariables`/`finalDerived`/`finalRiskGauge`: the whole point of
+   * showing a player their own predicted future is to warn them cash is about to go
+   * negative (e.g. so they can sell shares before it happens), so `predicted`'s last
+   * point for a would-go-bankrupt player is the actual bankrupt-round snapshot — real
+   * (negative) cash included — not silently omitted just because the round it happened
+   * on ends the simulation. A real, reported gap: the graph used to stop one turn short
+   * of the drop, so a player never actually saw the line cross zero.
    */
   predictFutureKpis(playerId: string, round: number, players: EngineDataInput[], turnsAhead: number): KpiPrediction {
     const me = players.find(p => p.id === playerId);
@@ -1511,7 +1517,14 @@ export class GameLoop {
       const virtualRound = round + i;
       const outcome = this.resolveTurn(sandboxRoomId, virtualRound, [meInput, ...rivals]);
 
-      if (outcome.bankruptedPlayers.some(b => b.playerId === playerId)) {
+      const bankrupted = outcome.bankruptedPlayers.find(b => b.playerId === playerId);
+      if (bankrupted) {
+        predicted.push({
+          round: virtualRound,
+          variables: bankrupted.finalVariables,
+          derived: bankrupted.finalDerived,
+          riskGauge: bankrupted.finalRiskGauge,
+        });
         return { predicted, bankruptAtRound: virtualRound };
       }
 

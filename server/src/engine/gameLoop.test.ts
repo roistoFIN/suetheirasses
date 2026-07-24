@@ -2915,7 +2915,7 @@ describe('GameLoop', () => {
       expect(prediction.predicted.map(p => p.round)).toEqual([6, 7, 8]);
     });
 
-    it('stops early and sets bankruptAtRound once the projection would cross negative cash', () => {
+    it('stops at (not before) the bankrupt round, with that round\'s real negative cash included (regression — the graph used to stop one turn short of the drop)', () => {
       // Revenue suppressed (see makePredictFixture) so fixed costs alone drain this
       // small starting cash negative well within the 3-turn window.
       const prediction = gameLoop.predictFutureKpis('player-1', 1, makePredictFixture(20000, { suppressRevenue: true }), 3);
@@ -2923,6 +2923,12 @@ describe('GameLoop', () => {
       expect(prediction.predicted.length).toBeLessThan(3);
       expect(prediction.bankruptAtRound).toBeDefined();
       expect(prediction.bankruptAtRound).toBeGreaterThan(1);
+
+      // The last predicted point IS the bankrupt round — a player needs to actually see
+      // cash cross zero to react (e.g. sell shares) before it happens for real.
+      const last = prediction.predicted[prediction.predicted.length - 1];
+      expect(last.round).toBe(prediction.bankruptAtRound);
+      expect(last.variables.cash).toBeLessThan(0);
     });
 
     it('returns no predicted points for an unknown player id', () => {

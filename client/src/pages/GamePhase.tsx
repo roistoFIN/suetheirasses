@@ -2888,8 +2888,9 @@ function KpiHistoryGraph({ field, socket, targetPlayerId }: KpiHistoryGraphProps
       )}
       {bankruptAtRound && (
         <Text size="xs" c="red" style={{ fontStyle: 'italic' }}>
-          Projection stops at round {bankruptAtRound} — if only your own decisions play out from here, you'd go
-          bankrupt by then (this doesn't account for other players' decisions, which could change that).
+          Projection stops at round {bankruptAtRound} — the last point shown is your actual cash the turn you'd go
+          bankrupt, if only your own decisions play out from here (this doesn't account for other players'
+          decisions, which could change that). Consider a move like selling shares before then.
         </Text>
       )}
       {lastHistory && history.length < 2 && (
