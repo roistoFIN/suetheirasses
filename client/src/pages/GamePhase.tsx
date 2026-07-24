@@ -31,7 +31,7 @@ import {
 // just ones a specific target has actually deployed. See getGroundsAgainst() near
 // SueModal: a player can knowingly guess a ground the target may or may not have
 // actually pursued — a wrong guess still costs the filing fee (not refunded) but
-// produces no case, exactly the risk/reward FORMULAS.md's spec implies is possible.
+// produces no case, exactly the risk/reward this mechanic is designed to allow.
 
 /** Maps the 4 top KPI cards + Threat Level's `drillDown.type` to the KpiSnapshotPoint field their history/prediction graph should read — see KpiHistoryGraph. Rival drill-downs ('rival'/'rival-field') deliberately have no entry: rivals read `field`/`label` straight off `drillDown` instead (see RivalFieldView / RivalFullReportView), since a rival has no single "top" field the way each own-KPI type does. */
 const OWN_KPI_DRILLDOWN_FIELD: Record<string, { field: string; label: string }> = {
@@ -61,9 +61,11 @@ function pct(n: number): string {
   return (n * 100).toFixed(0) + '%';
 }
 
-function semaphoreLevel(p: number): 'green' | 'yellow' | 'red' {
-  if (p < 0.15) return 'green';
-  if (p < 0.4) return 'yellow';
+/** Defaults mirror `game_config.json`'s seeded values — used only until `game:deck` (and
+ * its `gameSettings.semaphoreGreenMax`/`semaphoreYellowMax`) has actually arrived. */
+function semaphoreLevel(p: number, greenMax = 0.15, yellowMax = 0.4): 'green' | 'yellow' | 'red' {
+  if (p < greenMax) return 'green';
+  if (p < yellowMax) return 'yellow';
   return 'red';
 }
 
@@ -204,15 +206,23 @@ export function detectNewlySettledCases(
 }
 
 /**
- * The content of one "info window" — sued, a lawsuit verdict, a negotiated settlement, or
- * the round simply advancing. Each one is wrapped into a `NewsItem` (below) and appended
- * to the News box's list rather than popping up automatically — see the News box's own
- * doc comment for why this replaced the old auto-popping single-Modal queue.
+ * The content of one "info window" — one case being sued/resolved/settled, or the round
+ * simply advancing. Each one is wrapped into a `NewsItem` (below) and appended to the
+ * News box's list rather than popping up automatically — see the News box's own doc
+ * comment for why this replaced the old auto-popping single-Modal queue.
+ *
+ * Deliberately ONE case per event, never a batch — an earlier version bundled every case
+ * that was sued/resolved-the-same-way/settled in a single turn into one `PostTurnEvent`
+ * (`cases: LegalCaseData[]`), which was a real, reported bug: two lawsuits landing on the
+ * same player the same turn (or two verdicts, or two settlements) produced only one News
+ * row and one alert, silently hiding the second case's own outcome from the player. Each
+ * case is its own event, its own row, and its own "you can win or lose this one
+ * independently of any other" fact — nothing about them should ever be merged.
  */
 type PostTurnEvent =
-  | { type: 'sued'; cases: LegalCaseData[] }
-  | { type: 'verdict'; outcome: 'won' | 'lost'; cases: LegalCaseData[] }
-  | { type: 'settlement'; cases: SettledCaseForMe[] }
+  | { type: 'sued'; case: LegalCaseData }
+  | { type: 'verdict'; outcome: 'won' | 'lost'; case: LegalCaseData }
+  | { type: 'settlement'; case: SettledCaseForMe }
   | { type: 'turnChange'; round: number };
 
 /** One entry in the News box — a `PostTurnEvent` plus the round it was published in and a
@@ -431,9 +441,9 @@ const gpStyles = {
     height: 'auto',
     lineHeight: 1,
     border: '3px solid',
-    borderColor: tone === 'green' ? '#16a34a' : tone === 'yellow' ? '#f59e0b' : tone === 'red' ? '#dc2626' : 'var(--mantine-color-dark-8)',
-    color: tone === 'green' ? '#15803d' : tone === 'yellow' ? '#b45309' : tone === 'red' ? '#b91c1c' : 'var(--mantine-color-dark-8)',
-    background: tone === 'black' ? '#fff' : tone === 'green' ? '#f0fdf4' : tone === 'yellow' ? '#fefce8' : '#fef2f2',
+    borderColor: tone === 'green' ? '#16a34a' : tone === 'yellow' ? '#f59e0b' : tone === 'red' ? '#dc2626' : tone === 'gray' ? '#6b7280' : 'var(--mantine-color-dark-8)',
+    color: tone === 'green' ? '#15803d' : tone === 'yellow' ? '#b45309' : tone === 'red' ? '#b91c1c' : tone === 'gray' ? '#374151' : 'var(--mantine-color-dark-8)',
+    background: tone === 'black' ? '#fff' : tone === 'green' ? '#f0fdf4' : tone === 'yellow' ? '#fefce8' : tone === 'gray' ? '#f3f4f6' : '#fef2f2',
     borderRadius: 4,
     padding: '2px 8px',
     fontSize: '0.65rem',
@@ -568,13 +578,13 @@ export default function GamePhase() {
         const newlySued = detectNewlySuedCases(myData.legalCases, myPlayer.legalCases, player.id);
         const newlyResolved = detectNewlyResolvedCases(myData.legalCases, myPlayer.legalCases, player.id);
         const newlySettled = detectNewlySettledCases(myData.legalCases, myPlayer.legalCases, player.id);
-        const won = newlyResolved.filter((r) => r.outcome === 'won').map((r) => r.case);
-        const lost = newlyResolved.filter((r) => r.outcome === 'lost').map((r) => r.case);
+        // One PostTurnEvent per case, never a batch — see PostTurnEvent's doc comment for
+        // why (a real, reported bug where multiple same-turn cases collapsed into one
+        // News row/alert, silently hiding every case after the first).
         const newEvents: PostTurnEvent[] = [
-          ...(newlySued.length > 0 ? [{ type: 'sued', cases: newlySued } as const] : []),
-          ...(won.length > 0 ? [{ type: 'verdict', outcome: 'won', cases: won } as const] : []),
-          ...(lost.length > 0 ? [{ type: 'verdict', outcome: 'lost', cases: lost } as const] : []),
-          ...(newlySettled.length > 0 ? [{ type: 'settlement', cases: newlySettled } as const] : []),
+          ...newlySued.map((c): PostTurnEvent => ({ type: 'sued', case: c })),
+          ...newlyResolved.map((r): PostTurnEvent => ({ type: 'verdict', outcome: r.outcome, case: r.case })),
+          ...newlySettled.map((s): PostTurnEvent => ({ type: 'settlement', case: s })),
         ];
         if (newEvents.length > 0) {
           setNewsItems((prev) => [
@@ -715,27 +725,16 @@ export default function GamePhase() {
         {/* Left column */}
         <Stack gap="md" style={{ flex: 1, minWidth: 320 }}>
           <SectionCard title={`Active Decisions (${activeStrategicCount} strategic and ${activeOperationalCount} operational)`}>
-            <Stack gap="sm">
-              <Button variant="filled" color="dark" onClick={() => setDecisionDeckModalOpen(true)} style={{ ...boldStyle }}>
-                MAKE IMPORTANT DECISIONS
-              </Button>
-              <Stack gap="sm">
-                {(['strategic', 'operational'] as const).flatMap((bucket) =>
-                  pending[bucket].map((entry, i) => (
-                    <QueuedDecisionCard
-                      key={`${bucket}-${i}`}
-                      name={entry.name}
-                      targetName={entry.targetId ? (competitors.find((c) => c.playerId === entry.targetId)?.playerName ?? entry.targetId) : undefined}
-                      def={decisions.find((def) => def.decision === entry.name)}
-                      onCancel={() => submitPending({ ...pending, [bucket]: pending[bucket].filter((e) => e.name !== entry.name) })}
-                    />
-                  )),
-                )}
-                {myData.activeDecisions.map((d) => (
-                  <ActiveDecisionCard key={d.id} decision={d} def={decisions.find((def) => def.decision === d.decisionName)} />
-                ))}
-              </Stack>
-            </Stack>
+            <ActiveDecisionsBox
+              pending={pending}
+              activeDecisions={myData.activeDecisions}
+              decisions={decisions}
+              playerNames={playerNames}
+              statuteOfLimitationsYears={gameSettings?.statuteOfLimitationsYears}
+              round={round}
+              onSubmitPending={submitPending}
+              onOpenDeck={() => setDecisionDeckModalOpen(true)}
+            />
           </SectionCard>
         </Stack>
 
@@ -780,6 +779,8 @@ export default function GamePhase() {
                       onRiskInfo={(caseItem) => setRiskInfoCase(caseItem)}
                       cash={vars.cash}
                       digDeeperCost={gameSettings?.digDeeperCost ?? 10000}
+                      semaphoreGreenMax={gameSettings?.semaphoreGreenMax}
+                      semaphoreYellowMax={gameSettings?.semaphoreYellowMax}
                     />
                   ))}
               </Stack>
@@ -808,11 +809,13 @@ export default function GamePhase() {
         {drillDown?.type === 'equity' && myData && <EquityView data={myData} prevData={prevData ?? undefined} onFieldClick={(t) => setKpiSubFieldGraph({ ...t, targetPlayerId: myData.playerId })} />}
         {drillDown?.type === 'shares' && myData && <ShareView data={myData} rivals={competitors} prevData={prevData ?? undefined} prevRivals={prevCompetitors} onFieldClick={(t) => setKpiSubFieldGraph({ ...t, targetPlayerId: myData.playerId })} />}
         {drillDown?.type === 'threat' && myData && <ThreatView data={myData} prevData={prevData ?? undefined} onFieldClick={(t) => setKpiSubFieldGraph({ ...t, targetPlayerId: myData.playerId })} />}
-        {drillDown?.type === 'rival' && drillDown.data && (
+        {drillDown?.type === 'rival' && drillDown.data && myData && (
           <RivalFullReportView
             rival={drillDown.data}
             prevRival={prevCompetitors.get(drillDown.data.playerId)}
             decisions={decisions}
+            myData={myData}
+            competitors={competitors}
             onFieldClick={(t) => setKpiSubFieldGraph(t)}
           />
         )}
@@ -884,18 +887,14 @@ export default function GamePhase() {
         {currentEvent?.type === 'sued' && (
           <Stack gap="md">
             <Image src="/images/sued.png" alt="Served with a lawsuit" radius="md" />
-            <Stack gap="xs">
-              {currentEvent.cases.map((c) => (
-                <Box key={c.id} style={{ borderLeft: '3px solid var(--mantine-color-red-6)', paddingLeft: 8 }}>
-                  <Text size="sm" fw={600}>
-                    {playerNames.get(c.plaintiffId) ?? 'Unknown'} sued you over "{c.decisionName}"
-                  </Text>
-                  <Text size="sm" c="dimmed">
-                    Ground: {c.groundName} — Stakes: {fmt(c.stakes)}
-                  </Text>
-                </Box>
-              ))}
-            </Stack>
+            <Box style={{ borderLeft: '3px solid var(--mantine-color-red-6)', paddingLeft: 8 }}>
+              <Text size="sm" fw={600}>
+                {playerNames.get(currentEvent.case.plaintiffId) ?? 'Unknown'} sued you over "{currentEvent.case.decisionName}"
+              </Text>
+              <Text size="sm" c="dimmed">
+                Ground: {currentEvent.case.groundName} — Stakes: {fmt(currentEvent.case.stakes)}
+              </Text>
+            </Box>
             <Button fullWidth onClick={dismissCurrentEvent}>
               Close
             </Button>
@@ -905,41 +904,38 @@ export default function GamePhase() {
         {currentEvent?.type === 'verdict' && (
           <Stack gap="md">
             {(() => {
-              // A 'won' event bundles every case that resolved 'won' for me this turn
-              // (see detectNewlyResolvedCases) — almost always all-plaintiff or
-              // all-defendant, but if a mixed batch ever happens, default to the
-              // plaintiff-payout art rather than picking arbitrarily.
-              const wonAsDefendantOnly = currentEvent.outcome === 'won' && currentEvent.cases.every((c) => c.plaintiffId !== player?.id);
+              // Exactly one case per event now (see PostTurnEvent's doc comment), so
+              // whether I was plaintiff or defendant on THIS case is unambiguous — no
+              // more "mixed batch" guessing needed.
+              const c = currentEvent.case;
+              const iAmPlaintiff = c.plaintiffId === player?.id;
+              const wonAsDefendant = currentEvent.outcome === 'won' && !iAmPlaintiff;
               const src = currentEvent.outcome === 'lost'
                 ? '/images/lawsuit-lost.png'
-                : wonAsDefendantOnly ? '/images/defender-won.png' : '/images/lawsuit-won.png';
-              const alt = currentEvent.outcome === 'lost' ? 'Case lost' : wonAsDefendantOnly ? 'Case dismissed' : 'Case won';
+                : wonAsDefendant ? '/images/defender-won.png' : '/images/lawsuit-won.png';
+              const alt = currentEvent.outcome === 'lost' ? 'Case lost' : wonAsDefendant ? 'Case dismissed' : 'Case won';
               return <Image src={src} alt={alt} radius="md" />;
             })()}
-            <Stack gap="xs">
-              {currentEvent.cases.map((c) => {
-                const iAmPlaintiff = c.plaintiffId === player?.id;
-                const opponentName = playerNames.get(iAmPlaintiff ? c.defendantId : c.plaintiffId) ?? 'Unknown';
-                let outcomeLine: string;
-                if (iAmPlaintiff && c.verdict === 'won') outcomeLine = `You received ${fmt(c.stakes)} from ${opponentName}`;
-                else if (iAmPlaintiff && c.verdict === 'lost') outcomeLine = `You got nothing — the court sided with ${opponentName}`;
-                else if (!iAmPlaintiff && c.verdict === 'won') outcomeLine = `You paid ${fmt(c.stakes)} to ${opponentName}`;
-                else outcomeLine = `The case against you was dismissed — you paid nothing`;
-                return (
-                  <Box
-                    key={c.id}
-                    style={{ borderLeft: `3px solid var(--mantine-color-${currentEvent.outcome === 'won' ? 'green' : 'red'}-6)`, paddingLeft: 8 }}
-                  >
-                    <Text size="sm" fw={600}>
-                      {iAmPlaintiff ? `You sued ${opponentName}` : `${opponentName} sued you`} over "{c.decisionName}"
-                    </Text>
-                    <Text size="sm" c="dimmed">
-                      Ground: {c.groundName} — {outcomeLine}
-                    </Text>
-                  </Box>
-                );
-              })}
-            </Stack>
+            {(() => {
+              const c = currentEvent.case;
+              const iAmPlaintiff = c.plaintiffId === player?.id;
+              const opponentName = playerNames.get(iAmPlaintiff ? c.defendantId : c.plaintiffId) ?? 'Unknown';
+              let outcomeLine: string;
+              if (iAmPlaintiff && c.verdict === 'won') outcomeLine = `You received ${fmt(c.stakes)} from ${opponentName}`;
+              else if (iAmPlaintiff && c.verdict === 'lost') outcomeLine = `You got nothing — the court sided with ${opponentName}`;
+              else if (!iAmPlaintiff && c.verdict === 'won') outcomeLine = `You paid ${fmt(c.stakes)} to ${opponentName}`;
+              else outcomeLine = `The case against you was dismissed — you paid nothing`;
+              return (
+                <Box style={{ borderLeft: `3px solid var(--mantine-color-${currentEvent.outcome === 'won' ? 'green' : 'red'}-6)`, paddingLeft: 8 }}>
+                  <Text size="sm" fw={600}>
+                    {iAmPlaintiff ? `You sued ${opponentName}` : `${opponentName} sued you`} over "{c.decisionName}"
+                  </Text>
+                  <Text size="sm" c="dimmed">
+                    Ground: {c.groundName} — {outcomeLine}
+                  </Text>
+                </Box>
+              );
+            })()}
             <Button fullWidth onClick={dismissCurrentEvent}>
               Close
             </Button>
@@ -949,25 +945,24 @@ export default function GamePhase() {
         {currentEvent?.type === 'settlement' && (
           <Stack gap="md">
             <Image src="/images/settlement-proposal.png" alt="Settlement reached" radius="md" />
-            <Stack gap="xs">
-              {currentEvent.cases.map(({ case: c, role }) => {
-                const opponentName = playerNames.get(role === 'plaintiff' ? c.defendantId : c.plaintiffId) ?? 'Unknown';
-                const lastOffer = c.offers[c.offers.length - 1]?.amount ?? c.stakes;
-                const outcomeLine = role === 'plaintiff'
-                  ? `Settled — you received ${fmt(lastOffer)} from ${opponentName}`
-                  : `Settled — you paid ${fmt(lastOffer)} to ${opponentName}`;
-                return (
-                  <Box key={c.id} style={{ borderLeft: '3px solid var(--mantine-color-yellow-6)', paddingLeft: 8 }}>
-                    <Text size="sm" fw={600}>
-                      {role === 'plaintiff' ? `You sued ${opponentName}` : `${opponentName} sued you`} over "{c.decisionName}"
-                    </Text>
-                    <Text size="sm" c="dimmed">
-                      Ground: {c.groundName} — {outcomeLine}
-                    </Text>
-                  </Box>
-                );
-              })}
-            </Stack>
+            {(() => {
+              const { case: c, role } = currentEvent.case;
+              const opponentName = playerNames.get(role === 'plaintiff' ? c.defendantId : c.plaintiffId) ?? 'Unknown';
+              const lastOffer = c.offers[c.offers.length - 1]?.amount ?? c.stakes;
+              const outcomeLine = role === 'plaintiff'
+                ? `Settled — you received ${fmt(lastOffer)} from ${opponentName}`
+                : `Settled — you paid ${fmt(lastOffer)} to ${opponentName}`;
+              return (
+                <Box style={{ borderLeft: '3px solid var(--mantine-color-yellow-6)', paddingLeft: 8 }}>
+                  <Text size="sm" fw={600}>
+                    {role === 'plaintiff' ? `You sued ${opponentName}` : `${opponentName} sued you`} over "{c.decisionName}"
+                  </Text>
+                  <Text size="sm" c="dimmed">
+                    Ground: {c.groundName} — {outcomeLine}
+                  </Text>
+                </Box>
+              );
+            })()}
             <Button fullWidth onClick={dismissCurrentEvent}>
               Close
             </Button>
@@ -1253,6 +1248,27 @@ function DecisionDetails({ def }: { def?: DecisionDefinition }) {
   );
 }
 
+/** The four statuses an already-deployed decision instance can be in — the same four
+ * `ActiveDecisionCard`'s badge already distinguished inline, pulled out into its own type
+ * so the "Active Decisions" box's status filter can classify a card the exact same way
+ * the card itself renders, with no risk of the two drifting apart. */
+type ActiveDecisionStatus = 'voided' | 'expired' | 'matured' | 'maturing';
+
+/** Mirrors the badge/status logic `ActiveDecisionCard` always computed inline — pulled out
+ * so `ActiveDecisionsBox`'s status filter classifies a decision exactly the same way the
+ * card itself does. `voidedByLawsuit` wins over "expired" (a voided instance's permanent
+ * effect is already moot regardless of the statute), matching the card's original
+ * ternary order. */
+function getActiveDecisionStatus(
+  decision: { isMatured: boolean; voidedByLawsuit: boolean; elapsedYears: number },
+  def: DecisionDefinition | undefined,
+  statuteOfLimitationsYears?: number,
+): ActiveDecisionStatus {
+  if (decision.voidedByLawsuit) return 'voided';
+  if (def && hasPermanentEffect(def) && statuteOfLimitationsYears !== undefined && decision.elapsedYears >= statuteOfLimitationsYears) return 'expired';
+  return decision.isMatured ? 'matured' : 'maturing';
+}
+
 interface ActiveDecisionCardProps {
   decision: {
     id: string;
@@ -1261,22 +1277,39 @@ interface ActiveDecisionCardProps {
     maturityYears: number;
     elapsedYears: number;
     isMatured: boolean;
+    /** True once a lawsuit cancelled this instance's forthcoming effects — see CLAUDE.md. */
+    voidedByLawsuit: boolean;
   };
   /** Looked up by name against the loaded decision library at the call site — see `DecisionDetails`. */
   def?: DecisionDefinition;
+  /** Used to tell whether a permanent-effect instance has aged past `gameSettings.statuteOfLimitationsYears` and stopped applying its effect — see CLAUDE.md. */
+  statuteOfLimitationsYears?: number;
+  /** Resolved from the instance's own `targetId` at the call site — set only for a decision that was aimed at a chosen opponent (e.g. Bot Attack). */
+  targetName?: string;
 }
 
-function ActiveDecisionCard({ decision, def }: ActiveDecisionCardProps) {
+function ActiveDecisionCard({ decision, def, statuteOfLimitationsYears, targetName }: ActiveDecisionCardProps) {
   const progress = decision.maturityYears > 0 ? Math.min(100, (decision.elapsedYears / decision.maturityYears) * 100) : 100;
+  const status = getActiveDecisionStatus(decision, def, statuteOfLimitationsYears);
+  const statusLabel = status === 'voided' ? 'VOIDED — SUED' : status === 'expired' ? 'EXPIRED' : status === 'matured' ? '✓ MATURED' : `${Math.round(progress)}%`;
+  const statusTone = status === 'voided' || status === 'expired' ? 'gray' : status === 'matured' ? 'green' : 'yellow';
 
   return (
     <div style={gpStyles.activeDecisionCard}>
       <Flex justify="space-between" align="center">
         <Stack gap={0}>
           <Text style={{ ...boldStyle, fontSize: '0.9rem' }}>{decision.decisionName}</Text>
-          <Text size="xs" c="dimmed">Deployed Year {decision.deployedYear + 1} · {decision.isMatured ? 'MATURED' : `${Math.max(0, decision.maturityYears - decision.elapsedYears)} turns left`}</Text>
+          {targetName && <Text size="xs" c="dimmed">→ {targetName}</Text>}
+          <Text size="xs" c="dimmed">
+            Deployed Year {decision.deployedYear + 1} ·{' '}
+            {status === 'voided'
+              ? 'Shut down by a lost lawsuit — free to redeploy'
+              : status === 'expired'
+                ? 'Permanent effect expired — free to redeploy'
+                : status === 'matured' ? 'MATURED' : `${Math.max(0, decision.maturityYears - decision.elapsedYears)} turns left`}
+          </Text>
         </Stack>
-        <Badge style={gpStyles.stamp(decision.isMatured ? 'green' : 'yellow')}>{decision.isMatured ? '✓ MATURED' : `${Math.round(progress)}%`}</Badge>
+        <Badge style={gpStyles.stamp(statusTone)}>{statusLabel}</Badge>
       </Flex>
       {/* Progress bar */}
       {!decision.isMatured && (
@@ -1325,6 +1358,161 @@ function QueuedDecisionCard({ name, targetName, def, onCancel }: QueuedDecisionC
   );
 }
 
+/** Caps the "Active Decisions" list to roughly 3 collapsed cards' worth of height before
+ * scrolling kicks in — an approximation, not an exact fit: a card's real height varies
+ * with whether it has a target line, a progress bar, or an expanded SHOW DETAILS panel,
+ * none of which this constant can account for. Sized against a plain collapsed card
+ * (~110px including the "sm" gap between cards). */
+const ACTIVE_DECISIONS_MAX_HEIGHT = 360;
+
+/** One row in the "Active Decisions" box's unified list — a still-queued pick or an
+ * already-deployed instance, normalized to the handful of fields the box's filter/sort
+ * needs regardless of which one it actually is. Kept as a discriminated union (not one
+ * looser shape with optional fields) since `ActiveDecisionCard`/`QueuedDecisionCard`
+ * still need their own real props to render — this is purely a filter/sort-time view. */
+type DecisionBoxItem =
+  | { kind: 'queued'; key: string; name: string; targetName?: string; def?: DecisionDefinition; onCancel: () => void }
+  | { kind: 'active'; key: string; decision: PlayerTurnResult['activeDecisions'][number]; name: string; targetName?: string; def?: DecisionDefinition; status: ActiveDecisionStatus };
+
+/** The status filter's options — 'Queued' for a not-yet-resolved pick, the same four
+ * `getActiveDecisionStatus` distinguishes for an already-deployed one. */
+type DecisionBoxFilterStatus = 'All' | 'Queued' | 'Maturing' | 'Matured' | 'Voided — Sued' | 'Expired';
+
+const ACTIVE_DECISION_STATUS_LABELS: Record<ActiveDecisionStatus, DecisionBoxFilterStatus> = {
+  voided: 'Voided — Sued',
+  expired: 'Expired',
+  matured: 'Matured',
+  maturing: 'Maturing',
+};
+
+function decisionBoxItemStatus(item: DecisionBoxItem): DecisionBoxFilterStatus {
+  return item.kind === 'queued' ? 'Queued' : ACTIVE_DECISION_STATUS_LABELS[item.status];
+}
+
+type DecisionBoxSortField = '' | 'turn' | 'target' | 'name';
+
+/** A queued pick has no `deployedYear` yet (nothing to deploy until this turn resolves)
+ * — sorts as "the current round" for the turn field, the same "not yet started, treat as
+ * happening now" convention the box's own header count/queued badge already imply. */
+function getDecisionBoxTurn(item: DecisionBoxItem, round: number): number {
+  return item.kind === 'queued' ? round : item.decision.deployedYear + 1;
+}
+
+interface ActiveDecisionsBoxProps {
+  pending: SubmittedDecisions;
+  activeDecisions: PlayerTurnResult['activeDecisions'];
+  decisions: DecisionDefinition[];
+  /** playerId -> playerName, for resolving a decision's `targetId` to a display name — the
+   * same map `GamePhase` already builds from `[myData, ...competitors]`. */
+  playerNames: Map<string, string>;
+  statuteOfLimitationsYears?: number;
+  round: number;
+  onSubmitPending: (next: SubmittedDecisions) => void;
+  onOpenDeck: () => void;
+}
+
+/**
+ * "Active Decisions" box body — the MAKE IMPORTANT DECISIONS button, a status filter, a
+ * turn/attacked-player/name sort (same "native `<select>` + two direction chips" shape
+ * the Decision Deck's own KPI sort already established), and the merged queued+active
+ * list itself, capped to a fixed height so at most ~3 collapsed cards show at once with
+ * the rest reachable by scrolling — see `ACTIVE_DECISIONS_MAX_HEIGHT`.
+ */
+function ActiveDecisionsBox({ pending, activeDecisions, decisions, playerNames, statuteOfLimitationsYears, round, onSubmitPending, onOpenDeck }: ActiveDecisionsBoxProps) {
+  const [statusFilter, setStatusFilter] = useState<DecisionBoxFilterStatus>('All');
+  const [sortField, setSortField] = useState<DecisionBoxSortField>('');
+  const [sortDirection, setSortDirection] = useState<'desc' | 'asc'>('desc');
+
+  const items: DecisionBoxItem[] = [
+    ...(['strategic', 'operational'] as const).flatMap((bucket) =>
+      pending[bucket].map((entry, i): DecisionBoxItem => ({
+        kind: 'queued',
+        key: `${bucket}-${i}`,
+        name: entry.name,
+        targetName: entry.targetId ? (playerNames.get(entry.targetId) ?? entry.targetId) : undefined,
+        def: decisions.find((def) => def.decision === entry.name),
+        onCancel: () => onSubmitPending({ ...pending, [bucket]: pending[bucket].filter((e) => e.name !== entry.name) }),
+      })),
+    ),
+    ...activeDecisions.map((decision): DecisionBoxItem => {
+      const def = decisions.find((d) => d.decision === decision.decisionName);
+      return {
+        kind: 'active',
+        key: decision.id,
+        decision,
+        name: decision.decisionName,
+        targetName: decision.targetId ? (playerNames.get(decision.targetId) ?? decision.targetId) : undefined,
+        def,
+        status: getActiveDecisionStatus(decision, def, statuteOfLimitationsYears),
+      };
+    }),
+  ];
+
+  const filtered = items.filter((item) => statusFilter === 'All' || decisionBoxItemStatus(item) === statusFilter);
+  if (sortField) {
+    filtered.sort((a, b) => {
+      const diff = sortField === 'turn'
+        ? getDecisionBoxTurn(a, round) - getDecisionBoxTurn(b, round)
+        : sortField === 'target'
+          ? (a.targetName ?? '').localeCompare(b.targetName ?? '')
+          : a.name.localeCompare(b.name);
+      return sortDirection === 'desc' ? -diff : diff;
+    });
+  }
+
+  const statusOptions: DecisionBoxFilterStatus[] = ['All', 'Queued', 'Maturing', 'Matured', 'Voided — Sued', 'Expired'];
+
+  return (
+    <Stack gap="sm">
+      <Button variant="filled" color="dark" onClick={onOpenDeck} style={{ ...boldStyle }}>
+        MAKE IMPORTANT DECISIONS
+      </Button>
+
+      {items.length > 0 && (
+        <Stack gap={6}>
+          <Flex wrap="wrap" gap="xs">
+            {statusOptions.map((s) => (
+              <Badge key={s} style={gpStyles.filterChip(statusFilter === s)} onClick={() => setStatusFilter(s)}>{s}</Badge>
+            ))}
+          </Flex>
+          <Flex gap="xs" wrap="wrap" align="center">
+            <select
+              value={sortField}
+              onChange={(e) => setSortField(e.target.value as DecisionBoxSortField)}
+              style={{ padding: '6px 8px', border: '2px solid var(--mantine-color-dark-4)', borderRadius: 8, fontSize: '0.75rem' }}
+            >
+              <option value="">No sorting</option>
+              <option value="turn">Turn deployed</option>
+              <option value="target">Attacked player</option>
+              <option value="name">Decision name</option>
+            </select>
+            {sortField && (
+              <Flex gap="xs">
+                <Badge style={gpStyles.filterChip(sortDirection === 'desc')} onClick={() => setSortDirection('desc')}>Newest → Oldest / Z → A</Badge>
+                <Badge style={gpStyles.filterChip(sortDirection === 'asc')} onClick={() => setSortDirection('asc')}>Oldest → Newest / A → Z</Badge>
+              </Flex>
+            )}
+          </Flex>
+        </Stack>
+      )}
+
+      {items.length > 0 && filtered.length === 0 ? (
+        <Text c="dimmed" size="xs" style={{ fontStyle: 'italic' }}>No decisions match this filter.</Text>
+      ) : (
+        <Stack gap="sm" style={{ maxHeight: ACTIVE_DECISIONS_MAX_HEIGHT, overflowY: 'auto', paddingRight: 4 }}>
+          {filtered.map((item) =>
+            item.kind === 'queued' ? (
+              <QueuedDecisionCard key={item.key} name={item.name} targetName={item.targetName} def={item.def} onCancel={item.onCancel} />
+            ) : (
+              <ActiveDecisionCard key={item.key} decision={item.decision} def={item.def} statuteOfLimitationsYears={statuteOfLimitationsYears} targetName={item.targetName} />
+            ),
+          )}
+        </Stack>
+      )}
+    </Stack>
+  );
+}
+
 // ============================================================
 // Sub-components — Decision Deck
 // ============================================================
@@ -1332,7 +1520,7 @@ function QueuedDecisionCard({ name, targetName, def, onCancel }: QueuedDecisionC
 /**
  * Whether a decision needs a chosen opponent before it can be deployed. The
  * `requiresTarget` flag in game_engine.json is only actually set on Buy Shares, but
- * every decision with a `target.*` impact field (FORMULAS §0 — Patent Trolling, Talent
+ * every decision with a `target.*` impact field (Patent Trolling, Talent
  * Poaching, Raw Material Monopoly, Union Agitation, Bot Attack, Reporting Rivals,
  * Social Astroturf, Fox Release, Slander Chief Executive Officer, Patent Portfolio)
  * routes its effect to a specific opponent just the same, so it needs the same picker.
@@ -1341,17 +1529,40 @@ function decisionNeedsTarget(def: DecisionDefinition): boolean {
   return def.requiresTarget === true || Object.keys(def.impacts).some((field) => field.startsWith('target.'));
 }
 
-/** Mirrors DecisionEngine.canDeploy's exclusion rules (FORMULAS §9-§10) so the
+/** Mirrors DecisionEngine.hasPermanentEffect (server, decisionEngine.ts) — kept in sync
+ * by hand, same "duplicate small pure logic client-side" convention as getMaturityYears.
+ * True if any of a decision's own fields (excluding "target." and "competitor"-prefixed
+ * ones) carry a non-zero 'default' schedule value, meaning that field's effect keeps
+ * being re-applied every turn forever once the schedule's explicit years run out. */
+function hasPermanentEffect(def: DecisionDefinition): boolean {
+  for (const [field, impact] of Object.entries(def.impacts)) {
+    if (field.startsWith('target.') || field.startsWith('competitor')) continue;
+    if ((impact.schedule['default'] ?? 0) !== 0) return true;
+  }
+  return false;
+}
+
+/** Mirrors DecisionEngine.canDeploy's exclusion rules so the
  * client never offers a deploy the server would silently reject. */
 function getDeployability(
   def: DecisionDefinition,
   activeDecisions: PlayerTurnResult['activeDecisions'],
   allDecisions: DecisionDefinition[],
+  statuteOfLimitationsYears = Infinity,
 ): { blocked: boolean; reason?: string } {
   const existing = activeDecisions.filter((d) => d.decisionName === def.decision);
   if (existing.length > 0 && !existing[existing.length - 1].isMatured) {
     const last = existing[existing.length - 1];
     return { blocked: true, reason: `Still maturing — ${Math.max(0, last.maturityYears - last.elapsedYears)} turn(s) left` };
+  }
+
+  // A decision with a permanent effect blocks redeploying itself for as long as an
+  // instance is still actively delivering that effect — that window ends the same way an
+  // instance stops being suable (gameSettings.statuteOfLimitationsYears), same as its
+  // effect stops being re-applied server-side. A voided-by-lawsuit instance never counts,
+  // since it never got to keep its effect at all.
+  if (hasPermanentEffect(def) && existing.some((d) => d.isMatured && !d.voidedByLawsuit && d.elapsedYears < statuteOfLimitationsYears)) {
+    return { blocked: true, reason: 'Still delivering its permanent effect — cannot be redeployed yet' };
   }
 
   for (const excluded of def.excludes) {
@@ -1400,8 +1611,36 @@ function formatImpactValue(field: string, type: 'absolute' | 'relative', value: 
   return `${rounded >= 0 ? '+' : ''}${rounded}`;
 }
 
+/** Every KPI field name a decision in the library can affect via its own impacts (never
+ * `target.*`/`competitor*` ones — a decision's "Sort by Outrage" should mean the deploying
+ * player's own outrage, not what it does to a chosen opponent) — populates the Decision
+ * Deck's "SORT BY KPI" dropdown. Derived from the actual (DB-backed, admin-editable)
+ * decision library rather than a hardcoded list, so a field nothing in the library touches
+ * never shows up as a useless option. */
+function getSortableKpiFields(decisions: DecisionDefinition[]): string[] {
+  const fields = new Set<string>();
+  for (const def of decisions) {
+    for (const field of Object.keys(def.impacts)) {
+      if (field.startsWith('target.') || field.startsWith('competitor')) continue;
+      fields.add(field);
+    }
+  }
+  return Array.from(fields).sort((a, b) => formatFieldLabel(a).localeCompare(formatFieldLabel(b)));
+}
+
+/** A decision's own effect on one KPI field at the moment it's deployed (elapsedYears=0)
+ * — mirrors calcEngine's getScheduleValue(schedule, 0) convention (the explicit year-1
+ * value if the schedule has one, else the ongoing 'default', else 0) — used purely to rank
+ * decisions in the Decision Deck's sort, not for any real game math. 0 for a decision that
+ * doesn't touch this field at all, so it sorts predictably alongside decisions that do. */
+function getDecisionSortValue(def: DecisionDefinition, field: string): number {
+  const impact = def.impacts[field];
+  if (!impact) return 0;
+  return impact.schedule[1] ?? impact.schedule['default'] ?? 0;
+}
+
 /** Max explicit numeric schedule key across all impacts — mirrors calcEngine's
- * calculateMaturityYears (FORMULAS §9): 0 = instant, re-selectable immediately. */
+ * calculateMaturityYears: 0 = instant, re-selectable immediately. */
 function getMaturityYears(def: DecisionDefinition): number {
   let max = 0;
   for (const impact of Object.values(def.impacts)) {
@@ -1452,19 +1691,33 @@ interface DecisionDeckViewProps {
 function DecisionDeckView({ decisions, gameSettings, myData, competitors, pending, onSubmitPending }: DecisionDeckViewProps) {
   const [filterLevel, setFilterLevel] = useState<string>('All');
   const [filterNature, setFilterNature] = useState<string>('All');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortField, setSortField] = useState<string>('');
+  const [sortDirection, setSortDirection] = useState<'desc' | 'asc'>('desc');
 
+  const q = searchQuery.trim().toLowerCase();
   const filtered = decisions.filter(
-    (d) => (filterLevel === 'All' || d.level === filterLevel) && (filterNature === 'All' || d.nature === filterNature),
+    (d) =>
+      (filterLevel === 'All' || d.level === filterLevel) &&
+      (filterNature === 'All' || d.nature === filterNature) &&
+      (q === '' || d.decision.toLowerCase().includes(q) || d.description.toLowerCase().includes(q)),
   );
+  if (sortField) {
+    filtered.sort((a, b) => {
+      const diff = getDecisionSortValue(a, sortField) - getDecisionSortValue(b, sortField);
+      return sortDirection === 'desc' ? -diff : diff;
+    });
+  }
+  const sortableFields = getSortableKpiFields(decisions);
 
-  const togglePending = (def: DecisionDefinition, targetId?: string) => {
+  const togglePending = (def: DecisionDefinition, targetId?: string, amount?: number) => {
     const bucket = def.level === 'Strategic' ? 'strategic' : 'operational';
     const already = pending[bucket].some((e) => e.name === def.decision);
     onSubmitPending({
       ...pending,
       [bucket]: already
         ? pending[bucket].filter((e) => e.name !== def.decision)
-        : [...pending[bucket], { name: def.decision, targetId }],
+        : [...pending[bucket], { name: def.decision, targetId, amount }],
     });
   };
 
@@ -1490,6 +1743,42 @@ function DecisionDeckView({ decisions, gameSettings, myData, competitors, pendin
         </Flex>
       </Stack>
 
+      {/* Search — same shape as SueModal's "SEARCH GROUNDS" field, matching by decision
+          name or description. */}
+      <Stack gap={4}>
+        <Text style={{ ...boldStyle, fontSize: '0.7rem', color: '#6b7280' }}>SEARCH DECISIONS</Text>
+        <div style={gpStyles.searchInput}>
+          <IconSearch size={16} style={{ color: '#9ca3af' }} />
+          <TextInput flex={1} placeholder="e.g. factory, water pumping, outrage…" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} style={{ border: 'none', outline: 'none', background: 'transparent' }} />
+        </div>
+      </Stack>
+
+      {/* Sort by KPI — any field a decision in the library can affect via its own impacts
+          (excluding target-routed or competitor fields), ranked by that decision's
+          deployment-year effect on the chosen field. Direction chips only appear once a
+          KPI is actually chosen. */}
+      <Stack gap={4}>
+        <Text style={{ ...boldStyle, fontSize: '0.7rem', color: '#6b7280' }}>SORT BY KPI</Text>
+        <Flex gap="xs" wrap="wrap" align="center">
+          <select
+            value={sortField}
+            onChange={(e) => setSortField(e.target.value)}
+            style={{ padding: '8px 10px', border: '2px solid var(--mantine-color-dark-4)', borderRadius: 8, fontSize: '0.8rem' }}
+          >
+            <option value="">No sorting</option>
+            {sortableFields.map((field) => (
+              <option key={field} value={field}>{formatFieldLabel(field)}</option>
+            ))}
+          </select>
+          {sortField && (
+            <Flex gap="xs">
+              <Badge style={gpStyles.filterChip(sortDirection === 'desc')} onClick={() => setSortDirection('desc')}>Highest → Lowest</Badge>
+              <Badge style={gpStyles.filterChip(sortDirection === 'asc')} onClick={() => setSortDirection('asc')}>Lowest → Highest</Badge>
+            </Flex>
+          )}
+        </Flex>
+      </Stack>
+
       {gameSettings && (
         <Text size="xs" c="dimmed" style={boldStyle}>
           {pending.strategic.length}/{gameSettings.maxStrategicDecisionsPerTurn} STRATEGIC · {pending.operational.length}/{gameSettings.maxOperationalDecisionsPerTurn} OPERATIONAL QUEUED
@@ -1499,7 +1788,7 @@ function DecisionDeckView({ decisions, gameSettings, myData, competitors, pendin
       {decisions.length === 0 ? (
         <Text c="dimmed" size="xs" style={{ fontStyle: 'italic' }}>Loading decision deck…</Text>
       ) : filtered.length === 0 ? (
-        <Text c="dimmed" size="xs" style={{ fontStyle: 'italic' }}>No decisions match these filters.</Text>
+        <Text c="dimmed" size="xs" style={{ fontStyle: 'italic' }}>No decisions match these filters/search.</Text>
       ) : (
         <Stack gap="sm" style={{ maxHeight: '60vh', overflowY: 'auto', paddingRight: 4 }}>
           {filtered.map((def) => {
@@ -1508,7 +1797,7 @@ function DecisionDeckView({ decisions, gameSettings, myData, competitors, pendin
             const atLimit = gameSettings
               ? pending[bucket].length >= (bucket === 'strategic' ? gameSettings.maxStrategicDecisionsPerTurn : gameSettings.maxOperationalDecisionsPerTurn)
               : false;
-            const deployability = getDeployability(def, myData.activeDecisions, decisions);
+            const deployability = getDeployability(def, myData.activeDecisions, decisions, gameSettings?.statuteOfLimitationsYears);
             return (
               <DecisionCard
                 key={def.decision}
@@ -1517,7 +1806,8 @@ function DecisionDeckView({ decisions, gameSettings, myData, competitors, pendin
                 blocked={deployability}
                 disabledByLimit={!isPending && atLimit}
                 competitors={competitors}
-                onToggle={(targetId) => togglePending(def, targetId)}
+                myData={myData}
+                onToggle={(targetId, amount) => togglePending(def, targetId, amount)}
               />
             );
           })}
@@ -1533,14 +1823,53 @@ interface DecisionCardProps {
   blocked: { blocked: boolean; reason?: string };
   disabledByLimit: boolean;
   competitors: PlayerTurnResult[];
-  onToggle: (targetId?: string) => void;
+  /** Needed for a `variableAmount` decision's amount bracket (Buy Shares bounds by own
+   * cash; Sell Shares bounds by the current value of the holding in whichever company
+   * is targeted, own included) and for offering "Myself" as a target option. */
+  myData: PlayerTurnResult;
+  onToggle: (targetId?: string, amount?: number) => void;
 }
 
-function DecisionCard({ def, isPending, blocked, disabledByLimit, competitors, onToggle }: DecisionCardProps) {
+/** Matches the server's `SELF_OWNERSHIP_KEY` sentinel (calcEngine.ts) — a company's own
+ * founding player's stake in its own shareOwnership map. Duplicated here rather than
+ * imported since this is server engine code — same "keep a small copy in sync by hand"
+ * convention as `computeOfferBracket`/`getDeployability` elsewhere in this file. */
+const SELF_OWNERSHIP_KEY = 'self';
+
+/** Matches the server's `EXTERNAL_MARKET_KEY` sentinel (calcEngine.ts) — shares diluted
+ * out to the public float rather than held by any specific player. Duplicated here for
+ * the same reason as `SELF_OWNERSHIP_KEY` above. */
+const EXTERNAL_MARKET_KEY = 'EXTERNAL_MARKET';
+
+/** Current dollar value of `holderId`'s stake in `target` (its shareOwnership fraction *
+ * totalSharesOutstanding * stockValue) — the upper bound for a Sell Shares amount. */
+function shareholdingValue(target: PlayerTurnResult, holderId: string): number {
+  const holderKey = target.playerId === holderId ? SELF_OWNERSHIP_KEY : holderId;
+  const fraction = target.variables.shareOwnership?.[holderKey] ?? 0;
+  return fraction * (target.variables.totalSharesOutstanding ?? 0) * (target.variables.stockValue ?? 0);
+}
+
+function DecisionCard({ def, isPending, blocked, disabledByLimit, competitors, myData, onToggle }: DecisionCardProps) {
   const [targetId, setTargetId] = useState('');
   const [expanded, setExpanded] = useState(false);
   const needsTarget = decisionNeedsTarget(def);
-  const deployDisabled = blocked.blocked || (!isPending && disabledByLimit) || (needsTarget && !isPending && !targetId);
+  // Buy Shares can self-buyback (reclaim previously-diluted-to-EXTERNAL_MARKET shares)
+  // and Sell Shares can sell a holding in your own company — both get a
+  // "Myself" option other target.*-bearing decisions (e.g. Bot Attack) never offer.
+  const allowsSelfTarget = !!def.shareTransactionType;
+  const needsAmount = def.variableAmount === true;
+  const [amount, setAmount] = useState(0);
+
+  const targetData = targetId === myData.playerId ? myData : competitors.find((c) => c.playerId === targetId);
+  const amountBounds = !needsAmount ? null : def.shareTransactionType === 'sell'
+    ? { min: 0, max: targetData ? Math.max(0, Math.round(shareholdingValue(targetData, myData.playerId))) : 0 }
+    : { min: 0, max: Math.max(0, Math.round(myData.variables.cash)) };
+  const clampedAmount = amountBounds ? Math.min(amount, amountBounds.max) : undefined;
+
+  const deployDisabled = blocked.blocked
+    || (!isPending && disabledByLimit)
+    || (needsTarget && !isPending && !targetId)
+    || (needsAmount && !isPending && (!amountBounds || amountBounds.max <= 0));
   const maturityYears = getMaturityYears(def);
   const effects = summarizeEffects(def);
   const hasLegalRisk = !!def.legalRisks && def.legalRisks.length > 0;
@@ -1560,7 +1889,7 @@ function DecisionCard({ def, isPending, blocked, disabledByLimit, competitors, o
       </Flex>
       <Text size="xs" c="dimmed" style={{ marginTop: 4, lineHeight: 1.4 }}>{def.description}</Text>
 
-      {/* Collapsed by default — expand to see the effects timeline + legal risk (FORMULAS §9) */}
+      {/* Collapsed by default — expand to see the effects timeline + legal risk */}
       {hasDetails && (
         <Flex align="center" gap={6} style={{ marginTop: 6, cursor: 'pointer' }} onClick={() => setExpanded((e) => !e)}>
           <Text size="xs" style={{ ...boldStyle, color: '#4b5563' }}>{expanded ? 'HIDE DETAILS' : 'SHOW DETAILS'}</Text>
@@ -1602,8 +1931,30 @@ function DecisionCard({ def, isPending, blocked, disabledByLimit, competitors, o
       {needsTarget && !isPending && !blocked.blocked && (
         <select value={targetId} onChange={(e) => setTargetId(e.target.value)} style={{ width: '100%', marginTop: 8, padding: '6px 8px', border: '2px solid #333', borderRadius: 6, fontSize: '0.8rem' }}>
           <option value="">Select target…</option>
+          {allowsSelfTarget && <option value={myData.playerId}>Myself</option>}
           {competitors.map((c) => (<option key={c.playerId} value={c.playerId}>{c.playerName}</option>))}
         </select>
+      )}
+      {needsAmount && !isPending && !blocked.blocked && amountBounds && (
+        <Stack gap={2} style={{ marginTop: 8 }}>
+          <Text size="xs" style={{ ...boldStyle, color: '#4b5563' }}>
+            {def.shareTransactionType === 'sell' ? 'AMOUNT TO SELL' : 'INVESTMENT AMOUNT'}: {fmt(clampedAmount ?? 0)}
+          </Text>
+          <Slider
+            min={amountBounds.min}
+            max={Math.max(amountBounds.min + 1, amountBounds.max)}
+            step={Math.max(1, Math.round(amountBounds.max / 100))}
+            value={clampedAmount ?? 0}
+            onChange={setAmount}
+            disabled={amountBounds.max <= 0}
+            color="#333"
+          />
+          <Text size="xs" c="dimmed">
+            {amountBounds.max <= 0
+              ? (def.shareTransactionType === 'sell' ? 'No holding to sell in that target.' : 'No cash available.')
+              : `Range: ${fmt(amountBounds.min)} – ${fmt(amountBounds.max)}`}
+          </Text>
+        </Stack>
       )}
       <Button
         fullWidth
@@ -1612,7 +1963,7 @@ function DecisionCard({ def, isPending, blocked, disabledByLimit, competitors, o
         color={isPending ? 'gray' : 'dark'}
         variant={isPending ? 'outline' : 'filled'}
         disabled={deployDisabled}
-        onClick={() => onToggle(needsTarget ? targetId : undefined)}
+        onClick={() => onToggle(needsTarget ? targetId : undefined, needsAmount ? clampedAmount : undefined)}
       >
         {isPending ? 'CANCEL' : 'DEPLOY'}
       </Button>
@@ -1635,9 +1986,11 @@ interface CaseCardProps {
   /** This player's current cash — only used to gray out the defendant's own Dig Deeper button when they can't afford it. */
   cash: number;
   digDeeperCost: number;
+  semaphoreGreenMax?: number;
+  semaphoreYellowMax?: number;
 }
 
-function CaseCard({ caseData, myPlayerId, playerNames, onRiskInfo, negotiationPeriodTurns, socket, cash, digDeeperCost }: CaseCardProps) {
+function CaseCard({ caseData, myPlayerId, playerNames, onRiskInfo, negotiationPeriodTurns, socket, cash, digDeeperCost, semaphoreGreenMax, semaphoreYellowMax }: CaseCardProps) {
   const isDefendant = getCaseRole(caseData, myPlayerId) === 'defendant';
   const opponentName = getOpponentName(caseData, myPlayerId, playerNames);
 
@@ -1651,7 +2004,7 @@ function CaseCard({ caseData, myPlayerId, playerNames, onRiskInfo, negotiationPe
   if (caseData.adjustedProbability !== undefined) {
     displayProb = caseData.adjustedProbability;
   }
-  const sem = knowsOdds ? semaphoreLevel(displayProb) : null;
+  const sem = knowsOdds ? semaphoreLevel(displayProb, semaphoreGreenMax, semaphoreYellowMax) : null;
   const canAffordDig = cash >= digDeeperCost;
 
   const [digging, setDigging] = useState(false);
@@ -1970,36 +2323,45 @@ function QueuedLawsuitCard({ entry, targetName, onRemove }: QueuedLawsuitCardPro
 // ============================================================
 
 /**
- * Whether the player has already sued the attacker over exactly the ground this attack's
- * hint card suggests, with a "correct" (non-zero win probability) case — once true, the
- * hint should stop nagging the player about an attack they've already acted on. Only ever
- * true from investigationLevel 3 onward: `suggestedGroundName`/`successProbability` don't
- * exist below that, and neither does the "SUE NOW" affordance this is meant to track the
- * outcome of. Deliberately scoped to the exact suggested ground, not "any lawsuit against
- * this attacker over this decision" — a manually-picked *different* ground for the same
- * attacking decision (via SueModal's own ground picker, not the SUE NOW shortcut) isn't
- * recognized as addressing this specific hint, since computing that ground's own win
- * probability client-side would mean re-implementing the admin-editable, DB-backed
- * formula evaluation this app deliberately keeps server-only (see CLAUDE.md's "Formulas
- * are DB-backed" section).
+ * Whether the player has already sued the attacker over this exact attacking decision
+ * instance — once true, the hint should stop nagging the player about an attack they've
+ * already acted on.
  *
- * Checks both `pendingLawsuits` (queued this turn, not yet resolved into a real case) and
- * `myLegalCases` (a real case already created from a prior turn's filing, any status) —
- * whichever the current game state actually has, since `pending.lawsuits` is cleared the
- * moment a real `LegalCaseData` exists.
+ * A real case (from `myLegalCases`) is matched by `defendantDecisionInstanceId ===
+ * attack.attackId` — the specific instance id, not "same decision name" — rather than
+ * requiring the ground to be the one `suggestedGroundName` recommends (an earlier version
+ * of this check did, and was a real, reported bug: suing over a manually-picked ground via
+ * SueModal's own picker, or over the correct ground before investigating deep enough for
+ * `suggestedGroundName` to even exist, left the hint stuck up forever even though a real
+ * case against exactly this attack already existed). This is a stronger and more direct
+ * signal than re-deriving "is this ground real" client-side: `LegalEngine.fileLawsuit`
+ * (server/src/engine/legalEngine.ts) only ever stamps `defendantDecisionInstanceId` for a
+ * genuine, still-actionable match — a wrong guess or a time-barred ground always leaves it
+ * `undefined` — so matching on it is exactly "a real case exists against this attack,"
+ * with zero client-side probability computation needed (no re-implementing the
+ * admin-editable, DB-backed formula evaluation this app otherwise deliberately keeps
+ * server-only — see CLAUDE.md's "Formulas are DB-backed" section). No investigationLevel
+ * gate either: filing doesn't require having investigated the attacker at all (SUE THEIR
+ * ASSES offers the whole decision library's grounds against any target, investigated or
+ * not — see CLAUDE.md), so this shouldn't require it either.
+ *
+ * `pendingLawsuits` (queued this turn, not yet resolved into a real case) has no instance
+ * id to match against — a queued entry is only `{ targetId, decisionName, groundName }` —
+ * so it's matched more loosely, by attacker + decision name alone, on the assumption that
+ * a lawsuit queued against this exact attacker over this exact decision is meant to
+ * address this attack regardless of which ground was picked; `pending.lawsuits` for it is
+ * cleared the moment the real case exists anyway, so this only ever covers the gap within
+ * the same turn a lawsuit is filed.
  */
 function isAttackAlreadySuedOver(
   attack: IncomingAttackInfo,
   pendingLawsuits: SubmittedDecisions['lawsuits'],
   myLegalCases: LegalCaseData[],
 ): boolean {
-  if (!attack.attackerId || !attack.decisionName || !attack.suggestedGroundName) return false;
-  if (!((attack.successProbability ?? 0) > 0)) return false;
-  const matches = (targetId: string, decisionName: string, groundName: string) =>
-    targetId === attack.attackerId && decisionName === attack.decisionName && groundName === attack.suggestedGroundName;
+  if (!attack.attackerId || !attack.decisionName) return false;
   return (
-    pendingLawsuits.some((l) => matches(l.targetId, l.decisionName, l.groundName)) ||
-    myLegalCases.some((c) => matches(c.defendantId, c.decisionName, c.groundName))
+    pendingLawsuits.some((l) => l.targetId === attack.attackerId && l.decisionName === attack.decisionName) ||
+    myLegalCases.some((c) => c.defendantId === attack.attackerId && c.decisionName === attack.decisionName && c.defendantDecisionInstanceId === attack.attackId)
   );
 }
 
@@ -2051,6 +2413,17 @@ function AttackHintCard({ attack, cash, digDeeperCost, socket, onSueNow }: {
   return (
     <div style={{ padding: 10, border: `3px solid ${borderColor}`, borderRadius: 8, background }}>
       <Text style={{ ...boldStyle, fontSize: '0.8rem' }}>{headline}</Text>
+
+      {/* Set server-side only at investigationLevel === 1 (attacker known, decision not
+          yet revealed) — the same AI-narrated "annual report" flavor text the Full Filing
+          report shows for a rival's decisions, deliberately vague enough not to leak
+          anything the real decisionName/decisionDescription below don't already reveal
+          more precisely once investigation goes one tier further. */}
+      {!attack.decisionName && attack.annualReportBlurb && (
+        <Text size="xs" c="dimmed" style={{ fontStyle: 'italic', lineHeight: 1.4, marginTop: 4 }}>
+          "{attack.annualReportBlurb}" — from {attack.attackerName}'s annual report
+        </Text>
+      )}
 
       {attack.decisionName && (
         <Text size="xs" style={{ marginTop: 4 }}>
@@ -2324,7 +2697,7 @@ interface CashWaterfallViewProps {
 
 /** The waterfall's computed-only intermediates (COGS, gross profit, EBITDA, EBIT, profit
  * before tax, net profit) have no single tracked field in KpiSnapshot, so their trend
- * arrows are derived by recomputing the same FORMULAS §4-§5 math against the previous
+ * arrows are derived by recomputing the same P&L/balance-sheet math against the previous
  * turn's snapshot rather than reading a persisted field — shared by CashWaterfallView's
  * current- and previous-turn calls. */
 function computeCashWaterfall(data: PlayerTurnResult) {
@@ -2344,7 +2717,7 @@ function CashWaterfallView({ data, prevData, onFieldClick }: CashWaterfallViewPr
   const { variables: v, derived: d } = data;
   const cur = computeCashWaterfall(data);
   const prev = prevData ? computeCashWaterfall(prevData) : undefined;
-  // Starting cash = current cash - netProfit - depreciation (reverse of FORMULAS §5)
+  // Starting cash = current cash - netProfit - depreciation (reverse of the newCash formula)
   const startingCash = v.cash - cur.netProfit - d.depreciation;
 
   // `field` is the KpiSnapshotPoint dot-path a row's history/prediction graph should
@@ -2448,7 +2821,7 @@ interface EquityViewProps {
   onFieldClick: (target: { field: string; label: string }) => void;
 }
 
-/** FORMULAS §5: equity = cash + receivables + assets + intangibleAssets + reserves - debt; marketEquity = max(0, equity - legalExposure). Shared by EquityView's current- and previous-turn calls, so the two totals' trend arrows are diffed against the same formula rather than a persisted field. */
+/** equity = cash + receivables + assets + intangibleAssets + reserves - debt; marketEquity = max(0, equity - legalExposure). Shared by EquityView's current- and previous-turn calls, so the two totals' trend arrows are diffed against the same formula rather than a persisted field. */
 function computeEquity(data: PlayerTurnResult) {
   const { variables: v, derived: d } = data;
   const bookEquity = v.cash + d.receivables + v.assets + v.intangibleAssets + v.reserves - v.debt;
@@ -2497,6 +2870,113 @@ function EquityView({ data, prevData, onFieldClick }: EquityViewProps) {
         Your stock price is priced off market equity, not book equity — open cases against you make your own shares cheaper to buy.
       </Text>
     </Stack>
+  );
+}
+
+// ── Cap Table (ownership breakdown) ─────────────────────
+
+interface CapTableRow {
+  key: string;
+  name: string;
+  fraction: number;
+  shares: number;
+  value: number;
+  color: string;
+}
+
+/** Small, stable categorical set for shareholders that are neither "you" nor the
+ * company's own founder nor the public float — cycled in order of appearance (largest
+ * stake first, since rows are pre-sorted by fraction) rather than generated, so a 5th+
+ * holder folds back to reusing an earlier color instead of an indistinguishable new hue. */
+const OTHER_HOLDER_COLORS = ['#2563eb', '#7c3aed', '#0d9488', '#c2410c'];
+
+/** Builds every current shareholder of `target`'s company, largest stake first — the same
+ * `shareOwnership`/`totalSharesOutstanding`/`stockValue` data `shareholdingValue` above
+ * already reads for a single holder, just all of them at once for the OWNERSHIP (CAP
+ * TABLE) panel behind STOCK VALUE. `viewerId` is always the local player's own id, used
+ * only to label a row "You" instead of their real name — `target` itself may or may not
+ * be the viewer's own company (this is shared between ShareView, where it always is, and
+ * RivalFullReportView, where it never is). `allPlayers` (the viewer's own snapshot plus
+ * every currently-active rival) resolves a shareOwnership key that's a real playerId into
+ * a display name; a key with no match (a holder who has since been eliminated) falls back
+ * to a generic label — their stake is swept to EXTERNAL_MARKET on elimination (see
+ * CLAUDE.md's "Cross-holding cleanup"), so this can only be transiently stale, never a
+ * permanent orphan. */
+function buildCapTable(target: PlayerTurnResult, viewerId: string, allPlayers: PlayerTurnResult[]): CapTableRow[] {
+  const totalShares = target.variables.totalSharesOutstanding ?? 0;
+  const stockValue = target.derived.stockValue ?? 0;
+  const ownership = target.variables.shareOwnership ?? {};
+  let otherColorIdx = 0;
+
+  return Object.entries(ownership)
+    .filter(([, fraction]) => fraction > 0.0005)
+    .sort(([, a], [, b]) => b - a)
+    .map(([key, fraction]) => {
+      let name: string;
+      let color: string;
+      if (key === SELF_OWNERSHIP_KEY) {
+        const isViewer = target.playerId === viewerId;
+        name = isViewer ? 'You' : target.playerName;
+        color = isViewer ? '#dc2626' : '#9ca3af';
+      } else if (key === EXTERNAL_MARKET_KEY) {
+        name = 'Public Market';
+        color = '#d1d5db';
+      } else if (key === viewerId) {
+        name = 'You';
+        color = '#dc2626';
+      } else {
+        name = allPlayers.find((p) => p.playerId === key)?.playerName ?? 'Former Shareholder';
+        color = OTHER_HOLDER_COLORS[otherColorIdx++ % OTHER_HOLDER_COLORS.length];
+      }
+      return { key, name, fraction, shares: fraction * totalShares, value: fraction * totalShares * stockValue, color };
+    });
+}
+
+interface CapTableSectionProps {
+  /** Whose company's cap table this renders — the viewer's own (from ShareView) or a rival's (from RivalFullReportView). */
+  target: PlayerTurnResult;
+  viewerId: string;
+  allPlayers: PlayerTurnResult[];
+}
+
+/** OWNERSHIP (CAP TABLE) panel — a horizontal stacked bar (same visual language as the
+ * "YOUR SHARE VS RIVALS" market-share bar below) plus a per-holder row list (name, %,
+ * share count, $ value). Shared between ShareView and RivalFullReportView rather than
+ * duplicated, since the only thing that differs between the two call sites is which
+ * PlayerTurnResult is `target`. Deliberately no separate "takeover risk" callout — the
+ * bar + sorted list already puts the largest outside stake at the top, and reading
+ * "someone else owns 42%" off a labeled row doesn't need a second warning restating it. */
+function CapTableSection({ target, viewerId, allPlayers }: CapTableSectionProps) {
+  const rows = buildCapTable(target, viewerId, allPlayers);
+  const totalShares = target.variables.totalSharesOutstanding ?? 0;
+
+  return (
+    <div style={{ padding: '12px', background: 'var(--mantine-color-gray-1)', border: '1px solid var(--mantine-color-gray-3)', borderRadius: 'var(--mantine-radius-sm)' }}>
+      <Flex justify="space-between" align="center" mb={8}>
+        <Text style={{ ...boldStyle, fontSize: '0.7rem' }}>OWNERSHIP (CAP TABLE)</Text>
+        <Text size="xs" c="dimmed">{new Intl.NumberFormat('en-US').format(Math.round(totalShares))} shares total</Text>
+      </Flex>
+      <Flex h={12} style={{ borderRadius: 6, overflow: 'hidden', background: '#e5e7eb' }}>
+        {rows.map((r) => (
+          <Box key={r.key} h="100%" style={{ width: `${r.fraction * 100}%`, background: r.color }} />
+        ))}
+      </Flex>
+      <Stack gap={4} mt="xs">
+        {rows.map((r) => (
+          <Flex key={r.key} justify="space-between" align="center">
+            <Flex align="center" gap={6}>
+              <Box h={8} w={8} style={{ background: r.color, borderRadius: '50%', flexShrink: 0 }} />
+              <Text size="xs">{r.name}</Text>
+            </Flex>
+            <Flex align="center" gap={10}>
+              <Text size="xs" c="dimmed">{new Intl.NumberFormat('en-US').format(Math.round(r.shares))} sh</Text>
+              <Text size="xs" style={boldStyle}>{fmt(r.value)}</Text>
+              <Text size="xs" style={{ minWidth: 32, textAlign: 'right' }}>{pct(r.fraction)}</Text>
+            </Flex>
+          </Flex>
+        ))}
+      </Stack>
+    </div>
   );
 }
 
@@ -2604,6 +3084,9 @@ function ShareView({ data, rivals, prevData, prevRivals, onFieldClick }: ShareVi
         </Flex>
       </div>
 
+      {/* Ownership / cap table */}
+      <CapTableSection target={data} viewerId={data.playerId} allPlayers={allPlayers} />
+
       {/* Capacity cap */}
       <div style={{ padding: '12px', background: 'var(--mantine-color-gray-1)', border: '1px solid var(--mantine-color-gray-3)', borderRadius: 'var(--mantine-radius-sm)' }}>
         <Text style={{ ...boldStyle, fontSize: '0.7rem', marginBottom: 4 }}>CAPACITY CAP</Text>
@@ -2642,48 +3125,144 @@ interface ThreatViewProps {
   onFieldClick: (target: { field: string; label: string }) => void;
 }
 
-// FORMULAS §7: risk = 100 * (w1*(ler/0.8) + w2*(scrutiny/100) + w3*(|outrage|/100))
-const THREAT_W1 = 0.5, THREAT_W2 = 0.25, THREAT_W3 = 0.25;
+// Mirrors calcEngine.ts's calculateRiskGauge — the Risk Gauge's original 3-term design
+// (legal exposure, scrutiny, outrage) plus two deliberate later additions: w4/
+// ownershipRisk (majority-ownership takeover) and w5/solvencyRisk
+// (open lawsuits vs. a projected next-turn cash) — both fully independent ways to lose
+// the game the original 3-term gauge never reflected at all. See CLAUDE.md's "Risk Gauge
+// takeover term" and "Risk Gauge solvency term" sections. These are the *seeded default*
+// weights/threshold, hand-mirrored client-side same as every other admin-editable
+// constant this file duplicates for display (see computeOfferBracket/getDeployability)
+// — they'll silently drift from an admin's live /admin edit, same pre-existing
+// limitation those already have; the server's own riskGauge number (shown on the KPI
+// card itself) is always the authoritative one, this is only the breakdown explaining it.
+const THREAT_W1 = 0.32, THREAT_W2 = 0.16, THREAT_W3 = 0.16, THREAT_W4 = 0.16, THREAT_W5 = 0.2;
 const THREAT_LEGAL_EXPOSURE_RATIO_CAP = 0.8;
+const THREAT_TAKEOVER_THRESHOLD_PERCENT = 0.5;
+const THREAT_SOLVENCY_CASH_FLOOR = 1;
 
-/** The three weighted terms behind the Threat Level gauge — shared by ThreatView's
+/** Mirrors calcEngine.ts's calculateOwnershipRisk — the largest real-player (non-`self`,
+ * non-`EXTERNAL_MARKET`) stake relative to the takeover threshold, scaled 0-1. Deliberately
+ * the single largest holder, not a sum across holders — a takeover only ever needs ONE
+ * player to cross the threshold, so dilution spread across several minority holders reads
+ * as lower risk than one concentrated buyer closing in. */
+function computeOwnershipRisk(shareOwnership: Record<string, number> | undefined): number {
+  if (!shareOwnership) return 0;
+  let maxExternalStake = 0;
+  for (const [key, fraction] of Object.entries(shareOwnership)) {
+    if (key === SELF_OWNERSHIP_KEY || key === EXTERNAL_MARKET_KEY) continue;
+    if (fraction > maxExternalStake) maxExternalStake = fraction;
+  }
+  return Math.min(1, maxExternalStake / THREAT_TAKEOVER_THRESHOLD_PERCENT);
+}
+
+/** Mirrors calcEngine.ts's predictNextTurnCashLinear — a naive one-turn-ahead cash
+ * projection (this turn's own net cash movement extrapolated forward), not the real
+ * sandboxed prediction engine (`predictFutureKpis`) the KPI history graphs use. Client-
+ * side this doubles as a genuine accuracy win over a from-scratch reimplementation: it
+ * needs no new data at all, since `prevCash` here is just `prevData.variables.cash` —
+ * the one-turn-back snapshot `GamePhase.tsx`'s trend arrows already keep in state. */
+function predictNextTurnCashLinear(cashAfterThisTurn: number, cashBeforeThisTurn: number): number {
+  return cashAfterThisTurn + (cashAfterThisTurn - cashBeforeThisTurn);
+}
+
+/** Mirrors calcEngine.ts's calculateSolvencyRisk — probability-weighted open-case
+ * exposure against a projected next-turn cash, distinct from the legal-exposure-ratio
+ * term (w1), which uses *current* cash and feeds adjustedProbability's snowball effect instead. */
+function computeSolvencyRisk(legalExposure: number, predictedNextCash: number): number {
+  if (legalExposure <= 0) return 0;
+  return Math.min(1, legalExposure / Math.max(predictedNextCash, THREAT_SOLVENCY_CASH_FLOOR));
+}
+
+/** Mirrors gameLoop.ts's Step 11 openCases aggregation — every still-open (non-
+ * `'resolved'`) case where `myPlayerId` is the defendant, probability-weighted the same
+ * way (`adjustedProbability` if the case has one, else `baseProbability`). Deliberately
+ * NOT reverse-derived from `legalExposureRatio` (which is already capped against current
+ * cash by `legalExposureRatioCap` server-side) — a capped ratio would silently understate
+ * exposure for exactly the players this term cares most about (already deep in legal
+ * trouble), so this recomputes the same raw sum from `legalCases` instead, which the
+ * client already has in full. */
+function computeOpenLegalExposure(myPlayerId: string, legalCases: LegalCaseData[]): number {
+  return legalCases
+    .filter((c) => c.defendantId === myPlayerId && c.status !== 'resolved')
+    .reduce((sum, c) => sum + (c.adjustedProbability ?? c.baseProbability) * c.stakes, 0);
+}
+
+/** The five weighted terms behind the Threat Level gauge — shared by ThreatView's
  * current- and previous-turn calls so the total's trend arrow is diffed against the same
- * formula rather than a persisted field. */
-function computeThreatTerms(v: PlayerVariables) {
+ * formula rather than a persisted field. `prevCash` is the cash this player had BEFORE
+ * the turn `data` reflects — for the current turn that's `prevData.variables.cash` (the
+ * one-turn-back snapshot already in state); for the previous turn's own point (used only
+ * to diff against, for the row's trend arrow) there is no snapshot further back than that
+ * in client state, so it falls back to assuming no trend for that historical point —
+ * the same "no real prior data, assume flat" default `calculateRiskGauge`'s own
+ * `prevCash = vars.cash` parameter default uses server-side. */
+function computeThreatTerms(data: PlayerTurnResult, prevCash: number) {
+  const v = data.variables;
   const ler = v.legalExposureRatio ?? 0;
   const legalTerm = THREAT_W1 * (ler / THREAT_LEGAL_EXPOSURE_RATIO_CAP) * 100;
-  const scrutinyTerm = THREAT_W2 * (v.scrutiny / 100) * 100;
-  const outrageTerm = THREAT_W3 * (Math.abs(v.outrage) / 100) * 100;
-  return { ler, legalTerm, scrutinyTerm, outrageTerm };
+  // Both clamped to [0,1] before weighting, mirroring calcEngine.ts's riskGauge formula
+  // exactly (MAX(0,MIN(1,scrutiny/100)) / MIN(1,absOutrage/100)) — scrutiny has no floor
+  // and can legitimately go negative (no decision drives it back up the way outrage can
+  // be reduced), so its term needs the lower clamp too, not just an upper one; outrage's
+  // own Math.abs already guarantees non-negative, so only the upper clamp applies there.
+  // A missing clamp here previously let this mirror (and, before the server-side fix, the
+  // real riskGauge) dip below/exceed its documented 0-100 range — see CLAUDE.md.
+  const scrutinyTerm = THREAT_W2 * Math.max(0, Math.min(1, v.scrutiny / 100)) * 100;
+  const outrageTerm = THREAT_W3 * Math.min(1, Math.abs(v.outrage) / 100) * 100;
+  const ownershipRisk = computeOwnershipRisk(v.shareOwnership);
+  const ownershipTerm = THREAT_W4 * ownershipRisk * 100;
+  const legalExposure = computeOpenLegalExposure(data.playerId, data.legalCases);
+  const predictedNextCash = predictNextTurnCashLinear(v.cash, prevCash);
+  const solvencyRisk = computeSolvencyRisk(legalExposure, predictedNextCash);
+  const solvencyTerm = THREAT_W5 * solvencyRisk * 100;
+  return { ler, legalTerm, scrutinyTerm, outrageTerm, ownershipRisk, ownershipTerm, predictedNextCash, solvencyRisk, solvencyTerm };
 }
 
 function ThreatView({ data, prevData, onFieldClick }: ThreatViewProps) {
   const { variables: v } = data;
-  const cur = computeThreatTerms(v);
-  const prev = prevData ? computeThreatTerms(prevData.variables) : undefined;
+  const cur = computeThreatTerms(data, prevData?.variables.cash ?? v.cash);
+  const prev = prevData ? computeThreatTerms(prevData, prevData.variables.cash) : undefined;
+  const total = cur.legalTerm + cur.scrutinyTerm + cur.outrageTerm + cur.ownershipTerm + cur.solvencyTerm;
+  const prevTotal = prev ? prev.legalTerm + prev.scrutinyTerm + prev.outrageTerm + prev.ownershipTerm + prev.solvencyTerm : undefined;
 
   return (
     <Stack gap={0} style={gpStyles.modalContent}>
       <Text style={{ ...boldStyle, fontSize: '0.8rem', marginBottom: 12 }}>GLOBAL RISK GAUGE BREAKDOWN</Text>
-      <ClickableStatRow label={`Legal exposure ratio (${(cur.ler * 100).toFixed(0)}%, weight 0.5)`} value={cur.legalTerm.toFixed(1)} trend={computeTrend(cur.legalTerm, prev?.legalTerm)} invert onClick={() => onFieldClick({ field: 'variables.legalExposureRatio', label: 'Legal exposure ratio' })} />
-      <ClickableStatRow label="Scrutiny (weight 0.25)" value={cur.scrutinyTerm.toFixed(1)} trend={computeTrend(cur.scrutinyTerm, prev?.scrutinyTerm)} invert onClick={() => onFieldClick({ field: 'variables.scrutiny', label: 'Scrutiny' })} />
-      <ClickableStatRow label="Outrage (weight 0.25)" value={cur.outrageTerm.toFixed(1)} trend={computeTrend(cur.outrageTerm, prev?.outrageTerm)} invert onClick={() => onFieldClick({ field: 'variables.outrage', label: 'Outrage' })} />
+      <ClickableStatRow label={`Legal exposure ratio (${(cur.ler * 100).toFixed(0)}%, weight 0.32)`} value={cur.legalTerm.toFixed(1)} trend={computeTrend(cur.legalTerm, prev?.legalTerm)} invert onClick={() => onFieldClick({ field: 'variables.legalExposureRatio', label: 'Legal exposure ratio' })} />
+      <ClickableStatRow label="Scrutiny (weight 0.16)" value={cur.scrutinyTerm.toFixed(1)} trend={computeTrend(cur.scrutinyTerm, prev?.scrutinyTerm)} invert onClick={() => onFieldClick({ field: 'variables.scrutiny', label: 'Scrutiny' })} />
+      <ClickableStatRow label="Outrage (weight 0.16)" value={cur.outrageTerm.toFixed(1)} trend={computeTrend(cur.outrageTerm, prev?.outrageTerm)} invert onClick={() => onFieldClick({ field: 'variables.outrage', label: 'Outrage' })} />
+      {/* Both rows below are computed-only, no onFieldClick — neither "largest external
+          shareholder's stake" nor "predicted next-turn cash" is a single persisted
+          numeric field to open a history graph for, same "derived-of-derived, not a
+          tracked field" treatment CashWaterfallView's COGS/EBITDA/etc. rows already get
+          (see CLAUDE.md's KPI history section). */}
+      <Flex justify="space-between" align="center" style={gpStyles.statRow()}>
+        <Text size="sm">Ownership / takeover risk ({(cur.ownershipRisk * 100).toFixed(0)}% of the way to a takeover, weight 0.16)</Text>
+        <Flex align="center" gap={4}>
+          <Text style={{ ...boldStyle, fontSize: '0.85rem' }}>{cur.ownershipTerm.toFixed(1)}</Text>
+          <TrendIcon trend={computeTrend(cur.ownershipTerm, prev?.ownershipTerm)} invert size={13} />
+        </Flex>
+      </Flex>
+      <Flex justify="space-between" align="center" style={gpStyles.statRow()}>
+        <Text size="sm">Legal solvency risk (open cases would consume {(cur.solvencyRisk * 100).toFixed(0)}% of predicted next-turn cash, weight 0.2)</Text>
+        <Flex align="center" gap={4}>
+          <Text style={{ ...boldStyle, fontSize: '0.85rem' }}>{cur.solvencyTerm.toFixed(1)}</Text>
+          <TrendIcon trend={computeTrend(cur.solvencyTerm, prev?.solvencyTerm)} invert size={13} />
+        </Flex>
+      </Flex>
 
       <Divider my="xs" />
       <Flex justify="space-between" style={gpStyles.totalRow}>
         <Text style={{ fontSize: '0.85rem' }}>Threat level</Text>
         <Flex align="center" gap={4}>
-          <Text style={{ fontSize: '0.95rem' }}>{Math.round(cur.legalTerm + cur.scrutinyTerm + cur.outrageTerm)}</Text>
-          <TrendIcon
-            trend={computeTrend(cur.legalTerm + cur.scrutinyTerm + cur.outrageTerm, prev ? prev.legalTerm + prev.scrutinyTerm + prev.outrageTerm : undefined)}
-            invert
-            size={13}
-          />
+          <Text style={{ fontSize: '0.95rem' }}>{Math.round(total)}</Text>
+          <TrendIcon trend={computeTrend(total, prevTotal)} invert size={13} />
         </Flex>
       </Flex>
 
       <Text size="xs" c="dimmed" style={{ fontStyle: 'italic', marginTop: 8 }}>
-        Legal exposure carries the most weight — it's also the one thing that snowballs, since it makes every open case more likely to succeed too.
+        Legal exposure carries the most weight — it's also the one thing that snowballs, since it makes every open case more likely to succeed too. Ownership risk tracks the single largest outside stake in your company against the 50% takeover line — see OWNERSHIP (CAP TABLE) under STOCK VALUE for who actually holds it. Solvency risk is forward-looking: it projects next turn's cash from this turn's own trend and asks whether your open cases could actually break you.
       </Text>
     </Stack>
   );
@@ -2702,7 +3281,7 @@ function RiskBreakdownView({ caseData, vars }: RiskBreakdownViewProps) {
   const legalExposureRatio = Math.min(LEGAL_EXPOSURE_RATIO_CAP, (vars.legalExposure ?? 0) / Math.max(0, vars.cash));
   const scrutinyFactor = (SCRUTINY_MULTIPLIER * vars.scrutiny) / 100;
 
-  // FORMULAS §6: adjustedProbability = baseProbability * (1 + scrutinyFactor + legalExposureRatio)
+  // adjustedProbability = baseProbability * (1 + scrutinyFactor + legalExposureRatio)
   const adjustedProb = caseData.baseProbability * (1 + scrutinyFactor + legalExposureRatio);
 
   return (
@@ -2738,6 +3317,12 @@ interface RivalFullReportViewProps {
   /** Previous turn's snapshot for this rival, for the trend arrow on every row — undefined on round 1 or if this is the first time this rival has been seen. */
   prevRival?: PlayerTurnResult;
   decisions: DecisionDefinition[];
+  /** The viewer's own snapshot + every other active rival — needed only to resolve a name
+   * for whichever real playerIds show up as shareholders in `rival`'s own cap table (see
+   * CapTableSection/buildCapTable above), including the viewer's own id if they hold a
+   * stake in this rival themselves. */
+  myData: PlayerTurnResult;
+  competitors: PlayerTurnResult[];
   onFieldClick: (target: { field: string; label: string; targetPlayerId: string }) => void;
 }
 
@@ -2761,7 +3346,7 @@ function buildAnnualReport(
 /** Fields where the trend arrow reads "up = bad" (costs, debt) rather than the default "up = good". */
 const RIVAL_REPORT_INVERT_FIELDS = new Set(['variables.debt', 'variables.operatingExpenses', 'variables.staffCost', 'variables.materialCostPerTon', 'derived.depreciation', 'derived.financeCost', 'derived.taxCost']);
 
-function RivalFullReportView({ rival, prevRival, decisions, onFieldClick }: RivalFullReportViewProps) {
+function RivalFullReportView({ rival, prevRival, decisions, myData, competitors, onFieldClick }: RivalFullReportViewProps) {
   const { variables: v, derived: d } = rival;
   const { socket } = useSocketStore();
   const { annualReports, annualReportLoading, setAnnualReportLoading } = useGameStore();
@@ -2825,6 +3410,7 @@ function RivalFullReportView({ rival, prevRival, decisions, onFieldClick }: Riva
           />
         ))}
       </Stack>
+      <CapTableSection target={rival} viewerId={myData.playerId} allPlayers={[myData, ...competitors]} />
       <Stack gap={0}>
         <Text style={{ ...boldStyle, fontSize: '0.75rem', color: '#6b7280', marginBottom: 8 }}>ANNUAL REPORTS</Text>
         {annualReport.length === 0 ? (
@@ -2839,9 +3425,6 @@ function RivalFullReportView({ rival, prevRival, decisions, onFieldClick }: Riva
           </Stack>
         )}
       </Stack>
-      <Text size="xs" c="dimmed" style={{ fontStyle: 'italic' }}>
-        Production-level detail (volume, recipe, processes) isn't visible to rivals — only the official filing above.
-      </Text>
     </Stack>
   );
 }

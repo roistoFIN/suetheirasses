@@ -46,6 +46,8 @@ export interface Player {
   roomId: string;
   isHost: boolean;
   bankrupt: boolean;
+  /** Round this player was eliminated in (bankruptcy, merger/takeover, or forfeit) — undefined while still active. */
+  eliminatedRound?: number;
   companyId?: string | null;
   socketId?: string | null;
 }
@@ -117,6 +119,8 @@ export enum ClientEvents {
   GAME_GO_TO_COURT = 'game:goToCourt',
   /** Pay `gameSettings.digDeeperCost` to reveal the probability of success on a case you're the defendant on — instant, outside turn resolution. Defendant-only; a plaintiff never knows a defendant's odds this way. Unlike `game:digDeeper`'s 3-tier ladder, this is a single one-shot reveal scoped to one case. */
   GAME_DIG_DEEPER_CASE = 'game:digDeeperCase',
+  /** Request the whole room's game-timeline replay data (every player's KPI history, every decision deployed, every lawsuit filed/resolved) — no payload, unlike every other on-demand request. Valid in both GAME_PHASE (a live-spectating eliminated player) and AFTERMATH (the finished-game replay), not just GAME_PHASE. */
+  GAME_GET_GAME_TIMELINE = 'game:getGameTimeline',
 }
 
 // Server → Client events
@@ -153,6 +157,8 @@ export enum ServerEvents {
   GAME_KPI_HISTORY_RESULT = 'game:kpiHistoryResult',
   /** Sent to BOTH parties on a case (not broadcast to the room) whenever `game:makeOffer`/`game:acceptOffer`/`game:goToCourt` succeeds — each recipient gets the same updated `LegalCaseData`, plus their own `newCash` if this update just settled the case (undefined for an offer or a court decision, which never move cash). A validation failure (not your turn, case not found, etc.) goes only to the requesting socket via `error`, same as `game:getKpiHistory`. */
   GAME_LEGAL_CASE_UPDATE = 'game:legalCaseUpdate',
+  /** Sent only to the requesting socket, in response to `game:getGameTimeline` — the whole room's `GameTimelineResponse`. */
+  GAME_TIMELINE_RESULT = 'game:gameTimelineResult',
 }
 
 // ============================================================
@@ -291,7 +297,8 @@ export interface AdminRoomsResponse {
   rooms: AdminRoomSnapshot[];
 }
 
-/** One named formula from FORMULAS.md §2-§7 — DB-backed (`Formula` table), editable
+/** One named formula (the 23 pure, scalar, named-input ones — competitiveness, P&L,
+ * risk gauge, etc.) — DB-backed (`Formula` table), editable
  * via `PUT /api/admin/formulas/:key`. The key set is fixed; only `expression`/
  * `description` are ever written. */
 export interface FormulaInfo {

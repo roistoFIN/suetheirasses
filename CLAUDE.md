@@ -6,26 +6,47 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 "Sue Their Asses" — a multiplayer, server-authoritative business strategy game. Players
 run companies for 120s rounds, deploy decisions from a shared 45-decision library, sue
-each other over risky moves, and get eliminated the instant their cash goes negative.
-Last player standing wins. Real-time via Socket.IO; React/Vite client; Express/Prisma/
-PostgreSQL server; npm workspaces monorepo (`client`, `server`, `shared`).
+each other over risky moves, buy up rivals' shares to force a hostile takeover, and get
+eliminated the instant their cash goes negative or another player crosses 50% ownership of
+their company. Last player standing wins. Real-time via Socket.IO; React/Vite client;
+Express/Prisma/PostgreSQL server; npm workspaces monorepo (`client`, `server`, `shared`).
 
 The full design spec — every game mechanic, phase flow, socket event, and Zustand store
 method — is documented in `README.md`. Read it before making non-trivial changes; this
 file only covers what the README doesn't (commands and architecture orientation).
 
-**`definitionDocumentation/FORMULAS.md` is the source of truth for game math** — every
-formula and the exact per-turn calculation order, referenced throughout the code as
-`FORMULAS §N`. Never derive game math from the code alone — check FORMULAS.md first,
-since the code documents known deliberate deviations from spec (see README's *Lawsuits*
-section). Neither the decision library/config nor the pure-math half of FORMULAS.md
-(§2-§7's scalar formulas — competitiveness, P&L, balance sheet, legal-risk/risk-gauge
-math) are static files anymore — all three live in Postgres (`Decision`/`GameConfigRow`/
-`Formula` tables) and are editable live from `/admin`. See *"Decisions/config are
-DB-backed, not static JSON"* and *"Formulas are DB-backed"* below before assuming
-`game_engine.json`/`game_config.json`/FORMULAS.md's prose reflect what's actually
-running — FORMULAS.md's *procedural* half (execution order, depreciation ledger,
-bankruptcy waterfall, FIFO tie-breaking) is still the one and only source, unchanged.
+**There is no separate design-spec document for game math anymore.** A
+`definitionDocumentation/FORMULAS.md` used to be the source of truth (formulas + the exact
+per-turn calculation order, cited throughout the code as `FORMULAS §N`), but it's been
+retired: the pure, scalar, named-input math it described (competitiveness, P&L, balance
+sheet, legal-risk/risk-gauge formulas) now lives in Postgres (`Formula` table, seeded from
+`server/src/engine/defaultFormulas.ts` — that file, not any `.md`, is the closest thing to
+a fixed reference for the *default* expressions, though `/admin` can change what's actually
+running) and is editable live from `/admin`; the *procedural* half (execution order,
+depreciation ledger, bankruptcy/merger waterfall, FIFO tie-breaking) was never data-driven
+and has been folded directly into the code that implements it — `gameLoop.ts`'s
+`resolveTurn` (the numbered `// ── Step N ──` comments are the current, accurate execution
+order) and `calcEngine.ts`/`decisionEngine.ts`/`legalEngine.ts`'s own doc comments. Trust
+those inline comments and this file over any memory of the old document — the decision
+library/config are similarly DB-backed, not static files; see *"Decisions/config are
+DB-backed, not static JSON"* and *"Formulas are DB-backed"* below.
+
+## Working conventions
+
+**If a prompt leaves anything open or underspecified, ask for the details — do not
+guess.** This includes ambiguous scope ("fix the modal" when there are several modals),
+unclear intent (does "remove X" mean delete the code or just hide it in the UI?),
+unstated defaults (a new admin-editable number with no default given), or a request that
+could reasonably be implemented two different ways with materially different behavior.
+Guessing and building the wrong thing costs more of the user's time than asking up front;
+a wrong assumption silently shipped is worse than a clarifying question. This doesn't mean
+asking about every trivial detail with an obvious answer from context/convention — use
+judgment, but default to asking when genuinely unsure rather than picking an interpretation
+and running with it.
+
+**After every change, write tests for it and update documentation** — README.md and/or
+this file, whichever actually describes the area touched — **except `REQUIREMENTS.md`**,
+which is the user's own tracking file and must never be edited by Claude.
 
 ## Commands
 
@@ -167,29 +188,46 @@ attacked you" hint + progressive "Dig Deeper" reveal (see README's *Attack Aware
 Dig Deeper* section) — never derive one of these without the other; they read the same
 `targetId`.
 
-### An incoming-attack hint disappears once sued over — but only for its own suggested ground, never a manually-picked one
+### An incoming-attack hint disappears once a real case exists against that exact attacking instance — matched by instance id, not by requiring the suggested ground
 
 `server/src/engine/gameLoop.ts`'s `buildIncomingAttacks` rebuilds the incoming-attacks
 list fresh every turn purely from "is there still another active player whose still-active
 `target.*`-bearing decision targets me" — it has no concept of "already sued," and doesn't
 need one. Instead, `GamePhase.tsx`'s `isAttackAlreadySuedOver` filters the list
-client-side, hiding an attack's hint card once the player has sued the attacker over
-*exactly* the ground the card itself suggested (`attack.suggestedGroundName`, only
-populated at `investigationLevel >= 3`), with a "correct" (win probability `> 0`,
-`attack.successProbability`) case — checking both `pending.lawsuits` (queued this turn,
-not yet a real case) and `myData.legalCases` (a real case from a prior turn's filing, any
-status), since `pending.lawsuits` for it is cleared the moment the real case exists.
+client-side, hiding an attack's hint card once a lawsuit exists against exactly this
+attacking decision instance — checking both `pending.lawsuits` (queued this turn, not yet
+a real case) and `myData.legalCases` (a real case from a prior turn's filing, any status),
+since `pending.lawsuits` for it is cleared the moment the real case exists.
 
-Deliberately **not** "any lawsuit against this attacker over this decision" — a manually
-picked *different* ground for the same attacking decision (via `SueModal`'s own ground
-picker, not the "SUE NOW" shortcut) doesn't hide the card, because that ground's own win
-probability isn't known client-side without re-implementing the admin-editable, DB-backed
-formula evaluation (`adjustedProbability`, `pickBestGround`) this app deliberately keeps
-server-only — see *"Formulas are DB-backed"* below. If you ever want manually-picked
-grounds to count too, that means either sending the client every ground's probability (not
-just the suggested one) or accepting a look-alike client-side approximation; don't
-silently assume "any matching decisionName" is equivalent to "a correct lawsuit" the way
-`attack.suggestedGroundName` specifically is.
+**A real case is matched by `c.defendantDecisionInstanceId === attack.attackId`** — the
+specific instance, not "same decision name," and regardless of which ground was actually
+sued over. This replaced an earlier version that required the ground to be exactly
+`attack.suggestedGroundName` (only populated at `investigationLevel >= 3`) — a real,
+reported bug: a player who sued over a manually-picked ground via `SueModal`'s own picker
+(not the "SUE NOW" shortcut), or who sued correctly before investigating deep enough for
+`suggestedGroundName` to even exist, had a genuine open case against the attacker over
+that exact decision and still saw the hint card stuck up forever, since a manually-picked
+ground never satisfied the old exact-ground-name check. Matching by instance id instead is
+both more permissive (any ground counts, no investigation-level floor) and no less
+correct: `LegalEngine.fileLawsuit` (`server/src/engine/legalEngine.ts`) only ever stamps
+`defendantDecisionInstanceId` for a genuine, still-actionable match — a wrong guess or a
+time-barred ground always leaves it `undefined` — so this is still exactly "a real,
+non-hopeless case exists against this attack," computed with zero client-side probability
+logic (no re-implementing the admin-editable, DB-backed formula evaluation this app
+deliberately keeps server-only — see *"Formulas are DB-backed"* below — the way the old
+version's `successProbability > 0` gate implicitly relied on the *pre-filing estimate*
+being accurate). `IncomingAttackInfo.attackId` and a real case's
+`defendantDecisionInstanceId` are guaranteed to be the same underlying id when they match
+the same instance: both are stamped from `DeployedDecision.id` (`decision.id` in
+`buildIncomingAttacks`, `targetInstance.id` in `fileLawsuit`), never a separately-derived
+value.
+
+`pendingLawsuits` (queued this turn, not yet resolved into a real case) has no instance id
+to match against at all — a queued `SubmittedLawsuitEntry` is only `{ targetId,
+decisionName, groundName }` — so it's still matched loosely, by attacker + decision name,
+same as before; this is an accepted, narrower approximation than the real-case check, not
+a regression, since it only ever covers the gap within the single turn a lawsuit is
+queued but not yet resolved.
 
 `RoomState.room` (`Room`, the shared type) carries its own embedded `players: Player[]`
 array — but that array is only ever populated once, from the single founding player
@@ -386,6 +424,47 @@ only visually read as two clusters because of array order; at narrow widths the 
 group's own wrap could land a nature chip on the same line as a level chip, reading as one
 undifferentiated set of pills. Keep them in separate row containers if you add a third
 filter dimension later — one `Flex` per filter, not one `Flex` per screen.
+
+### The Decision Deck also has a search field and a KPI sort — search mirrors SueModal's, sort ranks by each decision's own deployment-year effect
+
+Added alongside the level/nature filter chips, not replacing them — all three (filters,
+search, sort) compose freely, applied in that order (`filtered` is search-and-filtered
+first, then `.sort()`ed in place if a KPI is chosen).
+
+**Search** (`searchQuery` state, a `SEARCH DECISIONS` field) is a straight copy of
+`SueModal`'s `SEARCH GROUNDS` field's shape — same `gpStyles.searchInput` div +
+`IconSearch` + borderless `TextInput`, same "match name or description, case-insensitive"
+logic — just matching `d.decision`/`d.description` instead of a ground's name/description.
+Deliberately not shared as a component: each is a two-line inline block wired to its own
+local state and its own filter predicate, and factoring out a shared `<SearchField>` for
+this little markup would be more indirection than the duplication it removes (matching the
+existing "duplicate small pure logic, keep in sync by hand" convention elsewhere in this
+file, e.g. `GamePhase.utils.test.ts`).
+
+**Sort by KPI** is a native `<select>` (the same un-styled-Mantine `<select>` `SueModal`'s
+own TARGET dropdown already uses, not a Mantine `Select`) listing every KPI field *some
+decision in the library actually affects* — `getSortableKpiFields` derives this from the
+live `decisions` prop (scanning every `DecisionDefinition.impacts` key, excluding
+`target.*`/`competitor*` ones, same exclusion `hasPermanentEffect` already uses and for the
+same reason: "sort by Outrage" in this deployer-facing view means the deploying player's
+own outrage, not what a decision does to a chosen opponent) rather than a hardcoded
+`PlayerVariables` field list — since decisions are DB-backed/admin-editable, a hardcoded
+list could easily drift from what's actually in the deck, or offer a field nothing touches.
+Two direction chips (`Highest → Lowest` / `Lowest → Highest`, reusing `gpStyles.filterChip`)
+only render once a KPI is actually selected — no point showing a direction toggle with
+nothing to toggle.
+
+`getDecisionSortValue(def, field)` is the ranking key: `def.impacts[field]`'s schedule value
+at deployment time (`schedule[1] ?? schedule['default'] ?? 0`) — deliberately mirrors
+`calcEngine.getScheduleValue(schedule, 0)`'s exact convention (the explicit year-1 entry if
+the schedule has one, else the steady-state `'default'`, else 0) without importing server
+code, since this is a client-only display ranking, not real game math. A decision with no
+impact on the chosen field at all sorts as a plain `0`, landing wherever that value falls
+among the rest — no special-casing "doesn't affect this KPI" as a separate bucket. This
+was a deliberate, simple choice among several reasonable ones (first-year value vs. summed
+total vs. steady-state value) — if a future request wants "sort by total lifetime impact"
+or "sort by steady-state value" instead, that's a one-line change to this function, not a
+structural one.
 
 ### "Active Decisions"' already-active and queued cards show the same description + SHOW DETAILS panel as the Decision Deck — via a shared `DecisionDetails` sub-component, not by duplicating `DecisionCard`
 
@@ -628,6 +707,69 @@ then asserts it *is* called on the very next tick once the lock is released; ano
 mid-turn and asserts the turn still fully resolves and broadcasts `turn:resolved` for the
 room regardless.
 
+### `canDeploy`'s level-limit check counted a player's entire lifetime of active decisions, not this turn's submissions — a severe, real, reported bug
+
+A real, reported bug: a player deployed three decisions in one turn (Raw Material
+Monopoly, Night Dumping, Water Pumping), lost lawsuits over all three (voiding them), and
+the next turn's brand-new decisions — unrelated names, nothing to do with the voided ones
+— got visibly queued (`QUEUED` badge, normal pending-submission UI) but then silently
+vanished the turn after, never becoming active decisions. Neither the deploying player nor
+the other player ever saw them. No error was ever surfaced anywhere.
+
+`DecisionEngine.canDeploy` used to take `maxStrategic`/`maxOperational` and, after the
+maturity/permanent-effect/exclusion checks, compute `stratCount`/`opCount` by filtering
+**`playerDecisions`** (the caller's `ctx.engineState.activeDecisions`) by level and
+comparing against those maxes — the intent being "at most `maxStrategicDecisionsPerTurn`/
+`maxOperationalDecisionsPerTurn` decisions of each level per turn" (the README/game-design
+"1 strategic + 2 operational per round, use-it-or-lose-it" budget). The bug:
+`playerDecisions` is a player's **entire historical** `activeDecisions` list — matured
+instances are never removed from it, voided-by-lawsuit instances are never removed from it,
+nothing is ever removed from it, for the whole game. So `stratCount`/`opCount` weren't "how
+many of this level have I submitted this turn" at all — they were "how many of this level
+have I ever deployed, in total, since the game began." The instant a player's lifetime
+total for a level first reached that level's per-turn max (functionally guaranteed within
+the player's first one or two turns of normal play, since the whole point of the budget is
+to use it), `canDeploy` began rejecting **every subsequent decision of that level for the
+rest of the game** — regardless of maturity, and regardless of whether the old instances
+eating the count had since been voided by a lost lawsuit (as in the reported case) or
+simply matured. `GameLoop.processNewDecisions` swallows a `canDeploy` rejection with a bare
+`continue` and no feedback (by design, for the ordinary "level-limit/maturity/exclusion
+reasons this specific entry didn't deploy" case — see `ShareTransactionRequest`'s doc
+comment) — from the player's point of view this reads exactly like the bug report: the
+decision visibly queues (client-side `pending` state has no idea the server will reject it)
+and then just disappears with no trace once the turn actually resolves.
+
+The real per-turn cap was — and still is — already enforced correctly, completely
+independently, by the *caller*: `processNewDecisions`'s `for (const entry of
+sub[bucket].slice(0, maxForBucket))` only ever attempts at most `maxForBucket` entries from
+**this turn's own submission** in the first place, per bucket. `canDeploy`'s own
+recomputation was therefore not just buggy but entirely redundant even when correct — two
+independent implementations of "cap decisions per turn," one right (bounded to this turn's
+submission) and one silently wrong (bounded to the player's lifetime activity). Confirmed
+this was a real, live bug (not just a suspicious-looking code path) by writing a two-turn
+`GameLoop` reproduction before touching anything: turn 1 deploys exactly
+`maxStrategicDecisionsPerTurn`/`maxOperationalDecisionsPerTurn` worth of decisions (normal
+play, not an edge case), turn 2 submits one *more*, entirely different decision of each
+level — and it was silently dropped every time, matured or not, voided or not.
+
+Fixed by removing `maxStrategic`/`maxOperational`/`level` from `canDeploy`'s signature
+entirely (all three existed solely to feed the deleted block — `level` was never read for
+anything else, and the client-side mirror `getDeployability` in `GamePhase.tsx` never even
+had a level-count check to begin with, further confirming this was never meant to be part
+of `canDeploy`'s job) and deleting the "Level limits" block outright, leaving the existing
+`.slice(0, maxForBucket)` in `processNewDecisions` as the one and only place this budget is
+enforced. `decisionEngine.test.ts`'s two "should block exceeding strategic/operational
+limit" tests — which existed specifically to pin down the buggy behavior — were replaced
+with regression tests proving the *opposite*: a player with many old matured (or
+lawsuit-voided) decisions of a level is *not* blocked from deploying a new, different one.
+`gameLoop.test.ts` gained an end-to-end two-turn regression test (turn 1 uses the full
+per-level budget via entirely normal submissions, turn 2 submits one more decision of each
+level and asserts both actually deploy, including a `target.*`-bearing one showing up in
+the *other* player's `incomingAttacks` — covering the "other player didn't see them either"
+half of the original report, not just the deploying player's own view) — extend those, not
+just the happy path, if you touch `canDeploy` or `processNewDecisions`'s per-turn budget
+enforcement again.
+
 ### A decision deployed this turn must not also be advanced this same turn — Step 1 and Step 2 need to agree on "which decisions existed before this turn started"
 
 A real, reported bug (not hypothetical): deploying a decision and looking at its effect on
@@ -710,7 +852,7 @@ harmless rather than a unique-constraint crash. `GameLoop` itself never touches 
 — same read/write split as `Company`, `GameLoop` stays pure.
 
 **Prediction** (`GameLoop.predictFutureKpis`) is the more interesting piece: rather than
-reimplementing a subset of the 9-step turn math (risking drift from FORMULAS.md), it
+reimplementing a subset of the 9-step turn math (risking drift from the real thing), it
 calls `resolveTurn` **itself**, `turnsAhead` times in a row, sandboxed behind a synthetic
 room id (`` `__predict__${playerId}` ``) that was never passed to `submitDecisions` — a
 room id `this.submissions` has no entry for always reads back as "nobody submitted
@@ -785,6 +927,75 @@ already-zeroed header said the same thing twice. Both `SectionCard` bodies now a
 render their `Stack` unconditionally — when nothing's active or queued it just renders
 empty, no separate branch needed. If you add another list-in-a-box that already has a
 counted title, don't add a redundant "no items" placeholder underneath it either.
+
+### `ActiveDecisionsBox` — the "Active Decisions" list gained a status filter, a turn/target/name sort, and a fixed-height scroll cap
+
+Everything the box shows — still-queued picks and already-deployed instances — used to
+render as one flat, unbounded list with no way to filter or reorder it, straight in
+`GamePhase`'s own JSX. Pulled out into its own component, `ActiveDecisionsBox`, following
+the same "small view component owns its own local filter/sort state" shape
+`DecisionDeckView` already established (see its own section above) rather than lifting
+this state into `GamePhase` itself.
+
+**A unified `DecisionBoxItem` discriminated union** (`{ kind: 'queued'; ... } | { kind:
+'active'; ... }`) normalizes both shapes down to the handful of fields filtering/sorting
+actually needs (`name`, `targetName`, and — active only — `status`/the raw
+`ActiveDecisionInstance`) — built once per render from `pending`+`myData.activeDecisions`,
+the exact same two sources the box already merged, just now filtered/sorted before being
+handed to `QueuedDecisionCard`/`ActiveDecisionCard` (unchanged themselves, aside from
+`ActiveDecisionCard` gaining the same optional `targetName` prop
+`QueuedDecisionCard` already had).
+
+**The status filter needed `ActiveDecisionInstance` itself to gain a `targetId` field it
+never had before.** `ActiveDecisionCard`'s badge logic (voided/expired/matured/still-
+maturing) was always computed inline from `decision.voidedByLawsuit`/`isMatured`/
+`elapsedYears` plus the looked-up `DecisionDefinition` — pulled out unchanged into
+`getActiveDecisionStatus`, now shared between the card's own rendering and the filter's
+classification (`decisionBoxItemStatus`, which also handles the fifth filter option,
+`'Queued'`, that only ever applies to a still-pending pick), so the two can never
+disagree about what "Voided — Sued" vs. "Expired" means for a given instance. But
+`targetId` — which decision instance a decision like Bot Attack was aimed at — was never
+sent to the client for an *already-resolved* instance at all; only a still-queued
+`SubmittedDecisionEntry` carried it (`QueuedDecisionCard`'s existing `targetName` prop).
+`GameLoop.resolveTurn`'s Step 13 result-building now includes `targetId: d.targetId` in
+the `activeDecisions` it returns (the underlying `DeployedDecision` always had it — this
+was a genuine gap in what got exposed to the client, not new engine state), so
+`ActiveDecisionCard` can resolve and show `→ {targetName}` (and the box can sort by it)
+the same way `QueuedDecisionCard` already could for a pick that hasn't resolved yet.
+
+**Sort follows the exact "native `<select>` + two direction chips" shape** the Decision
+Deck's own "SORT BY KPI" already established (see above) — three fields (`turn`, `target`,
+`name`), not KPI-derived ones, since sorting a list of decision *instances* by "how much
+they affect a KPI" doesn't make sense the way ranking the whole *library* by it did. A
+queued pick has no `deployedYear` yet, so `getDecisionBoxTurn` treats it as happening at
+the *current round* for sort purposes — "not yet started, treat as happening now," the
+same convention the box's own `QUEUED` badge already implies. Sorting by `target`/`name`
+uses a plain `localeCompare`; an item with no target (most of the decision library) sorts
+via an empty-string fallback, landing wherever that falls alphabetically rather than in a
+special "no target" bucket — the same "no special-casing, just let it sort naturally"
+choice `getDecisionSortValue` already made for a decision that doesn't touch the chosen
+KPI at all.
+
+**`ACTIVE_DECISIONS_MAX_HEIGHT` caps the list to roughly 3 collapsed cards' worth of
+height** (`maxHeight` + `overflowY: 'auto'`, the same shape the Decision Deck's own list
+already uses at `60vh`), rather than letting a long game's accumulated decisions push the
+rest of the page down indefinitely. Deliberately an approximation, not an exact fit — a
+real card's height varies with whether it has a target line, a progress bar, or an
+expanded SHOW DETAILS panel, none of which a fixed pixel constant can account for; the
+constant is sized against a plain collapsed card. Filter/sort controls themselves are only
+rendered when the box actually has at least one item — an empty box shows just the MAKE
+IMPORTANT DECISIONS button, matching the "no redundant UI when there's nothing to act on"
+instinct behind the empty-state-text removal directly above. A filtered-to-nothing result
+(items exist, but none match the current status filter) gets its own short dimmed message,
+the same "tell the player why the list looks empty" treatment `DecisionDeckView`'s own
+filter/search already has — distinct from the *box itself* being empty, which still gets
+no message at all (the header count already says zero).
+
+`GamePhase.utils.test.ts`'s `getActiveDecisionStatus`/`decisionBoxItemStatus`/
+`getDecisionBoxTurn`/`sortDecisionBoxItems` describe blocks and `gameLoop.test.ts`'s
+"carries a target-bearing decision's targetId through to the client-facing
+activeDecisions entry (regression)" test are the coverage — extend those, not just the
+happy path, if you touch this again.
 
 ### `gpStyles.stamp` badges (QUEUED, INSTANT, xT, MATURED, PLAINTIFF/DEFENDANT) — overriding a Mantine `Badge`'s border without also taking over its centering breaks vertical centering
 
@@ -891,6 +1102,57 @@ game is fully playable with the `llm` container never started. Don't add a hard
 dependency on this service being up anywhere; if you need to gate something on it, use
 the same fallback-on-failure shape this module already has.
 
+### An incoming attack's tier-1 hint reuses the same AI-narrated annual-report blurb — computed in `GameEngine`, never inside `GameLoop`
+
+`IncomingAttackInfo.annualReportBlurb` is set whenever an attack's `investigationLevel`
+is exactly 1 — the tier where the attacker's identity is known (`attackerName`) but the
+attacking decision itself isn't yet (`decisionName`/`decisionDescription`/`effectSummary`
+all still `undefined` — see `revealAttack`'s tiers above). Before this, that tier's hint
+card was just a bare "`[player]` did something to you" headline with nothing else to go
+on. The blurb reuses the exact same generation `game:getAnnualReport` already produces
+for a rival's Full Filing report (`generateAnnualReportBlurb`, with a
+`DecisionDefinition.competitorsView` fallback) — deliberately vague, non-mechanical
+corporate PR-speak by construction (see the LLM system prompt above), so surfacing it a
+tier early doesn't leak anything level 2's real fields don't already reveal more
+precisely; it's flavor, not intel.
+
+**This has to live in `GameEngine`, not `GameLoop.buildIncomingAttacks`/`revealAttack`**,
+for the same reason `getAnnualReport` itself does: those run inside the pure, synchronous
+`resolveTurn`/`getInitialSnapshot`, which must never do network I/O (this file's
+two-layer architecture split). Two call sites need it, not one, because
+`incomingAttacks` is recomputed fresh every time regardless of whether a dig just
+happened:
+- **`GameEngine.digDeeper`** — right after persisting the dig's cash/engineState update,
+  if the dig happened to land exactly on `investigationLevel === 1` (a heads-up 2-player
+  game's `effectiveInvestigationLevel` shortcut can skip straight past this tier to level
+  2 — see above — so not every successful dig qualifies), it looks the attacker's decision
+  instance up in the already-loaded `dbPlayers` (by `attack.attackerId` + `attack.attackId`)
+  and attaches the blurb before returning the result to just that one requesting socket.
+- **`GameEngine.resolveGameTurn`** — every *subsequent* turn, `buildIncomingAttacks`
+  rebuilds the same level-1 entry fresh from the player's persisted investigation level
+  (see *"An incoming-attack hint disappears..."* above for why it has no memory of past
+  digs beyond that), so the blurb has to be re-attached on every `turn:resolved` broadcast
+  too, not just the one turn the dig happened — `enrichIncomingAttackBlurbs` does this in
+  bulk, across every player's `incomingAttacks`, right before the broadcast. It's built
+  from `outcome.companyUpdates`' POST-turn `engineState.activeDecisions`, not the pre-turn
+  `dbPlayers` `resolveGameTurn` loaded earlier — a decision deployed or matured this exact
+  turn must resolve to the same instance `buildIncomingAttacks` itself just described from
+  the post-turn state, not a stale pre-turn snapshot.
+
+Both call sites share one private helper, `annualReportBlurbForInstance` — the same
+"decision has no `competitorsView` to draw a fallback from → omit the field entirely, not
+an empty string" behavior `getAnnualReport`'s own filter already has, so a level-1 hint
+for a decision with no flavor text configured just shows no blurb line at all rather than
+a blank one. Client-side, `AttackHintCard` renders it as an italic line right under the
+headline, gated on `!attack.decisionName` (i.e., only while still at exactly this tier —
+once level 2 is reached, the real decision facts replace it, the same way `SueModal`'s SUE
+NOW route replaced an older, now-redundant intel source elsewhere in this file).
+`gameEngine.test.ts`'s `"digDeeper — incoming-attack annual report blurb"` describe block
+(landing on level 1 exactly, going past it, and the no-`competitorsView` omission) and its
+`resolveGameTurn` describe block's blurb-persistence regression test (the blurb survives
+into a later turn's broadcast without a fresh dig) are the coverage — extend those, not
+just the happy path, if you touch this again.
+
 ### Client: no path-based routing for game phases — `/admin` is the one real URL
 
 `App.tsx` does **not** use react-router `<Routes>`/`<Route>` to switch between
@@ -974,11 +1236,870 @@ another way to remove/rename a decision, keep this guard — don't assume the ho
 tolerates a missing definition, only one place (`getActiveDecisionSummaries`, for the AI
 annual-report feature) was ever made to.
 
-### Formulas are DB-backed — but only the pure-math half of FORMULAS.md
+**A previous version of the depreciation-ledger gate hardcoded a decision-name allowlist
+— exactly the class of bug the DB-backed/admin-editable design is supposed to prevent.**
+`calcEngine.ts` used to export `DEPRECIATING_ASSETS`, a hardcoded `Set` of 9 decision names,
+and `applyDecisionImpacts` only created a depreciation-ledger entry for a positive
+`assets`/`intangibleAssets` addition if the decision's name was in that Set — on top of the
+already-sufficient structural check (`field === 'assets'/'intangibleAssets'` and
+`value > 0` on the deployment year, which is what actually identifies "this is a genuine
+capital purchase"). This wasn't a hypothetical risk: auditing the real, shipped
+`game_engine.json` against the hardcoded list found `Preventive Maintenance` — a decision
+with a genuine positive `assets` impact — already missing from it, silently never
+depreciating, no error, no admin edit required to trigger it. Renaming any of the 9 listed
+decisions via `/admin`, or adding a brand-new one with a positive asset impact, hit the
+exact same silent failure.
 
-FORMULAS.md §2-§7 (competitiveness/market share, volume, P&L, balance sheet, legal-risk
-probability, risk gauge) is a mix of two different kinds of content, and only one kind
-is DB-backed:
+Fixed by deleting `DEPRECIATING_ASSETS` outright and trusting the structural signal alone
+— `addDepreciationEntry` (now `(assetType, value, currentYear)`, `decisionName` parameter
+removed entirely since nothing inside it ever needed the name once the allowlist was gone)
+creates an entry for any positive value, unconditionally. Removing that dead parameter
+cascaded exactly one layer up on each side of the call chain it was only ever forwarded
+through — `decisionEngine.ts`'s `applyInstance`/`applyImpactsForYear` and their two call
+sites in `gameLoop.ts`'s `processNewDecisions` — since a parameter that exists solely to be
+forwarded and never read is the same class of latent smell, not a separate concern to leave
+half-fixed. If you're ever tempted to special-case behavior by decision *name* anywhere in
+the engine (as opposed to by a `DecisionDefinition` *field*, e.g. `impacts.assets`,
+`legalRisks`, `nature`, `excludes` — all genuinely admin-editable per-decision data), this is
+the failure mode to remember: it silently drifts from whatever's actually in the DB, with no
+error to catch it, and normal test coverage against the seeded library won't catch it either
+unless a test specifically asserts "an arbitrary/renamed decision behaves the same as a
+known one" (see `calcEngine.test.ts`'s regression tests, added alongside this fix, which do
+exactly that — asserting the depreciation behavior no longer depends on which decision name
+is passed in at all).
+
+### `processingLevel`/`capacityUtilization`/`installedCapacity`/`price` are floored at 0 — a requirement that outlived the document that specified it
+
+Surfaced while retiring `definitionDocumentation/FORMULAS.md` (see this file's intro):
+the old spec required these 4 fields to have a hard floor of 0 (no ceiling on any of
+them), but auditing the actual engine found no clamp anywhere — `applyDecisionImpacts`'
+Phase 2 (`calcEngine.ts`) applies accumulated relative multipliers as `currentVal * (1 +
+multiplier)` with nothing stopping a large enough negative multiplier (several
+Maintenance-Neglect-style decisions' negative relative effects stacking on the same
+field, for instance) from driving one of these below zero, which has no real-world
+meaning for any of the four — a negative price, negative capacity, etc. This was never
+flagged as a deliberate deviation anywhere, unlike every other spec/code mismatch in this
+file — genuinely an unimplemented requirement, not a decision to skip it.
+
+Fixed by `calcEngine.ts`'s `clampFloorZeroFields`, a small shared helper (`ZERO_FLOOR_FIELDS
+= ['processingLevel', 'capacityUtilization', 'installedCapacity', 'price']`) called at the
+end of **both** `applyDecisionImpacts` and `applyTargetImpacts` — a decision's own-field
+effects and its `target.*`-routed effects (target.processingLevel/target.capacityUtilization
+are both real routable fields, see below) go through separate functions but must agree on
+the floor, so one helper is shared rather than duplicating the clamp logic twice. Applied
+unconditionally to the field, not just when this turn's application happened to touch it —
+simpler than tracking "did this call touch a floored field" and behaviorally identical,
+since a field already `>= 0` is a no-op to re-clamp. `calcEngine.test.ts`'s
+"zero-floor fields" describe block (nested under `applyDecisionImpacts`) and the new
+`applyTargetImpacts` describe block are the regression coverage — including a check that a
+field *outside* this set (e.g. `outrage`, which is legitimately allowed to go negative,
+see `absOutrage` in the risk gauge) is untouched by the clamp.
+
+### Randomized-simulation bug hunt — a 4-player, many-round, random-decisions-and-lawsuits game engine simulation, run directly against `GameLoop`
+
+On request, ran a standalone script (not committed — a temporary `tsx`-executed harness
+importing `GameLoop` directly, since it's a pure engine with no DB/socket dependency) that
+plays out full 4-player games against the *real* seed data (`game_engine.json`/
+`game_config.json`/`defaultFormulas.ts` — the exact data `prisma/seed.ts` puts in
+Postgres), not this suite's smaller hand-written fixture decisions: each active player each
+round deploys 1-2 random decisions (skipping ones that would obviously overdraw cash, a
+crude "a real player wouldn't do this" heuristic) and files 0-2 blind lawsuits against
+random targets over a random ground from the whole library, exactly mirroring
+`chargeLawsuitFilingFee`'s real cost/limit checks. After every `resolveTurn` call, every
+player's `variables`/`derived`/`riskGauge`/`shareOwnership` were checked against basic
+invariants (every number finite, `riskGauge` within its documented 0-100 range, ownership
+fractions summing to ~1). 100 seeded games surfaced two real, previously-undiscovered bugs:
+
+**1. `applyDecisionImpacts`'/`applyTargetImpacts`'s absolute-impact write corrupted an
+undefined field to `NaN` permanently.** Both had a bare `(v as any)[field] += value` for
+an `'absolute'`-type impact. `revenue`/`financeCost`/`taxCost` are "Derived (computed each
+turn)" `PlayerVariables` fields — genuinely `undefined` until something writes to them,
+since `startingVars()` never seeds them (unlike every *typed* Decimal/required field).
+`undefined + number` is `NaN` in JS, and — unlike `receivables`/`equity`/`stockValue`/
+`marketShare`/`volume`, which Step 7/Step 4/Step 5 freshly *overwrite* every single turn
+regardless of what Step 1/2 left behind — nothing else in a turn ever touches
+`vars.revenue`/`financeCost`/`taxCost` again, so once corrupted, `NaN` (and `NaN + anything
+= NaN`) persisted for the rest of that player's game the instant they (or, since this
+touches shared `PlayerVariables` shape, *any* player) ever deployed a decision whose
+`impacts` targets one of these three fields directly — `Channel Stuffing` (`impacts.
+revenue`), `Tax Planning` (`impacts.taxCost`), `Payday Loan` (`impacts.financeCost`) are the
+three real decisions in the library that do. This was silent in every other test layer:
+none of `calcEngine.test.ts`'s existing `applyDecisionImpacts` tests happened to exercise a
+field starting genuinely `undefined` (they all use `makeVars()`, which sets every field the
+interface allows, including the optional ones) — a hand-written fixture can only ever cover
+the specific case someone thought to write, and nobody had reason to think "what if this
+field was never initialized" until a random simulation actually hit it. Fixed by guarding
+both absolute-write sites with `?? 0` (`(v as any)[field] = ((v as any)[field] ?? 0) +
+value`) — the same defensive pattern the relative branch already effectively had for free
+(its `typeof currentVal === 'number'` guard already skips an undefined field rather than
+corrupting it). This is data hygiene, not a live gameplay-math bug in practice — grepped
+every formula input across `calcEngine.ts`: nothing else ever reads `vars.revenue`/
+`financeCost`/`taxCost` as an input (P&L/balance-sheet/risk-gauge all take freshly computed
+local values, e.g. `pl.revenue`, not these three fields), so the corruption was contained
+to the persisted-but-unread JSONB blob (and, once corrupted, silently became `null` on the
+next DB write — `JSON.stringify(NaN) === null`) rather than skewing cash, equity, or any
+elimination check. Still a real bug worth fixing: any future feature that *does* start
+reading these fields (or a client surface that displays `variables.revenue` instead of the
+always-correct `derived.revenue`) would have silently inherited permanently-broken data.
+
+**2. The `riskGauge` formula's scrutiny term had no lower clamp, letting the whole gauge
+dip below its documented 0-100 range.** `w2*MIN(1,scrutiny/100)` — `scrutiny`, unlike
+`outrage` (piped through `Math.abs` before the formula ever sees it as `absOutrage`), has
+no floor of its own and nothing in the decision library drives it back up once negative
+(no "reduce scrutiny" mechanic exists at all) — a decision with a negative scrutiny impact
+can push it arbitrarily negative, and `MIN(1, ...)` only ever caps the *top* of that
+division, never the bottom. Fixed in `defaultFormulas.ts`'s seeded `riskGauge` expression
+by clamping that one term on both ends (`MAX(0,MIN(1,scrutiny/100))`), matching how
+`absOutrage`'s term already only needed the upper clamp since `Math.abs` already guarantees
+its lower bound. The client-side mirror (`GamePhase.tsx`'s `computeThreatTerms`, used only
+for the Threat Level breakdown's row-by-row display, never the authoritative gauge value
+itself — see *KPI history + prediction graphs* / trend-arrow sections above for the general
+"duplicate small pure logic client-side" convention this file follows) had the identical
+gap and needed the identical fix, plus — noticed while fixing it — was *also* missing the
+upper clamp on its outrage term entirely (`Math.abs(v.outrage) / 100` with no `Math.min(1,
+...)` at all), a separate, smaller pre-existing mirror-drift bug fixed in the same pass.
+**Like every other DB-backed formula change, an already-seeded dev database needs `npm run
+db:seed` re-run to pick this up** — editing `defaultFormulas.ts` only changes the seed, not
+any already-seeded `Formula` row (see *Formulas are DB-backed* below).
+
+**The simulation itself is kept as a permanent regression test**
+(`server/src/engine/gameLoop.simulation.test.ts`), not just a one-off bug-hunting script —
+a hand-written fixture library can only ever cover fields/decisions someone thought to
+write a test for; a real, evolving 45-decision/83-legal-risk library is exactly the kind of
+surface where a specific field-name collision is what actually breaks, not the general
+shape of the math. It runs the identical random-play simulation against the real seed data
+across several fixed seeds (deterministic, no flakiness) and asserts the same invariants
+the manual bug hunt checked, plus two narrow regression cases pinned to the two bugs found
+(deploying Channel Stuffing must not corrupt `variables.revenue`; a negative scrutiny value
+must not push `riskGauge` below 0). If you add a new decision whose `impacts` targets an
+optional/derived `PlayerVariables` field, or change how any Risk Gauge term is clamped,
+this is the test most likely to catch a reintroduced version of either bug without anyone
+having to think to write a dedicated case for it.
+
+Beyond the two bugs, the same 100-game run is also this project's best current evidence for
+several open balance/game-design questions — see the conversation this ran in (not
+duplicated into this file, since these are live design judgment calls, not settled facts
+the way a bug fix is): games most often see their first elimination by round 3 under
+random/careless play; a small number of decisions (`New Factory` most notably — its
+`-$100,000` year-1 cash cost alone equals the player's *entire* starting cash, before any
+other turn cost) are large enough relative to starting cash to be a real trap for an
+unwary early deploy; and a few decisions (`Venture Capital Shadow Money`,
+`Hype Initial Coin Offering`) grant a large, immediately-liquid cash injection gated only by
+a probabilistic, opponent-dependent legal risk with no guaranteed downside, which combined
+with their short (1-year) maturity means they can in principle be redeployed every couple
+of turns for compounding "free" cash. None of these are bugs — they're judgment calls about
+decision balance that need a product decision, not a code fix — but they're recorded here
+as the concrete findings that random-play run turned up, in case a future session picks
+this up again.
+
+### `advanceAndApply` re-applied a matured decision's `'default'` effect every turn forever — the real root cause behind the simulation's runaway growth and several "certain doom" death spirals
+
+Follow-up to the randomized-simulation findings above, after the user asked for concrete
+fixes to `New Factory`/`Venture Capital Shadow Money` and a way to reduce runaway growth.
+While verifying the `New Factory` balance fix (below) empirically — rerunning it through
+`GameLoop` turn by turn — a much bigger issue surfaced than "some decisions are too
+strong/weak": **any decision instance with a nonzero `'default'` schedule value on *any*
+field kept having that value re-applied every single subsequent turn, forever** (bounded
+only by `gameSettings.statuteOfLimitationsYears`, default 10 — not literally infinite, but
+10 turns of continuous `×1.4` compounding is still ~29x). Confirmed directly: a single
+`New Factory` deployment with zero other activity grew `installedCapacity` 350 → 490 → 686
+→ 960 → 1345 → 1882 → 2635 over 7 turns — pure exponential compounding from one instance.
+The *same* mechanic on `absolute` fields was doing the mirror-image thing on the cost side:
+`operatingExpenses` (`default: 25000`) kept adding another $25k on top every turn (20k → 45k
+→ 70k → 95k → ...) and `capacityUtilization` (`default: -0.3`) kept subtracting 0.3 every
+turn — which is why the *first* attempted `New Factory` balance fix (just reducing/spreading
+the year-1/year-2 cash cost) still ended in bankruptcy by round 4 in an isolated
+reproduction: the front-loaded cost was no longer the killer, the *ongoing, ever-growing*
+opex/capacity-utilization drag was.
+
+This directly explains the earlier randomized-simulation run's most extreme numbers (final
+cash ranging from -$1.39 billion to +$49.4 billion from a $100k start) far better than
+"cross-decision stacking" ever could — a *single* well-timed permanent-effect decision,
+left alone for the length of a real game (median ~8-15 rounds in that run), is enough on
+its own. The fix originally proposed for "reduce runaway growth" (a passive scrutiny drift
+for dominant players) was reconsidered and **not** implemented as a substitute for this —
+a linear drift can't meaningfully counter true per-turn exponential compounding, and would
+have been treating a symptom while leaving the actual mechanism untouched.
+
+**Root cause, precisely:** `DecisionEngine.advanceAndApply`'s per-turn loop called
+`applyInstance` (→ `applyDecisionImpacts`) at every still-active instance's *current*
+`elapsedYears`, on every turn, with no memory of "have I already applied this instance's
+now-final value." Once `elapsedYears` passes a decision's own maturity threshold (the max
+explicit schedule year across its impacts), `getScheduleValue` permanently returns
+`'default'` for every future `elapsedYears` — so the loop kept re-consulting (and
+re-applying) that same `'default'` value turn after turn, compounding a `relative` field's
+multiplier against itself and accumulating an `absolute` field's addend on top of itself,
+indefinitely. This directly contradicted the game's own documented multi-instance stacking
+rule (`installedCapacity = base * (1 + 0.4 + 0.4)` for two matured `New Factory`s, summed
+once against a *stable* base — a framing that only makes sense if a single instance's own
+contribution isn't itself a moving target) and the plain-language framing of "permanent
+effect" throughout the decision library and this file (a one-time, lasting step-change —
+"this factory permanently raised your capacity" — not a perpetual, uninvested-in annual
+re-multiplication).
+
+**Fix:** `advanceAndApply` now applies a decision's own (non-`target.*`) impacts through
+and including the turn its maturity threshold is first reached (`elapsedYears <=
+threshold` — covering every legitimate explicit-year value plus exactly one `'default'`
+application, the turn it's first consulted), and skips the instance entirely on every turn
+after (`elapsedYears > threshold`). An instant-maturity decision (threshold 0, `'default'`-
+only schedule — the majority of `Operational` decisions) applies its value exactly once, at
+deployment (Step 1's `applyImpactsForYear` call, `elapsedYears=0`), and is skipped by
+`advanceAndApply` on every subsequent turn from then on (`elapsedYears` starts at 1 on the
+very next call, already `> 0`). Composes correctly with the pre-existing statute-of-
+limitations early exit, which still matters for the (unusual) case of an admin-configured
+statute *shorter* than a decision's own maturity — that check still fires first and can
+force `isMatured`/skip application before the natural threshold would have.
+
+**Deliberately scoped to a decision's own impacts only.** `target.*` effects
+(`collectTargetImpacts`/`applyTargetImpacts` — an attacking decision's ongoing effect on
+its victim) keep their existing "re-applies every turn until the statute of limitations"
+behavior, completely unchanged. That's a separate offense/defense balance question (an
+ongoing attack that keeps hurting its victim every turn until legally time-barred is a
+much more defensible design than a company's own internal investment magically
+re-compounding on its own) that nobody asked to revisit here — changing it would weaken
+every attacking decision in the library at once, a much bigger, unrequested scope
+expansion.
+
+**Regression coverage**, reviewed test-by-test against the *entire* existing
+`advanceAndApply`/`collectTargetImpacts` suite before changing anything (only one existing
+test, `decisionEngine.test.ts`'s old `"should use default schedule when matured"`, actually
+encoded the buggy behavior and needed rewriting — everything else, including every existing
+statute-of-limitations/exclusion/voided-instance test, turned out to already be compatible
+with the fix, which is itself a good sign the fix is well-targeted):
+- `decisionEngine.test.ts`'s `advanceAndApply` describe block: the rewritten "applies the
+  default schedule value exactly once, the turn maturity is first reached" test, plus two
+  new regression tests (`absolute` field stops accumulating past maturity; `relative` field
+  stops compounding past maturity, checked across 3 consecutive calls).
+- `gameLoop.test.ts`'s `predictFutureKpis` describe block: the old
+  `"keeps ... applying its schedule into every predicted turn"` test (which used an
+  instant-maturity decision and asserted an *ever-widening* cash gap — exactly the bug)
+  was split into two: one confirming an already-matured decision produces **no further**
+  difference in predicted future turns, and a new one confirming a *still-maturing*
+  decision's remaining explicit-year values keep landing correctly until it matures, then
+  stop (using `suppressRevenue` to isolate the direct cash-schedule effect from
+  `New Factory`'s own `installedCapacity`-via-revenue confound — see that fixture's own
+  doc comment).
+- `server/src/engine/gameLoop.simulation.test.ts` (see above) already re-exercises this
+  fix implicitly on every run against the real decision library, and the same 100-game
+  randomized simulation run that found the bug was re-run after the fix as direct
+  empirical confirmation: final cash across 100 games narrowed from a
+  -$1.39 billion..+$49.4 billion range to -$766k..+$9.2 million, `hitRoundCap` (a game
+  never resolving within 80 rounds) dropped from 4/100 to 0/100, and median game length
+  actually *increased* (8 → 12 rounds) — consistent with games no longer being cut short by
+  one player snowballing into an unbeatable, uninteresting lead.
+
+### Decision balance adjustments (round 1: `New Factory`, `Venture Capital Shadow Money`) — data-only, in `game_engine.json`
+
+Both were flagged by the randomized-simulation findings above and fixed by explicit
+request, independently of (and before discovering) the compounding bug above — both
+remain worthwhile on their own merits regardless of that fix, though the compounding fix
+is what makes `New Factory`'s numbers actually *hold* at their new, better-balanced levels
+instead of drifting back into "too punishing" territory a few turns later.
+
+**`New Factory`** was pricing its year-1 cash cost (`-$100,000`) at exactly the player's
+entire starting cash, before any of the game's own baseline per-turn costs (~$30k
+opex+staff), with the capacity payoff not landing until the year *after* maturity (the
+`installedCapacity` boost was `default`-only). Changed: the two-year cash cost dropped
+from `{1: -100000, 2: -100000}` to `{1: -60000, 2: -60000}` (total outlay -$120k instead
+of -$200k), and `installedCapacity`'s schedule gained an explicit, smaller `2: 0.15` step
+(a partial +15% capacity benefit starting the turn *before* full maturity, on top of the
+unchanged `default: 0.4`) so the investment isn't 100% cost with 0% benefit for its entire
+maturation window. The `capacityUtilization: -0.3` ramp-up penalty was deliberately left
+unchanged (offered as optional polish, not requested).
+
+**`Venture Capital Shadow Money`** granted an instant `+$250,000` (2.5x starting cash) with
+*zero* deterministic cost — its only downside was a probabilistic, opponent-dependent
+lawsuit — and a 1-year maturity meant it was redeployable every couple of turns for
+compounding "free" cash. Gained a new `financeCost` impact,
+`{1: 0, 2: 15000, 3: 15000, 4: 15000, default: 0}` — three turns of a real, guaranteed
+$15k/turn repayment cost (total -$45k against the +$250k gain — still strongly net
+positive, but no longer *purely* free), which also extends the decision's overall maturity
+threshold from 1 to 4 (the max explicit key across all its fields), meaningfully throttling
+how often it can be chain-redeployed. Deliberately kept `financeCost`'s `default` at `0`
+(not a permanent nonzero value) specifically to avoid triggering `canDeploy`'s
+permanent-effect redeploy lock, which — keyed off `gameSettings.statuteOfLimitationsYears`,
+default 10 — would have made the decision *nearly one-time-per-game* rather than merely
+slower to chain-redeploy; a full lockout wasn't the intent, a real cost and a longer
+cooldown were.
+
+Both are data-only changes (`server/src/data/game_engine.json`), exercised automatically by
+`gameLoop.simulation.test.ts`'s runs against the real seed data — no dedicated unit test
+was added beyond that, matching this codebase's existing convention that individual
+decisions' balance numbers aren't unit-tested directly (the *engine* is tested; specific
+decision content lives in data, verified by the simulation harness and manual play). As
+with every other data-only balance edit in this file, **an already-seeded dev database
+needs `npm run db:seed` re-run** to pick these up.
+
+### Decision balance adjustments (round 2: `New Factory`'s remaining penalty, `Vertical Integration`, `Raw Material Monopoly`, `Excess Dividend`) — data-only, in `game_engine.json`
+
+A follow-up randomized-simulation run (150 games, after the compounding-mechanic fix
+above) confirmed round 1's fixes were working — `Venture Capital Shadow Money`'s win/loss
+correlation dropped from strongly winner-associated to roughly neutral — and surfaced
+four more findings, this time cross-checked against each decision's actual raw impact
+data rather than relying on correlation alone (which, as documented above, is confounded
+by survivorship — an early-eliminated player simply tries fewer distinct decisions).
+
+**`New Factory`'s `capacityUtilization: -0.3` ramp-up penalty** — left as "optional
+polish" in round 1 — turned out to still matter: it remained the clearest loser-associated
+decision in the follow-up run (winner 14% / eliminated 48%) despite the cheaper, better-
+timed cost from round 1, because the penalty cuts sellable volume by 30% at the exact turn
+`operatingExpenses` also jumps, compounding two separate blows at once. Softened to `-0.15`.
+
+**`Vertical Integration`** was pricing its entire supply-chain investment as a single
+`-$80,000` hit in year 1 alone (no spreading across years the way `New Factory` already
+did) — the least-well-timed cost curve in the library by that measure. Reduced to
+`-$50,000` (and its matching `assets` credit reduced 1:1 to `+$50,000`, keeping the
+"cash converted into assets" bookkeeping consistent), following the same ~35-40%
+reduction `New Factory` got in round 1.
+
+**`Raw Material Monopoly` had a genuine sign error, not just a cost problem.** Its own
+`materialCostPerTon` impact was **positive** (`+0.10` year 1, `+0.05` ongoing) — meaning
+the decision permanently *raised* the deploying player's own material costs, forever,
+purely as a side effect of "cornering the market" on materials. The decision's entire
+description is about hurting a rival (already correctly captured via
+`target.supplySecurity`); nothing in it suggests a self-inflicted cost. Confirmed with the
+user before changing (a directional/mechanical change, not just a magnitude tweak) —
+flipped to `-0.10`/`-0.05` (cornering the market now genuinely cheapens materials for the
+attacker, matching the description), and the `-$40,000` cash cost (already the smallest of
+the three flagged, but still real) reduced to `-$25,000`, with `intangibleAssets` reduced
+1:1 to match. Before this fix, `Raw Material Monopoly` was arguably the single worst-value
+decision in the entire library for the deploying player: pay upfront, permanently pay more
+for your own materials, risk two of the most severe legal-risk grounds in the game
+(-20%/-25% relative revenue if either lands), all to inflict a comparatively soft
+supply-security hit on one rival — worse value than even a cheap, direct decision like
+`Bot Attack`.
+
+**`Excess Dividend` had — and still has — no offsetting mechanical benefit at all.**
+`impacts: { cash: { 1: -80000 } }` and nothing else: no stock/equity boost, no risk
+reduction, no self-benefit of any kind, plus two of its own bolt-on lawsuit risks
+(creditors challenging the payout) on top. There is no reading of the decision under which
+a rational player would choose it over any other option. Addressed narrowly this round —
+cash cost cut from `-$80,000` to `-$20,000` and both legal risks' probability/impact
+schedules roughly halved — turning it from an active trap into a low-stakes, harmless
+flavor pick, **without inventing a new positive mechanic on our own authority** (a real
+fix — giving it, say, a genuine `scrutiny`- or `outrage`-reducing effect — would be
+introducing the *first* "reduce scrutiny/outrage" mechanic in the entire library, which
+this codebase's own notes elsewhere flag as not currently existing at all; that's a real
+design decision, not a data tweak, and wasn't asked for). **Confirmed the cost/risk cut
+alone did not fix the deeper issue**: a follow-up simulation check showed `Excess
+Dividend`'s win/loss correlation barely moved (still ~-30, the worst of the four
+decisions touched this round) even after the cost dropped 75% — because a strictly
+dominated, zero-benefit choice still costs a player one of their limited per-turn
+decision slots regardless of how cheap it's made. If this needs a real fix, it's "give it
+an actual purpose," not "make it cheaper" — a product decision, not something to guess at.
+
+Empirically re-verified via the same 100-game-plus randomized-simulation method as round
+1 (game length grew further, median 11 → 14 rounds; `Vertical Integration` and
+`Raw Material Monopoly`'s cash-delta-on-deployment medians both improved sharply once
+their upfront costs dropped; zero crashes, zero invariant violations, consistent with
+every other change this session). All four remain data-only edits in
+`server/src/data/game_engine.json`, covered the same way as round 1's — exercised by
+`gameLoop.simulation.test.ts` against the real seed data, no dedicated per-decision unit
+test. **An already-seeded dev database needs `npm run db:seed` re-run** to pick these up.
+
+### Randomized-simulation comparison: blind lawsuits vs. investigation-driven ("smart") ones
+
+On request, ran the same randomized-simulation approach as the two balance rounds above,
+but with a second, "smart" suing strategy layered in for direct, controlled comparison
+against the existing "blind" one (identical decision-deployment logic in both — only
+*how a player decides to sue* differs, so any measured difference is attributable to that
+alone). "Smart": each turn, dig into up to 2 incoming attacks (`GameLoop.digDeeper`,
+prioritizing whichever is already partway investigated so a half-paid investigation is
+never abandoned, and only while a real cash cushion remains), then file only over a fully
+investigated (`investigationLevel === 3`) suggested ground with a real estimated win
+chance (`successProbability > 0.2`) — i.e. an actual player using the Dig Deeper /
+suggested-ground mechanic as intended, not guessing blind. 120 games per strategy, same
+seeds, same everything else.
+
+**Zero new bugs.** 0 crashes, 0 invariant violations in *either* strategy across all 240
+games — notably including the `digDeeper` → informed-`fileLawsuit` path at real volume
+(over 10,000 `digDeeper` calls total), which the blind-only simulation never exercises at
+all since it never calls `digDeeper`.
+
+**The investigation mechanic works exactly as designed, and the numbers it surfaces are
+trustworthy.** Lawsuit win rate: blind guessing ~6.1% (consistent with every prior blind-
+suing run this session), informed (dig-then-sue) ~50.7% — roughly an 8x improvement.
+That's a meaningful validation beyond just "the feature exists": `pickBestGround`'s
+surfaced win-probability estimate (what a player actually sees before deciding whether to
+file) turned out to be a *genuinely reliable* signal in practice, not just flavor text —
+gating suits on `successProbability > 0.2` produced a real-world win rate in a sane,
+expected range (not suspiciously higher or lower than the estimate would suggest).
+Lawsuit *volume* dropped ~4.5x in the same comparison (2911 → 641 filings across the same
+120 games) — informed players are far more selective, which is the intended shape of the
+incentive ("investigate before committing," not "sue constantly and hope").
+
+**Informed suing redistributes more sharply, in both directions, than blind suing does.**
+Final cash range narrowed at the top (max dropped ~86.6M → ~24.8M) but widened at the
+bottom (min dropped ~-2.1M → ~-4.1M) compared to the blind-suing run. Makes sense on
+reflection: a wrong blind guess is usually a 0%-probability "real but hopeless" case (see
+*"SUE THEIR ASSES offers the whole decision library's grounds"* above) — it costs the
+plaintiff the filing fee but essentially never actually transfers real stakes from the
+defendant, since the odds are zero. A correctly-targeted, fully-investigated case has real
+odds of actually landing, so when it does, real (often large, since `stakes` for a
+relative-type ground scales off the defendant's own current equity/revenue — see this
+file's earlier stakes-bug section) money actually moves. Digging also meaningfully taxes
+capital on its own (~$110M total spend across the 120 "smart" games, real cash that would
+otherwise have compounded) — a secondary, incidental brake on runaway growth, not
+something added deliberately for that purpose but a real observed side effect worth
+knowing about.
+
+**No clean new decision-balance findings beyond what rounds 1-2 already found.** The same
+handful of decisions (`Business-to-Business Key Accounts`, `Patent Trolling`,
+`Talent Poaching`, `Preventive Maintenance`) showed up as loser-associated in *both*
+strategies, not just one — and none of them carry a direct `cash` impact at all (checked
+directly against `game_engine.json`), so per the standing methodology caveat (early-
+eliminated players simply try fewer distinct decisions, which alone produces a spurious
+"loser" signal for anything commonly picked), these read as the same survivorship-bias
+artifact already documented above, not a real balance problem newly exposed by smarter
+play. Worth knowing this negative result exists — "smart play didn't reveal a new
+imbalance we'd been missing" is itself useful signal that the two rounds of balance work
+already done this session covered the real issues.
+
+**Permanent regression coverage**: `server/src/engine/gameLoop.simulation.smart.test.ts`
+(new — a sibling to `gameLoop.simulation.test.ts`, same real-data/seeded-RNG approach,
+duplicated helpers rather than shared, matching this codebase's established test-file
+convention). Covers: no invariant violations / no throws across many seeds with the smart
+strategy specifically (the dedicated way `digDeeper` gets exercised at volume by any
+automated test); and a win-rate floor (`> 25%`, deliberately loose to avoid RNG flakiness
+while still catching a real regression) on lawsuits filed only after full investigation —
+guards the calibration finding above, not just "it doesn't crash."
+
+### Share ownership & majority-ownership takeover — a fully-built-out mechanic that was previously just placeholder data
+
+Buy Shares/Sell Shares used to be inert: Buy Shares had a generic `target.operatingExpenses
++15%` impact with no connection to shares at all, and Sell Shares had literally empty
+`impacts: {}`. `PlayerVariables.shareOwnership`/`totalSharesOutstanding` already existed and
+`stockValue` was already correctly computed, but nothing ever wrote to a cap table, and
+`gameLoop.ts`'s own Step 10 comment (`Check for bankruptcies & mergers`) referenced a
+mechanic that had never been implemented — flagged during an audit for hardcoded/
+unimplemented logic, then built out in full by explicit product decision.
+
+**Data model**: `shareOwnership: Record<string, number>` (fractions summing to 1.0) uses
+two reserved sentinel keys (`DecisionEngine`/`calcEngine.ts`'s `SELF_OWNERSHIP_KEY =
+'self'`, `EXTERNAL_MARKET_KEY = 'EXTERNAL_MARKET'`, matching the pre-existing seed
+convention in `game_config.json`'s `playerStartingValues.shareOwnership: { "self": 1.0 }`)
+— any other key is a real player id holding a cross-company stake. `totalSharesOutstanding`
+stays a separate absolute count, used only for `stockValue = marketEquity /
+totalSharesOutstanding` pricing.
+
+**`GameLoop.startingVars()` had a latent shared-object-reference bug this feature exposed**:
+it used to return `shareOwnership: s.shareOwnership` — the SAME object reference from
+`config.playerStartingValues` — for every player starting their first turn. Harmless while
+nothing ever mutated `shareOwnership` (true until this feature), but once Buy/Sell Shares
+actually writes to it, every still-unstarted player would have silently aliased the exact
+same cap-table object, so mutating one player's stake would corrupt every other's "starting"
+snapshot too. Fixed by spreading a fresh copy (`{ ...s.shareOwnership }`) per player. If you
+ever see a JSONB-shaped config value passed straight through into per-player runtime state
+without a shallow copy, check whether something downstream is about to start mutating it —
+this is exactly the shape of bug that stays invisible for as long as nothing writes.
+
+**`sharesAmount` (Share Issuance) is a decision-impact field that isn't a real
+`PlayerVariables` field at all** — it existed in the seed data from the start
+(`{1: 50000, default: 0}`) but was silently a no-op (nothing read it) until this feature.
+`calcEngine.ts`'s `applyDecisionImpacts` now special-cases and skips it in its generic loop
+exactly the way `target.*`/`competitor*` fields already are (same pattern, same reason: not
+a field the generic `(v as any)[field] += value` write is correct for) — a positive value on
+the deployment year triggers `applySharesAmount`, which increases
+`totalSharesOutstanding` and dilutes every existing `shareOwnership` key proportionally,
+crediting the new shares 100% to `EXTERNAL_MARKET`. Gated to `elapsedYears === 0` on
+purpose, mirroring the depreciation-entry gate above — without it, a decision with a
+nonzero `default` schedule value for this field would re-issue new shares every turn
+forever.
+
+**Buy Shares' own `impacts` was cleared to `{}`** (its old `target.operatingExpenses +15%`
+was placeholder filler standing in for the unbuilt mechanic) and it gained
+`shareTransactionType: 'buy'` — a new, generic, admin-editable `DecisionDefinition` field
+(`'buy' | 'sell'`), read the same way everywhere: **never** a hardcoded
+`decisionName === 'Buy Shares'` check, which would be exactly the class of bug just fixed
+for `DEPRECIATING_ASSETS` above. Sell Shares gained `shareTransactionType: 'sell'` (its
+`impacts` was already empty). `SubmittedDecisionEntry` gained `amount?: number` — the
+player-chosen dollar investment/sale amount, since these are the two decisions in the
+library that don't apply a fixed schedule at all.
+
+**A new turn-resolution step ("Step 1b") runs between Step 1 and Step 2** — right after
+`processNewDecisions` (so a Buy/Sell Shares instance already exists, matured instantly since
+its `impacts` is empty, with completely normal maturity/level-limit/UI bookkeeping — no
+special-casing needed there at all) but before `advanceAndApply`. `processNewDecisions` was
+extended to also collect a `ShareTransactionRequest` queue for exactly the entries it
+actually deployed (mirroring its existing `newDecisionAbsDeltas` collection pattern) — this
+is deliberate: some submitted entries get dropped by `canDeploy`/a level-limit check, and
+only ones that actually deployed should ever execute a real trade. Step 1b groups the queue
+by target, sorts each group by submission timestamp (see below), and applies transactions
+sequentially via `GameLoop.applyShareTransaction`.
+
+**Why trades price off `stockValue` as it stood at the START of the turn, not a freshly
+recomputed one**: `stockValue` is only recomputed once per turn, in the balance-sheet step
+(much later than Step 1b) — waiting for it would mean either restructuring the whole step
+order or accepting a circular dependency (decisions processed before the balance sheet that
+needs decisions already applied). Using last turn's closing price avoids this entirely, at
+the cost of a stock crash from a lawsuit this turn only becoming buyable at that crashed
+price starting *next* turn, not the instant it happens — an accepted product tradeoff, not
+an oversight.
+
+**The pro-rata dilution formula is genuinely uniform — self-buyback and stacking multiple
+buyers need zero special-casing.** A purchase of `fractionBought` (=
+`min(1, sharesBought / totalSharesOutstanding)`, where `sharesBought = spend / stockValue`,
+or the whole company for whatever was paid if `stockValue` is exactly 0 — a deliberate
+"can be bought for free" design choice) scales down EVERY existing `shareOwnership` key by
+`(1 - fractionBought)`, then credits the buyer's own key (their real player id, or
+`SELF_OWNERSHIP_KEY` if the buyer *is* the target's own founder) with the full
+`fractionBought` on top. Self-buyback (reclaiming stake previously diluted to
+`EXTERNAL_MARKET`) falls out of this exact same formula for free: the buyer's key in their
+own company's map is already `SELF_OWNERSHIP_KEY`, so it's diluted like everyone else and
+then gets the full purchased block back — no `if (buyer === target)` branch needed anywhere.
+The buyer's cash decreases by the full spend; every *other* diluted key that maps to a real
+player (never `EXTERNAL_MARKET`, which absorbs its own dilution with no counterparty; never
+the buyer's own key, which would mean paying yourself) receives its pro-rata share of that
+spend in cash — a confirmed product decision (the original spec was silent on where the
+buyer's money goes to the *other* diluted owners specifically).
+
+**Stacking two purchases against the same target in one turn is a real, intentional
+mathematical property worth understanding before "fixing" it**: since `fractionBought` is
+always computed against the *whole* company (not "what's currently unowned"), a second
+buyer of the same size as an earlier one in the same turn dilutes the earlier buyer's stake
+too, ending up proportionally *larger* than the first buyer — e.g. two sequential 50%
+purchases land at 25%/50% (founder/first buyer both diluted by the second's purchase), not a
+clean 50/50 split. This is the correct, literal consequence of "pro-rata from
+ALL current owners, including EXTERNAL_MARKET" applied sequentially, not a bug — being
+"first" only protects you from purchases that happened *before* yours, never from ones that
+come after. `gameLoop.test.ts`'s FIFO regression test asserts this exact 0.25/0.25/0.5
+outcome, not the more intuitive-sounding 0.5/0.25 split a naive reading might expect.
+
+**FIFO ordering needed a real server-arrival timestamp, and a naive
+"stamp `Date.now()` on every `submitDecisions` call" implementation would have been
+silently wrong** — `game:submitDecisions` is full-replacement (see *Everything per-round is
+client-full-replacement* above): the client resends a player's *entire* pending state on
+every single toggle, so a per-call timestamp would reflect whenever the player last touched
+*anything*, not when they specifically added Buy Shares. `GameLoop` tracks a second map,
+`submissionTimestamps` (room → player → per-entry key → first-seen `Date.now()`), keyed by
+`${bucket}:${name}:${targetId ?? ''}` — only a key not already present for that player this
+turn gets a fresh stamp; a key that survives across resubmits keeps its original one.
+Cleared alongside `clearSubmissions()`. `gameLoop.test.ts` has a dedicated regression test
+proving an unrelated resubmit (adding some other decision to the same submission) doesn't
+reset an already-queued Buy Shares entry's timestamp.
+
+**`isIndirectEffect` needed a `targetId` parameter, or Buy Shares would misclassify as
+"indirect" (broadcast to every other player) despite being a real, single-target attack.**
+Clearing Buy Shares' `impacts` to `{}` means `extractTargetImpacts(...).size === 0` — the
+exact condition `isIndirectEffect` used to treat as "no single target, tell everyone." Fixed
+by threading the instance's own `targetId` through: it's only classified indirect when
+`targetImpacts.size === 0 && targetId === undefined`. This changes behavior for exactly one
+case in the whole 45-decision library (Buy Shares now/Sell Shares never, since its
+`legalRisks` is empty regardless) — every other decision either has real `target.*` fields
+(never indirect) or has neither `target.*` nor a `targetId` at all (unaffected). The three
+call sites that read this classification (`buildIncomingAttacks`, Step 8's
+`plaintiffFullyInvestigated` lookup, `digDeeper`'s attacker search) also each needed their
+own `targetImpacts.size === 0` gate loosened specifically for
+`shareTransactionType === 'buy'` (never `'sell'`, which isn't an attack on anyone and has no
+`legalRisks` to reveal regardless) — otherwise a real direct attack with no `target.*`
+impacts would still fall through a check written for "no target.* impacts means nothing to
+reveal," which stopped being universally true the moment Buy Shares existed.
+`revealAttack`'s tier-2 `effectSummary` also needed a Buy-Shares-specific branch
+(`Acquired N% ownership stake`, from the instance's own `acquisitionFraction`) since there's
+no `target.*` schedule value to summarize generically for it.
+
+**`legalRiskConditions.minPercentAcquiredInSingleTransaction` was previously dead config**
+(seeded, validated, never read) — now wired in generically via
+`DecisionEngine.meetsLegalRiskConditions(def, instance)`, which checks the instance's own
+`acquisitionFraction` (stamped once at execution time in `applyShareTransaction`, threaded
+through the same round-trip points `voidedByLawsuit`/`everSued` already go through) against
+whatever threshold a decision's `legalRiskConditions` bag specifies — keyed off the
+data-driven field, not a hardcoded name, the same principle as `shareTransactionType`.
+`LegalEngine.fileLawsuit` and `DecisionEngine.pickBestGround` both gained this as one more
+condition that floors probability to 0 (same shape as `timeBarred`/`alreadyClaimed`) — a
+purchase too small to cross the threshold was never really suable to begin with.
+
+**Majority-ownership elimination reuses the bankruptcy case waterfall
+verbatim** — `distributeCaseWaterfall` (extracted from what used to be an inline loop tied
+only to `playersToBankrupt`) is the one place this payout math lives, callable for either
+elimination reason, on the principle that "the same rule applies to both
+bankruptcy and merger." For a merger specifically, the acquirer additionally inherits the
+eliminated company's cash/assets/intangibleAssets (a confirmed product decision beyond what
+the original spec describes, which only ever specifies elimination) — deliberately NOT
+debt, NOT active decisions/production variables, and NOT legal cases (those already lapsed
+via the waterfall call). Two more things this needed, both easy to miss:
+
+- **Precedence when a prospective acquirer is themselves going bankrupt the same turn**: a
+  bankrupt player can't complete a takeover — they're leaving the game too — so
+  `playersToMerge`'s detection loop explicitly excludes any acquirer already in
+  `playersToBankrupt`. Their pending majority stake simply doesn't trigger anything this
+  turn; it gets swept to `EXTERNAL_MARKET` by the cleanup below like anyone else's.
+- **Cross-holding cleanup**: any player eliminated this turn (either reason) has their stake
+  in every *other* company's `shareOwnership` swept back to `EXTERNAL_MARKET`. Without this,
+  a departed player's stake would sit forever in someone else's cap table — permanently
+  un-payable (their `ctxs` entry no longer exists to receive dilution cash) and
+  un-reclaimable (nothing else ever removes a key from `shareOwnership`). This is also what
+  makes the bankrupt-acquirer precedence rule fully resolve rather than leaving a stale
+  majority claim: the failed acquirer's stake becomes `EXTERNAL_MARKET`'s, which can never
+  itself trigger an elimination.
+
+`gameLoop.test.ts`'s "Buy/Sell Shares" and "majority-ownership takeover elimination" describe
+blocks are the regression coverage for all of the above — extend those, not just the happy
+path, if you touch any part of this mechanic again. Note the bankruptcy-determinism pattern
+those tests reuse from elsewhere in the file: a player fixture needs `installedCapacity: 0,
+capacityUtilization: 0` to suppress volume/revenue entirely, or a turn's ordinary P&L can
+swing cash by amounts large enough to make a "should end up bankrupt" fixture flip sign
+unpredictably.
+
+### OWNERSHIP (CAP TABLE) — the STOCK VALUE drill-down shows who actually holds the shares, not just what they're worth
+
+The mechanic above wrote to `shareOwnership` from the start, but nothing ever *displayed*
+the resulting cap table — `ShareView` (the STOCK VALUE drill-down) only ever showed the
+factors that set the stock *price* (processing level, supply security, etc.), never who
+owns how much of the company at that price. `CapTableSection` (`GamePhase.tsx`) closes that
+gap: a horizontal stacked bar (same visual language as the pre-existing "YOUR SHARE VS
+RIVALS" market-share bar) plus a per-holder row list (name, %, share count, $ value),
+sorted largest stake first. It's shared, unmodified, between two call sites — `ShareView`
+(`target` is always the viewer's own company) and `RivalFullReportView`'s Full Filing
+report (`target` is always a rival's) — since the only thing that differs between them is
+which `PlayerTurnResult` is being inspected; `RivalFullReportView` gained two new required
+props (`myData`, `competitors`) purely to have a full player roster available for name
+resolution (see below), and its one call site in `GamePhase.tsx` gained a `myData &&` guard
+it didn't need before, since `myData` can genuinely be `null` before round 1 resolves.
+
+**Deliberately no separate "takeover risk" callout or warning threshold color** — this was
+an explicit product decision (offered as one of several layout options, not picked): the
+bar and the sorted list already put the largest outside stake at the top with its exact
+percentage labeled, and restating "someone else owns 42%" in a second warning banner
+underneath doesn't add information, just noise. If a future request specifically wants an
+at-a-glance "you're close to losing to a takeover" signal, that's a status-colored addition
+on top of this component, not a reason to rebuild it.
+
+`buildCapTable(target, viewerId, allPlayers)` is the pure function behind it, and is where
+almost all the actual logic lives — `shareOwnership`'s three kinds of key each need
+different name resolution, and the *same* key can mean a different thing depending on
+whether `target` is your own company or a rival's:
+- `SELF_OWNERSHIP_KEY` ('self') — the target company's own founder's stake. Labeled "You"
+  (in red, `#dc2626`, this app's consistent identity color for the viewer throughout —
+  `LostOverlay`, the market-share bar's own row, etc.) when `target.playerId === viewerId`
+  (viewing your own cap table); labeled with `target.playerName` (in gray, `#9ca3af`) when
+  it isn't (viewing a rival's — this is *their* founder stake, not yours).
+- `EXTERNAL_MARKET_KEY` ('EXTERNAL_MARKET') — the public float. Always "Public Market",
+  always the lightest gray (`#d1d5db`), regardless of whose company this is.
+- Any other key is a real playerId — a player (you or a rival) who bought a stake in this
+  company via Buy Shares. `key === viewerId` is labeled "You" (red) even when `target` is a
+  rival's company — this is the one case where "you" shows up as a *plain* key rather than
+  under `SELF_OWNERSHIP_KEY`, since your stake in someone else's company was never yours by
+  founding. Every other real-playerId key is resolved to a name by scanning `allPlayers`
+  (the viewer's own snapshot + every currently-active rival, i.e. `[myData, ...competitors]`
+  at both call sites) and cycles through a small fixed 4-color set
+  (`OTHER_HOLDER_COLORS` — blue/violet/teal/burnt-orange) in the order those rows appear
+  post-sort (largest such stake gets the first color), rather than being assigned by a
+  stable per-player identity — a 5th+ such holder reuses an earlier color rather than
+  generating a new indistinguishable hue, matching this skill-guided app's "never a
+  generated hue" categorical-color rule. A key matching no one in `allPlayers` (a holder
+  eliminated since the stake was recorded) falls back to a generic "Former Shareholder"
+  label rather than erroring — expected to be only ever transiently stale, since an
+  eliminated player's stake is swept to `EXTERNAL_MARKET` server-side the same turn (see
+  *Share ownership & majority-ownership takeover*'s "Cross-holding cleanup" above).
+
+`GamePhase.utils.test.ts`'s `buildCapTable` describe block is the regression coverage —
+own-company vs. rival-company self-key labeling, the viewer's-own-plainkey-in-a-rival's-cap-
+table case, third-party name resolution via `allPlayers`, the eliminated-holder fallback,
+the near-zero-fraction filter, and the other-holder color cycling order — extend that, not
+just the happy path, if you touch this again.
+
+### Risk Gauge takeover term — the Threat Level gauge used to know nothing about majority-ownership takeover risk
+
+Audited on request ("does Threat Level account for ownership getting low?") and confirmed
+as a real, shipped gap: the Risk Gauge was originally a fixed 3-term blend — legal
+exposure ratio, scrutiny, outrage (`w1=0.5, w2=0.25, w3=0.25`) — with **zero** signal from
+`shareOwnership`, even though majority-ownership takeover (*Share ownership &
+majority-ownership takeover* above) is a fully independent way to lose the game, exactly
+as final as bankruptcy. A player could sit at a comfortable, all-green Threat Level while
+a rival held 48% of their company, one Buy Shares away from an instant, no-warning
+elimination — the gauge is this game's one "am I in danger" glance, and it was silent
+about an entire loss condition. `riskGauge` itself is purely computed/display data
+(nothing else in the engine reads it — confirmed by grep before making this change), so
+nothing else was compensating for the gap either.
+
+**Fixed by adding a 4th weighted term, `w4*ownershipRisk`, rather than a separate second
+meter** — a deliberate product decision (offered as one of two options, not assumed): one
+glanceable danger number stays consistent with what this gauge already is, at the cost of
+rebalancing the existing weights to make room. Seeded defaults changed from `w1=0.5,
+w2=0.25, w3=0.25` to `w1=0.4, w2=0.2, w3=0.2, w4=0.2` (`game_config.json`,
+`RiskGaugeConfig.riskWeightOwnership_w4` — a new admin-editable field, same DB-backed
+story as the other three weights). This is a deliberate deviation from the gauge's
+original 3-term design, same category as the negotiation phase and statute of limitations
+(see *Deliberate deviations from the design spec*) — documented here since there's no
+separate spec document to annotate, per this codebase's established convention.
+
+**`calcEngine.ts`'s `calculateOwnershipRisk(shareOwnership, takeoverThresholdPercent)`** is
+the new term's source: the *single largest* real-player (non-`SELF_OWNERSHIP_KEY`,
+non-`EXTERNAL_MARKET_KEY`) stake, scaled linearly against `takeoverThresholdPercent` (0 at
+0% held, 1.0 right at the threshold, capped at 1 beyond it) — deliberately **not**
+`1 - selfOwnership`, the simpler alternative that was also offered and not picked. The
+actual elimination trigger only cares about one player crossing the threshold, so this
+correctly reads dilution spread thin across several minority holders or the public float
+as low risk, while a single concentrated buyer closing in reads as high risk even while
+the founder's own stake is still comfortably above 50%. `EXTERNAL_MARKET` is excluded for
+the same reason it's excluded from the elimination check itself — it can never be the
+acquirer. `calculateRiskGauge` now destructures `riskWeightOwnership_w4` and
+`admin.ownership.takeoverThresholdPercent` alongside its existing inputs and passes both
+`w4`/`ownershipRisk` into `evalNamed(formulas, 'riskGauge', {...})` — `FORMULA_VARIABLES.
+riskGauge` in `validation/schemas.ts` gained both identifiers in its whitelist, and the
+`riskGauge` formula's seeded expression (`defaultFormulas.ts`) gained the `+
+w4*ownershipRisk` term (already pre-clamped to `[0,1]` in code, so not re-wrapped in
+`MIN(1, ...)` the way `scrutiny`/`absOutrage` are — same "clamp once, at the point it's
+computed" convention `legalExposureRatio` already established for this formula).
+
+**Fixed a genuinely separate, pre-existing dead-config bug along the way, not scope
+creep**: `admin.ownership.takeoverThresholdPercent` already existed in
+`OwnershipConfig`/`game_config.json`/`validation/schemas.ts` (seeded, validated,
+admin-editable) but the actual elimination check in `gameLoop.ts` (Step 10's
+`playersToMerge` detection) hardcoded `fraction > 0.5` directly and never read it — the
+exact same class of bug already found and fixed once for
+`legalRiskConditions.minPercentAcquiredInSingleTransaction` (see *Decisions/config are
+DB-backed* above). Since the new risk-gauge term legitimately needs this same threshold
+value as its denominator, wiring `gameLoop.ts`'s check to read
+`this.adminVars.ownership.takeoverThresholdPercent` (instead of adding a second,
+independently-hardcoded `0.5`) was both the correct implementation choice and a real fix —
+an admin-lowered threshold now actually changes when a takeover triggers, not just what
+the gauge displays. Default value unchanged (`0.5`), so this has zero effect on any
+existing game unless an admin edits it. `gameLoop.test.ts` gained a dedicated regression
+pair for this (`'honors an admin-configured takeoverThresholdPercent below 50%'` /
+`'does not trigger at 35% under the default 50% threshold'`) — extend those, not just the
+ownership-risk-term tests, if you touch this threshold again.
+
+**Client-side `ThreatView` (`GamePhase.tsx`) needed the identical duplicated-formula
+treatment `computeThreatTerms` already gets** — the headline Threat Level number on the
+KPI card is always the server's authoritative `riskGauge`, but the breakdown modal
+recomputes its own copy client-side (same "duplicate small pure logic, keep in sync by
+hand" convention as `computeOfferBracket`/`getDeployability`). `THREAT_W1-3` were
+rebalanced to match the new seeded defaults, a new `THREAT_W4`/
+`THREAT_TAKEOVER_THRESHOLD_PERCENT` pair and `computeOwnershipRisk` (mirroring
+`calculateOwnershipRisk`) were added, and the new "Ownership / takeover risk" row is
+**deliberately not clickable** — there's no single persisted numeric field for "largest
+external shareholder's stake" to open a `KpiHistoryGraph` for, the same "derived-of-derived,
+not a tracked field" treatment `CashWaterfallView`'s COGS/EBITDA rows already get (see *KPI
+History & Prediction* in README). As with every other hardcoded client-side mirror of an
+admin-editable constant in this file, these will silently drift from a live `/admin` edit
+to the weights — an existing, accepted limitation of the mirroring convention, not
+something this change was expected to solve.
+
+An already-seeded dev database predates `riskWeightOwnership_w4` the same way it predates
+every other admin-config field added this way — `npm run db:seed` (safe, an upsert that
+fully replaces `gameSettings`/`adminVariables` from the JSON files) needs a re-run before a
+local game reflects the new weights; until then Prisma returns `undefined` for the new
+field at runtime.
+
+`GamePhase.utils.test.ts`'s `computeThreatTerms` describe block and `calcEngine.test.ts`'s
+`calculateOwnershipRisk`/extended `calculateRiskGauge` describe blocks are the regression
+coverage — extend those, not just the happy path, if you touch this mechanic again.
+
+### Risk Gauge solvency term — a 5th term for "could my open lawsuits actually bankrupt me next turn," requested and clarified before implementing
+
+Added immediately after the takeover term above, on explicit request: "predicted cash in
+next turn vs. open lawsuits against player." Both halves of that phrase had more than one
+reasonable reading, so this was clarified before writing any formula — see the four-
+question exchange in conversation for the options considered; the choices actually made
+are recorded below, since only the *decision*, not the discarded alternatives, is worth
+keeping long-term.
+
+**"Predicted cash next turn" is a naive linear extrapolation, not the real prediction
+engine — a real engineering constraint, not a shortcut taken for convenience.** This
+game already has a genuine forward-looking cash predictor
+(`GameLoop.predictFutureKpis`, the one behind the KPI history graphs' dashed
+continuation) — but it works by re-running the full turn-resolution engine in a sandbox,
+and the Risk Gauge is computed **from inside** `resolveTurn` itself, for every player,
+every turn. Reaching for `predictFutureKpis` from `calculateRiskGauge` would mean
+`resolveTurn` recursively calling itself once per player on every single turn resolved by
+the game — a real recursion/performance risk, considered and explicitly rejected in favor
+of a cheap, synchronous alternative:
+
+```
+predictNextTurnCashLinear(cashAfterThisTurn, cashBeforeThisTurn)
+  = cashAfterThisTurn + (cashAfterThisTurn - cashBeforeThisTurn)
+```
+
+"If this turn's trend continues, where does cash land next turn." `cashBeforeThisTurn` is
+`PlayerTurnContext.prevCash` — a field that already existed for an unrelated purpose (the
+bankruptcy waterfall pool calculation, `distributeCaseWaterfall`), snapshotted once at the
+very top of `resolveTurn`'s per-player loop, before that turn's own P&L/balance-sheet
+math has touched `ctx.vars.cash` at all. Reusing it here needed zero new state — this
+term's entire "prediction" is two already-available numbers subtracted and added back.
+
+**"Open lawsuits against player" reuses the exact same probability-weighted aggregate the
+existing legal-exposure-ratio term (w1) already computes** — `legalExposure = Σ
+(case.probability × case.stakes)` for every open case where this player is defendant — a
+case you're likely to lose counts more than a hopeless one, same as w1. The two terms are
+still meaningfully distinct despite sharing this input: w1 divides by **current** cash and
+feeds `adjustedProbability`'s snowball effect (more open cases relative to cash makes every case
+more likely to succeed too); this new term (w5) divides by **projected next-turn** cash
+and asks a narrower, purely forward-looking question — "given where cash is trending,
+could these open cases actually break me next turn" — with no snowball feedback into
+anything else.
+
+**The combination is a solvency/coverage ratio, capped at 1, with a small floor guarding
+the division**:
+
+```
+calculateSolvencyRisk(legalExposure, predictedNextCash)
+  = 0                                                    if legalExposure <= 0
+  = MIN(1, legalExposure / MAX(predictedNextCash, 1))    otherwise
+```
+
+The `MAX(predictedNextCash, 1)` floor (`SOLVENCY_RISK_CASH_FLOOR`) is what keeps this
+well-behaved once a company is already trending toward insolvency: without it, a
+predicted cash at exactly 0 would divide by zero, and a negative predicted cash would flip
+the ratio's sign (reading as *less* dangerous the more insolvent the trend gets, which is
+backwards) — instead, any nonzero exposure against an at-or-below-zero predicted cash
+reads as the maximum, 1.
+
+**Weights rebalanced again**, same "even cut from every existing term" approach the
+takeover term used, per explicit confirmation: `w1=0.4, w2=0.2, w3=0.2, w4=0.2` →
+`w1=0.32, w2=0.16, w3=0.16, w4=0.16, w5=0.2`. `RiskGaugeConfig` gained
+`riskWeightSolvency_w5`; `game_config.json`, `validation/schemas.ts`'s `riskGauge` zod
+object and `FORMULA_VARIABLES.riskGauge` whitelist (now including `w5`/`solvencyRisk`),
+and `defaultFormulas.ts`'s seeded `riskGauge` expression (`+ w5*solvencyRisk`, already
+pre-clamped to `[0,1]` in code so not re-wrapped in `MIN(1,...)`, same treatment
+`ownershipRisk` already gets) all moved together — same DB-backed, admin-editable story
+as every other Risk Gauge weight; see *Formulas are DB-backed* below.
+
+`calculateRiskGauge`'s new `prevCash` parameter is **optional, defaulting to `vars.cash`**
+(assume no trend) — the same "default that preserves every pre-existing call site's
+behavior unchanged" convention `statuteOfLimitationsYears`'s `= Infinity` default
+established (see *Statute of limitations* above). The one real production call site inside
+`resolveTurn`'s Step 11 passes `ctx.prevCash` explicitly; `getInitialSnapshot` (round 1,
+before any turn has resolved, where `openCases` is always empty anyway) doesn't pass it at
+all and relies on the default — harmless, since with zero legal exposure the term is 0
+regardless of what "predicted cash" comes out to.
+
+**Client-side `ThreatView` mirrors this with a real accuracy advantage over a naive
+reimplementation, not just a duplicate**: `computeThreatTerms` already gets called once for
+the current turn and once for the previous turn (for each row's trend arrow), and
+`GamePhase.tsx` already keeps exactly one turn of prior state (`prevData`) — so
+`prevCash` for the *current* turn's calculation is simply `prevData.variables.cash`, no new
+data needed. For the legal-exposure input, the client deliberately does **not**
+reverse-derive it from `legalExposureRatio` (which is already capped by
+`legalExposureRatioCap` server-side) — that would silently understate exposure for
+exactly the players this term cares about most (already deep in legal trouble, ratio
+pinned at the cap). Instead it recomputes the same raw sum directly from
+`data.legalCases` (`computeOpenLegalExposure`), which the client already has in full —
+more accurate than the ownership term's mirror, not just consistent with it. The row is
+non-clickable, same "derived-of-derived, no single tracked field to chart" treatment the
+ownership row already gets. One accepted approximation: the *previous* turn's own point
+(used only to diff against, for the trend arrow) has no `prevCash` of its own further back
+in client state, so it falls back to assuming no trend for that one historical point —
+`GamePhase.utils.test.ts`'s test fixtures make this fallback explicit rather than hiding
+it.
+
+`calcEngine.test.ts`'s `predictNextTurnCashLinear`/`calculateSolvencyRisk` describe blocks,
+the extended `calculateRiskGauge` describe block (a rising vs. falling trend producing
+different gauge values from identical current cash/exposure, and the `prevCash` default
+matching an explicit flat-trend call), `gameLoop.test.ts`'s dedicated regression test
+(proving `resolveTurn` actually threads real `ctx.prevCash` through rather than silently
+falling back to the "no trend" default — isolates the whole gauge to w5 and asserts a real
+declining trend reads as strictly more dangerous than the same post-turn state would under
+the default), and `GamePhase.utils.test.ts`'s extended `computeThreatTerms` describe block
+are the regression coverage — extend those, not just the happy path, if you touch this
+mechanic again.
+
+### Formulas are DB-backed — but only the pure-math half of the turn-resolution math
+
+The turn-resolution math (competitiveness/market share, volume, P&L, balance sheet,
+legal-risk probability, risk gauge) is a mix of two different kinds of logic, and only
+one kind is DB-backed:
 
 - **Pure, scalar, named-input math** — e.g. `competitiveness_i = (1/price_i) * (1 +
   wq*processingLevel_i + ...)` — 23 named formulas, each a single arithmetic expression
@@ -987,9 +2108,9 @@ is DB-backed:
   (the single source of truth both `prisma/seed.ts` and `calcEngine.test.ts`/
   `gameEngine.test.ts` build their fixtures from — never fork this list), and are
   editable live from `/admin`'s Formulas tab.
-- **Everything procedural/order-dependent elsewhere in FORMULAS.md** (the VAIHE A-G
-  execution order, depreciation ledger iteration §1, decision maturity/exclusion locking
-  §9-10, bankruptcy waterfall distribution §11/§16, simultaneous-purchase FIFO §14) is
+- **Everything procedural/order-dependent** (the turn execution order, depreciation
+  ledger iteration, decision maturity/exclusion locking, bankruptcy/merger waterfall
+  distribution, simultaneous-purchase FIFO) is
   **not** represented as data — it's control flow, loops over dynamic collections, and
   multi-player ordering guarantees, not "a formula" in the tunable-math sense. This stays
   as TypeScript, unchanged, and always will — don't try to make it data-driven too.
@@ -1099,7 +2220,38 @@ build step is needed to see changes during dev, only for production builds.
   deployed by the target (a guess)" test are the regression coverage for the wrong-guess-
   still-creates-a-0%-case behavior described in *SUE THEIR ASSES offers the whole decision
   library's grounds* above — extend those, not just the "target actually did it" happy
-  path, if you touch `fileLawsuit` again.
+  path, if you touch `fileLawsuit` again. `decisionEngine.test.ts`'s `hasPermanentEffect`
+  describe block and its `canDeploy` describe block's "permanent-effect redeploy lock"
+  nested block (including its statute-of-limitations-aged cases), plus `gameLoop.test.ts`'s
+  "resolveTurn — lawsuit voids the sued decision (regression)" describe block (a plaintiff
+  trial win voids + unfreezes redeployment + cancels forthcoming effects; a defendant trial
+  win does not; a Step 8b stale-offer auto-settle also voids), are the regression coverage
+  for *Winning a case voids the sued decision instance* above — extend those, not just the
+  happy path, if you touch `voidSuedDecisionInstance`/`hasPermanentEffect`/`canDeploy`'s
+  permanent-effect gate again. `decisionEngine.test.ts`'s `advanceAndApply`/
+  `collectTargetImpacts` describe blocks (stopping a permanent own/`target.*` effect once
+  aged past the statute, forcing `isMatured` on an admin-configured short statute, and NOT
+  cutting off a non-permanent decision's legitimately long explicit schedule) and
+  `gameLoop.test.ts`'s "resolveTurn — a permanent effect naturally expires at the statute of
+  limitations (regression)" describe block are the regression coverage for that natural-
+  expiration mechanic — extend those, not just the lawsuit-voiding path, if you touch the
+  statute-of-limitations gates in `advanceAndApply`/`collectTargetImpacts` again.
+  `decisionEngine.test.ts`'s `pickBestGround` describe block covers the new
+  `alreadyClaimed` parameter (floors to 0 independent of `timeBarred`), and
+  `gameLoop.test.ts`'s "resolveTurn — one lawsuit per decision instance, ever (regression)"
+  describe block is the end-to-end coverage for *Only one lawsuit per decision instance,
+  ever* above (same-turn second plaintiff gets the hopeless shape; still blocked several
+  turns after the original case has dropped out of persisted `legalCases`; a freshly
+  redeployed instance of the same name can be sued again) — extend those, not just the
+  happy path, if you touch `everSued`/Step 8's filing loop again. `calcEngine.test.ts`'s
+  `sharesAmount`/`renormalizeShareOwnership` describe blocks, `decisionEngine.test.ts`'s
+  `meetsLegalRiskConditions` describe block, and `gameLoop.test.ts`'s "Buy/Sell Shares"
+  and "majority-ownership takeover elimination" describe blocks are the regression
+  coverage for *Share ownership & majority-ownership takeover* above (dilution math,
+  self-buyback, FIFO ordering surviving an unrelated resubmit, `isIndirectEffect`
+  staying direct for Buy Shares, `legalRiskConditions` gating, waterfall reuse, acquirer
+  inheritance, bankrupt-acquirer precedence, cross-holding cleanup) — extend those, not
+  just the happy path, if you touch any part of this mechanic again.
 - `client/src/**/*.test.ts` — Vitest, Zustand stores and pure UI utilities.
   `GamePhase.utils.test.ts` deliberately duplicates small pure functions out of
   `GamePhase.tsx` (`fmt`, `getGroundsAgainst`, `detectNewlySuedCases`,
@@ -1109,7 +2261,11 @@ build step is needed to see changes during dev, only for production builds.
   `detectNewlyResolvedCases`/`detectNewlySettledCases` are each covered from both
   plaintiff and defendant perspectives, including the verdict-flip case (a `'lost'`
   verdict is a *win* for the defendant) — see *Post-turn events are a passive, clickable
-  News feed* above.
+  News feed* above. `getSortableKpiFields`/`getDecisionSortValue` (duplicated the same way)
+  cover the Decision Deck's KPI sort — deduplication, excluding `target.*`/`competitor*`
+  fields, sorting by human-readable label rather than raw field name, and the year-1/
+  default/0 fallback chain — see *The Decision Deck also has a search field and a KPI
+  sort* above.
 - `tests/api/*.test.ts` — Vitest + real Postgres via testcontainers (needs Docker).
   The only layer that actually verifies socket event contracts end-to-end
   (`game:submitDecisions`, `turn:resolved`, `game:over`) against a real Prisma schema.
@@ -1121,19 +2277,19 @@ build step is needed to see changes during dev, only for production builds.
 
 ### Deliberate deviations from the design spec
 
-`FORMULAS.md` (§6/§13) specifies that every decision with `legalRisks` automatically
+The original game design specified that every decision with `legalRisks` automatically
 generates a lawsuit from every other player the instant it's deployed. The implemented
 behavior is different by explicit product decision: lawsuits are filed deliberately by
 players via `game:submitDecisions`'s `lawsuits` array, priced by `LegalEngine.fileLawsuit`
 against the ground's probability schedule at the target decision's elapsed time. If a
-task asks you to "match FORMULAS.md exactly" on this point, flag the conflict rather than
-silently reverting the deliberate-filing design — see README's *Lawsuits* section and
+task asks you to "match the original spec exactly" on this point, flag the conflict rather
+than silently reverting the deliberate-filing design — see README's *Lawsuits* section and
 `GameLoop`'s Step 8 / `LegalEngine.fileLawsuit` for context.
 
-FORMULAS.md doesn't model a negotiation phase at all — a filed case just resolves via a
-probability draw. This codebase's richer `'negotiating'` status, with a real settlement
-negotiation flow on top (offer/counter/accept/go-to-court — see *"Settlement negotiation"*
-below), is a further addition beyond spec.
+The original design never modeled a negotiation phase at all — a filed case just resolves
+via a probability draw. This codebase's richer `'negotiating'` status, with a real
+settlement negotiation flow on top (offer/counter/accept/go-to-court — see *"Settlement
+negotiation"* below), is a further addition beyond spec.
 
 ### SUE THEIR ASSES offers the whole decision library's grounds, not just a target's actual ones — guessing wrong still creates a real (hopeless) case
 
@@ -1196,16 +2352,74 @@ attack can't exist to dig into before a turn has deployed one) to match `resolve
 alone — a case can only exist after a turn has already resolved at least once, so its
 identical `readVariables` call is provably never reachable with unpopulated variables.
 
+### A `relative`-type legal risk's stakes must be scaled against the defendant's own field value — reading the raw schedule fraction as dollars silently produced near-zero stakes
+
+A real, reported bug: filing over Hype Initial Coin Offering's "Unfair Competition &
+Fraudulent Capital Procurement Action" ground showed a settlement bracket of "min $0 max
+$0", and a defendant who lost the case at trial saw "You paid $0 to `<plaintiff>`". Both
+symptoms trace to the same root cause in `LegalEngine.fileLawsuit`'s `stakes` calculation.
+
+Every `LegalRiskDefinition.impact` has a `type` (`'absolute' | 'relative'`) and a `target`
+field name, mirroring how a decision's own `impacts` work — but `fileLawsuit` used to
+compute `stakes` as `Math.abs(risk.impact.schedule['default'] ?? risk.impact.schedule[1] ??
+0)` unconditionally, ignoring `type`/`target` entirely. That's correct for an `absolute`
+ground (58 of 83 in the real library, all `target: 'cash'`) — the schedule value already
+*is* the dollar figure. It's wrong for a `relative` ground (the other 25, `target: 'equity'`
+or `'revenue'`) — there, the schedule value is a **fraction** (e.g. `-0.45`) meant to be
+scaled against the defendant's own current value of that field, per the same "relative-type
+impact ⇒ multiply by the defendant's current field value" convention decision impacts
+already follow. Reading `-0.45` directly as dollars produced `stakes = 0.45` — real money,
+just off by a factor of the defendant's entire equity — which rounds to display as "$0"
+everywhere stakes are shown (`computeOfferBracket`'s `max = caseData.stakes`, and the
+plaintiff/defendant "You paid/received `{fmt(c.stakes)}`" trial-outcome line in
+`GamePhase.tsx`).
+
+Fixed by making `fileLawsuit` branch on `risk.impact.type`: for `relative`, `stakes =
+Math.abs(targetVars[risk.impact.target] * scheduleValue)`, reading `target` generically off
+`PlayerVariables` (never hardcoded to `'equity'`/`'revenue'` specifically, so an admin
+adding a new relative-type ground against a different field works without a code change —
+same principle as `shareTransactionType`/`legalRiskConditions` elsewhere in this file). This
+needed a new `targetVars: PlayerVariables` parameter on `fileLawsuit`, since pricing a
+relative ground requires the defendant's actual current state, not just their active
+decisions list.
+
+**A second, smaller gap surfaced while wiring the new parameter up at its one production
+call site (`GameLoop.resolveTurn`'s Step 8 filing loop):** `ctx.vars.equity` is written back
+onto the player's own `PlayerVariables` in Step 7 (`ctx.vars.equity = bs.equity`), so it's
+already correct and current by the time Step 8 runs — but `ctx.vars.revenue` never is. Step
+6's P&L calculation computes `pl.revenue` into a local `plMap`, used only to build the
+turn's broadcast result (`derived.revenue`) — nothing round-trips it onto `ctx.vars`, unlike
+every other "Derived (computed each turn)" field in the `PlayerVariables` interface
+(`equity`, `stockValue`, `marketShare`, `volume`, `receivables` are all written back;
+`revenue`/`financeCost`/`taxCost`/`depreciation` are not). Naively passing `targetCtx.vars`
+straight into `fileLawsuit` would therefore have silently mispriced all 17 revenue-relative
+grounds too (reading `undefined`, or — worse — a stale partial delta from `processNewDecisions`'
+own unrelated `ctx.vars.revenue = ... + merged.revenueDelta` write in Step 1, which only ever
+covers a freshly-deployed decision's own direct revenue impact, not the turn's real total).
+Fixed narrowly, not by promoting `revenue` to a persisted field generally (a bigger, riskier
+change with its own knock-on questions this bug didn't need answered): the Step 8 call site
+builds `targetVarsForFiling = { ...targetCtx.vars, revenue: plMap.get(filing.targetId)?.revenue
+?? targetCtx.vars.revenue }` — a one-off override at the point of use.
+
+`legalEngine.test.ts`'s "relative-type stakes (target.equity / target.revenue)" describe
+block and `gameLoop.test.ts`'s "relative-type legal-risk stakes are priced off the
+defendant's own current field" describe block (the latter exercising the real
+`plMap`/`ctx.vars.equity` wiring end-to-end, not just `LegalEngine` in isolation) are the
+regression coverage — extend those, not just the happy absolute-type path, if you touch
+`fileLawsuit`'s stakes calculation or add a new relative-type legal risk against a field
+other than `equity`/`revenue` (which would need the exact same "read `target` generically"
+treatment, no code change required if it already does).
+
 ### Statute of limitations — a decision can be sued over for only `gameSettings.statuteOfLimitationsYears` (default 10), independent of its own maturity
 
-Not in FORMULAS.md at all (grepped — no mention), a further addition beyond spec by the
+Not in the original design spec at all, a further addition beyond spec by the
 same kind of explicit product decision as the negotiation phase below. Once a target's
 cited decision instance has been active `elapsedYears >= statuteOfLimitationsYears`, suing
 over it is time-barred: the case still gets created — same "real but hopeless" shape a
 wrong guess already gets (see *SUE THEIR ASSES offers the whole decision library's
 grounds* above) — just with `baseProbability` forced to `0` rather than priced off the
-ground's real schedule. This is deliberately **independent of `isMatured`** (FORMULAS §9
-maturity governs when an impact schedule locks in — instant vs. multi-year — not legal
+ground's real schedule. This is deliberately **independent of `isMatured`** (maturity
+governs when an impact schedule locks in — instant vs. multi-year — not legal
 liability): a decision can be long matured and still well within the limitations window,
 or, if an admin ever sets `statuteOfLimitationsYears` below a decision's own maturity
 time, time-barred before it's even matured.
@@ -1360,6 +2574,70 @@ prevent this (`gameLoop.ts`'s Step 7) — keep that dedup if you ever touch how 
 is assembled; `gameLoop.test.ts`'s "should not duplicate a case across turns" regression
 test resolves 3 turns in a row and asserts the count stays at 1 the whole way.
 
+Worth knowing while reading the next section: Step 7's `c.status !== 'resolved'` filter
+means a resolved case is only ever re-persisted into `engineState.legalCases` for the one
+turn it resolves in — the *following* turn's Step 7 excludes it from `allCases`, and Step 12
+persists exactly `allCases` back, so it silently drops out of both parties' persisted
+history after that one extra turn. This is fine for the case itself (nothing downstream
+needs a resolved case's history beyond the turn it resolves, since legal exposure/risk gauge
+only ever look at *open* cases) — but it means anything that wants to remember "this case
+existed" longer than that can't just scan `engineState.legalCases` for it; see below for
+where this bites.
+
+### Only one lawsuit per decision instance, ever — first come, first served, tracked on the instance itself since case history doesn't last
+
+By explicit product decision, a specific decision instance can be the subject of **at most
+one lawsuit for its entire lifetime** — the instant a genuine case is filed against it
+(not a wrong guess, not a time-barred ground — the same cases where `defendantDecisionInstanceId`
+is already left `undefined`, see above), that instance is permanently claimed. No further
+lawsuit — from any player, over any ground, this turn or any later one — can ever target
+that same instance again, regardless of whether the first case eventually settles, is won,
+or is lost. This is scoped to the *instance*, not the decision name: once that instance is
+later voided by a lost lawsuit or naturally expires and the player redeploys the same
+decision, the new instance is an independent, cleanly-un-sued one — see *Winning a case
+voids the sued decision instance* and the natural-expiration section above for why an
+instance's lifecycle is already the right unit to scope this to, not the name.
+
+`DeployedDecision.everSued` (mirrored in `PersistedDecisionInstance`/round-tripped through
+every serialization site `voidedByLawsuit` already threads through — `readEngineState`,
+Step 12 persistence, `serializeEngineStateForCase`, `digDeeper`'s `engineStateUpdate`) is
+set `true` the instant `GameLoop.resolveTurn`'s Step 8 filing loop gets back a `newCase`
+with a real `defendantDecisionInstanceId` — that field only exists for a genuine, still-
+claimable match in the first place, so this fires exactly once per instance, whichever
+filing gets there first. **Deliberately not derived from scanning past cases** — the
+previous section explains why that would be unreliable: a resolved case (settled/won/lost)
+only survives in `engineState.legalCases` for one extra turn before Step 7's filter drops
+it from persisted history entirely, so "was this ever sued" can't be answered by looking
+for a matching case object more than a turn after it resolves. A flag stamped permanently
+on the decision instance itself — which, unlike a case, never gets pruned; it stays in
+`activeDecisions` for the rest of the game — is what makes the block actually permanent.
+
+"First come, first served" falls out of Step 8's existing iteration order for free, with no
+extra bookkeeping needed: `targetActiveDecisions` (the candidate list `LegalEngine.
+fileLawsuit`'s `.find()`-by-name matches against) is rebuilt fresh from `targetCtx.
+engineState.activeDecisions` on every single filing processed, excluding both
+`voidedByLawsuit` and `everSued` instances (mirroring the exact filter voided instances
+already got — see *Winning a case voids the sued decision instance* above). The moment one
+filing claims an instance, that mutation is visible to every subsequent filing in the same
+`resolveTurn` call — a second plaintiff (or the same plaintiff filing twice) targeting the
+same instance later in the same loop simply finds no unclaimed match, producing the same
+"real but hopeless" 0%-probability shape a wrong guess or time-barred ground already gets
+(`fileLawsuit` needs zero changes for this — the exclusion happens entirely by what's fed
+into `targetActiveDecisions` before it's even called). `pickBestGround` also takes the
+instance's `everSued` flag as a new `alreadyClaimed` parameter, flooring probability to 0
+the same way `timeBarred` already does, so Dig Deeper's suggested-ground reveal and the
+SUE NOW shortcut never quote winnable odds for an instance nobody can successfully sue
+anymore.
+
+`gameLoop.test.ts`'s "resolveTurn — one lawsuit per decision instance, ever (regression)"
+describe block is the regression coverage: a same-turn second plaintiff gets the hopeless
+shape while the first gets a real one; a lawsuit filed several turns after the first case
+resolved (and has already dropped out of `engineState.legalCases`, confirmed directly in
+the test) is still blocked, proving the block doesn't depend on case history surviving;
+and suing a freshly redeployed instance of the same decision name succeeds normally,
+proving the scope is per-instance, not per-name. Extend that describe block, not just the
+happy path, if you touch `everSued`/Step 8's filing loop/`pickBestGround` again.
+
 ### Dig deeper on an open lawsuit — defendant pays to reveal a case's probability, a one-shot reveal reusing the two-party `makeOffer`/`acceptOffer`/`goToCourt` shape
 
 A case's probability used to be free, permanent intel for the defendant the instant it
@@ -1440,6 +2718,93 @@ resulting boolean is then persisted into the case exactly like every other
 `LegalCaseData` field (both parties' `engineState.legalCases`) and never recomputed —
 permanent for the life of the case, immune to the attack info disappearing later.
 
+### Winning a case voids the sued decision instance — matched by id, not by name, since a voided decision can be redeployed
+
+A further addition beyond spec (the original design has no concept of this at all): whenever the
+defendant ends up paying on a case — a trial `verdict: 'won'` for the plaintiff, or any
+settlement where the defendant pays out (`acceptOffer`, or Step 8b's stale-offer
+auto-settle) — `GameLoop.voidSuedDecisionInstance` cancels the sued decision instance's
+**forthcoming** effects (whatever it already did in earlier turns stays; `applyInstance` is
+never called for it again from `advanceAndApply`/`collectTargetImpacts` onward), forces it
+`isMatured: true` (which is what actually frees it for redeployment — `canDeploy`'s
+existing "previous instance must have matured" rule already covers the rest), and flags it
+`voidedByLawsuit: true` (`ActiveDecisionInstance`, shown client-side as a gray **VOIDED —
+SUED** badge in place of ✓ MATURED). A trial verdict of `'lost'` (defendant wins) never
+triggers this, and neither does the Step 10b bankruptcy-waterfall `'settled'`/`'cancelled'`
+outcome — that's a forced payout because a party went bankrupt, not a real adjudication or
+negotiated settlement, and is moot anyway since a bankrupt player's `engineState` is never
+persisted (see *A bankrupted player's Company row...* above).
+
+**Why this has to be matched by the specific instance id, not by decision name:** before
+this feature, a decision instance's `id` never mattered again once it matured — nothing
+downstream needed to tell two same-named instances apart. That's no longer true once a
+voided decision can be redeployed: a defendant can end up with a long-dead voided instance
+*and* a live new one of the same name sitting in the same `activeDecisions` array at once.
+`LegalCaseData.defendantDecisionInstanceId` is stamped once, at filing time
+(`LegalEngine.fileLawsuit`), from the specific instance the case was actually priced
+against — left `undefined` for a wrong guess or a time-barred ground (the same cases where
+`baseProbability` is already forced to 0), since there's no genuine instance to point at.
+Two knock-on fixes were needed for the same reason: `GameLoop`'s Step 8 filing loop now
+excludes voided instances when building `targetActiveDecisions`, so a fresh lawsuit's
+`.find()`-by-name lands on a live redeployed instance instead of a stale voided one sitting
+earlier in the array (a voided decision is legally closed — you can't sue over it again
+regardless); and `buildIncomingAttacks`/`digDeeper`'s attacker lookup both skip voided
+instances too, since a decision with no forthcoming effects isn't attacking anyone anymore.
+
+**Why a permanent-effect decision blocks redeploying itself only until its effect
+expires, not forever:** without some limit, redeploying after a voided lawsuit would double
+as a way to keep re-rolling a decision that grants an indefinitely-repeating KPI boost until
+one attempt goes unsued — but locking it out *forever* once successfully matured (an earlier
+version of this rule) was its own problem: a decision's "permanent" effect was never meant
+to be permanent in the sense of "outlives the statute of limitations that governs everything
+else about it," and a hard forever-lock gave no way back in even long after the effect
+itself had stopped mattering. `DecisionEngine.hasPermanentEffect(def)` (mirrored client-side
+in `GamePhase.tsx`, same hand-kept-in-sync convention as `getMaturityYears`) flags a decision
+whenever any of its own (non-`target.*`, non-`competitor*`) impact fields carries a non-zero
+`'default'` schedule value — the same "falls through to `'default'` forever once elapsed
+years exceed the explicit schedule keys" mechanic `getScheduleValue`'s doc comment already
+describes. `canDeploy` blocks redeploying such a decision only while one of the player's own
+instances is both matured, not voided, *and* still younger than
+`gameSettings.statuteOfLimitationsYears` (`existing.some(d => d.isMatured &&
+!d.voidedByLawsuit && d.elapsedYears < statuteOfLimitationsYears)`) — a voided instance never
+blocks at all (see above), and once an instance ages past the statute its effect has expired
+(next paragraph), so it stops blocking too. Decisions without a permanent effect are
+entirely unaffected by this rule: they can still be redeployed as soon as they mature, same
+as always.
+
+### A permanent effect naturally expires at the statute of limitations, freeing the decision for redeployment
+
+Distinct from — but deliberately reusing the exact same `gameSettings.statuteOfLimitationsYears`
+value as — the lawsuit-voiding mechanic above: a decision doesn't need to be sued at all for
+its permanent effect to end. Once any active instance has been active
+`statuteOfLimitationsYears` turns (the same age past which it can no longer be meaningfully
+sued over either, per *Statute of limitations* above), `DecisionEngine.advanceAndApply` stops
+re-applying its own impacts and `collectTargetImpacts` stops re-applying its `target.*`
+impacts (if any — checked via a separate, narrower `hasPermanentImpactMap` helper, since
+`hasPermanentEffect` deliberately excludes `target.*` fields for the redeploy-lock's own
+reasons above; a decision like Bot Attack, whose only nonzero-`'default'` field is
+`target.outrage`, would otherwise never trip `hasPermanentEffect` at all). Both functions
+force `isMatured: true` on expiry too, covering the edge case where an admin sets
+`statuteOfLimitationsYears` shorter than a decision's own maturity schedule. Whatever the
+effect already contributed in earlier turns is untouched — this only stops *forthcoming*
+re-application, the identical framing `voidSuedDecisionInstance` uses. Both `canDeploy`
+(server) and `getDeployability` (client, `GamePhase.tsx`) check the same
+`elapsedYears < statuteOfLimitationsYears` condition to decide whether an instance still
+blocks redeployment, so the two can never disagree about when a decision becomes
+redeployable again. A decision instance that expires this way (as opposed to being voided by
+a lost lawsuit) is *not* flagged `voidedByLawsuit` — the client tells the two apart purely by
+recomputing `hasPermanentEffect(def) && elapsedYears >= statuteOfLimitationsYears` itself
+(no new persisted field needed, since it's a pure function of data the client already has),
+showing a gray **EXPIRED** badge distinct from **VOIDED — SUED** in "Active Decisions".
+
+A non-permanent decision (no nonzero `'default'` anywhere) is untouched by any of this: its
+own explicit schedule already reads as 0 past its last explicit year via `getScheduleValue`'s
+existing fallback, so there's nothing indefinite to cut off — the statute-of-limitations
+check in `advanceAndApply`/`collectTargetImpacts` is gated on `hasPermanentEffect`/
+`hasPermanentImpactMap` specifically so a legitimately long *finite* explicit schedule (e.g.
+an admin-authored decision with an explicit year-12 entry and no `'default'`) is never cut
+off early just for outliving the statute.
+
 ### React `setState` updater callbacks must be pure — StrictMode will call them twice in dev
 
 `GamePhase.tsx`'s turn-sync `useEffect` used to call `setSuedCases((prev) => [...prev,
@@ -1463,9 +2828,10 @@ to every push into it.
 Being sued, a lawsuit reaching a verdict (or settling by negotiation), and a new round
 starting can all happen off the same `resolveTurn` call, and each has its own art/copy
 (`sued.png`, `lawsuit-won.png`/`lawsuit-lost.png`/`defender-won.png`,
-`settlement-proposal.png`, `turn-change.png`). `GamePhase.tsx` models all four as a single discriminated
-union, `PostTurnEvent = { type: 'sued'; cases } | { type: 'verdict'; outcome; cases } |
-{ type: 'settlement'; cases } | { type: 'turnChange'; round }`. This **used to** drive a
+`settlement-proposal.png`, `turn-change.png`). `GamePhase.tsx` models all four as a single
+discriminated union, `PostTurnEvent = { type: 'sued'; case } | { type: 'verdict'; outcome;
+case } | { type: 'settlement'; case } | { type: 'turnChange'; round }` — **one case per
+event, always**, never a batch (see the dedicated section below for why). This **used to** drive a
 single auto-opening `Modal` off the front of a dismiss-to-advance `eventQueue` (each
 event interrupted play the instant it happened); it now instead wraps every event into a
 `NewsItem { id, round, event }` and appends it to `newsItems`, rendered as a scrollable
@@ -1511,19 +2877,42 @@ downstream UI never re-derives this, it just reads the already-flipped field.
 **The 'verdict' modal's art distinguishes a plaintiff's payout from a defendant's
 dismissal, not just win/lose.** `lawsuit-won.png` depicts collecting a large payout — right
 for winning *as plaintiff*, but wrong for winning *as defendant* (a dismissal, no money
-changes hands). `defender-won.png` was added specifically for that second case. Since one
-'verdict' `PostTurnEvent` bundles every case that resolved `'won'` for me this *same* turn
-(`won`/`lost` are split into separate events by `detectNewlyResolvedCases`'s grouping, but
-not further split by role), the image is chosen by checking whether *every* case in the
-bundle has me as defendant (`currentEvent.cases.every((c) => c.plaintiffId !== player?.id)`)
-— the overwhelmingly common case, since winning as both plaintiff and defendant in the same
-turn is a rare coincidence. A hypothetical mixed bundle falls back to the plaintiff-payout
-art rather than picking arbitrarily; this hasn't needed anything more precise in practice.
-`lawsuit-lost.png` is unaffected — no equivalent role split exists for a *loss*, since no
-second art asset was ever commissioned for it. The 'settlement' modal (previously
-text-only) now leads with `settlement-proposal.png` the same way every other News modal
-does — no role split there, since a settlement is a mutual, negotiated event rather than
-one side unilaterally winning or losing.
+changes hands). `defender-won.png` was added specifically for that second case. Since each
+'verdict' `PostTurnEvent` is exactly one case (see below), whether I was plaintiff or
+defendant *on that case* is unambiguous — `currentEvent.case.plaintiffId !== player?.id`
+picks the art directly, no batch/"mixed" guessing involved. `lawsuit-lost.png` is
+unaffected — no equivalent role split exists for a *loss*, since no second art asset was
+ever commissioned for it. The 'settlement' modal (previously text-only) now leads with
+`settlement-proposal.png` the same way every other News modal does — no role split there,
+since a settlement is a mutual, negotiated event rather than one side unilaterally winning
+or losing.
+
+**One case per event, never a batch — an earlier version bundled and was a real, reported
+bug.** `PostTurnEvent`'s `sued`/`verdict`/`settlement` variants originally carried a
+`cases: LegalCaseData[]` array, and the turn-sync effect built at most one event per
+*kind* per turn (`{ type: 'sued', cases: newlySued }`, one `'won'` event, one `'lost'`
+event, one `{ type: 'settlement', cases: newlySettled }`) — every case of that kind
+resolving in the same turn was folded into that single event/News row, rendered as a list
+inside one modal. Reported as a bug because it reads exactly like data loss even though
+nothing was actually dropped: two lawsuits landing on the same player in one turn (or two
+verdicts, or two settlements) produced only **one** News row and one "alert" — a player
+skimming the News box for "how many things happened" undercounted, and a player who only
+opens the first-seen row of a given topic could miss every case after the first entirely
+if they didn't notice the modal's internal list scrolled past one entry. Each case is its
+own independent win/loss/settlement outcome — nothing about "another case of the same kind
+resolved the same turn" makes two cases one event. Fixed by flattening every array to a
+single case (`{ type: 'sued'; case: LegalCaseData }`, `{ type: 'verdict'; outcome; case:
+LegalCaseData }`, `{ type: 'settlement'; case: SettledCaseForMe }`) and mapping each
+detector's result array into its own `PostTurnEvent` (`newlySued.map((c) => ({ type:
+'sued', case: c }))`, etc.) rather than wrapping the whole array once. `detectNewlySuedCases`/
+`detectNewlyResolvedCases`/`detectNewlySettledCases` themselves are unchanged — they always
+returned arrays of every relevant case, correctly; the bug was purely in how the component
+turned that array into News items afterward, so this only touched `PostTurnEvent`'s shape
+and its two use sites (the event-building effect, the modal's render branches — each
+dropped its `.map()` over a list in favor of rendering the event's one `case` directly).
+Two independent same-turn lawsuits against the same player, or two verdicts, now produce
+two separate News rows and two separate clickable alerts, each fully independent of the
+other — exactly the "each case is handled as its own case" behavior a player would expect.
 
 **Deliberately not a `PostTurnEvent`/News item:** the "someone else went bankrupt" notice
 lives outside this feed entirely — in `gameStore.bankruptcyEvents` and `App.tsx`'s
@@ -1558,3 +2947,164 @@ visible and interactive again the instant the notice is dismissed. The reasoning
 this has to stay a top-level `gameStore` check rather than a `GamePhase`-local News item is
 unchanged (see above) — only the *rendering* changed, from "instead of the page" to "on top
 of the page."
+
+### Game Timeline — a Civilization-style game-over replay that's also the live spectator view for eliminated players
+
+Before this feature, an eliminated player hit a dead end: `LostOverlay`'s single "Return
+to Start" button, and no way to keep watching. Game Over itself was a static "Final
+Standings" `Table` with no history at all. `GameTimelineView`
+(`client/src/pages/GameTimelineView.tsx`) replaces both: a switchable KPI race chart
+(one line per player, like Civ's Score graph), play/pause/speed/scrub controls, a
+cumulative "happenings" log (every decision deployed + every lawsuit filed/resolved, for
+every player), and a ranked standings list — used in two modes, `'live'` (an eliminated
+player who chose to keep watching) and `'finished'` (`GameOver.tsx`, now just `<GameTimelineView
+mode="finished" />`, for the winner and every spectator alike). Scrubbing to the final
+round *is* the final-standings view — there's no separate table anymore.
+
+**The data plumbing for live spectating already existed before this feature — confirmed
+by reading the code, not assumed.** A bankrupt/forfeited player's socket is never
+disconnected (`resolveGameTurn`'s bankruptcy loop and `forfeitGame` never call
+`socket.leave()`/`.disconnect()`), so it keeps receiving `turn:resolved`/`phase:changed`
+for the rest of the game regardless of what's rendered. Building this feature was
+therefore mostly a client-side rendering/routing decision (`App.tsx`, below) plus closing
+real gaps in what was durably persisted, not new realtime infrastructure.
+
+**Two genuinely new pieces of persisted data were needed, confirmed missing by reading
+the code, not assumed:**
+
+- **`Player.eliminatedRound: Int?`** — `Player.bankrupt` had no round attached anywhere.
+  Set alongside `bankrupt: true` at both write sites (`resolveGameTurn`'s bankruptcy loop,
+  covering both `'bankruptcy'` and `'merger'` reasons via the same loop; `forfeitGame`) —
+  **and, critically, also synced onto the in-memory `roomState.players` entry**, not just
+  the DB row. This closes a real, pre-existing gap: `forfeitGame` already set
+  `player.bankrupt = true` in memory, but the natural-bankruptcy loop never did, only
+  writing the DB — anything reading "is this player eliminated" from the live roster (the
+  new disconnect-cleanup exemption below depends on exactly this) would have seen a stale
+  `false` for a naturally-bankrupted player.
+- **`LegalCaseHistory`** (new Prisma model) — a resolved `LegalCaseData` only survives one
+  extra turn in `engineState.legalCases` before `GameLoop`'s Step 7 prunes it from
+  persisted state for good (see the dedicated section on this earlier in this file), so
+  there was no way to answer "every lawsuit filed/resolved, for the whole game" from
+  existing data. One row per case (id == `LegalCaseData.id`), created at filing, updated
+  once at resolution. **Deliberately no FK to `Player`** — only to `Room` — with
+  plaintiff/defendant names denormalized at write time, since a `Player` row can still be
+  deleted independently (a disconnected player's grace period expiring) and this row must
+  keep meaning something regardless. Decision-deployment history needed **no** new table —
+  `Company.engineState.activeDecisions` is confirmed append-only (nothing ever removes an
+  entry), so it's fully recoverable from current state alone.
+
+`GameEngine.persistLegalCaseHistory` (called from `resolveGameTurn` right after
+`persistKpiSnapshots`) is the once-per-turn write hook: dedupe every case appearing across
+`outcome.result.players[].legalCases` by id (a case appears in both parties' arrays), then
+`upsert` (create-if-missing, populating every field including `resolvedRound`/`verdict` if
+already resolved at first sight — covers "filed and resolved the same turn" via the
+bankruptcy waterfall) plus a **separately guarded** resolve-update:
+`updateMany({ where: { id, resolvedRound: null }, data: { resolvedRound, verdict } })`. The
+`resolvedRound: null` guard exists so a case seen again in a later call can never overwrite
+an already-stamped resolution round to a wrong, later one — defensive, since tracing the
+actual turn-cycle mechanics suggests a resolved case is normally only ever visible in the
+exact turn it resolves in (Step 7 excludes it from `allCases` starting the very next turn),
+but the guard costs nothing and protects against this ever changing. `acceptOffer` is the
+one *out-of-band* case action that can resolve a case outside `resolveTurn` (`makeOffer`
+never changes status; `goToCourt` only ever reaches `'awaiting_trial'`, never a loggable
+"resolved" event) — it calls the same shared resolve-update helper directly, using
+`roomState.room.currentPhaseRound` for the round number.
+
+**A bankrupted player's KPI history used to stop one round early.** `persistKpiSnapshots`
+only ever runs against `outcome.result.players`, which excludes eliminated players the
+same way `companyUpdates` does — so there was no `KpiSnapshot` capturing a player's actual
+final (negative) numbers, only their last still-active round. Closed by extending
+`BankruptedPlayer` (`gameLoop.ts`) with `finalVariables`/`finalDerived`/`finalRiskGauge` —
+computed via a small `buildFinalSnapshot` helper inside `resolveTurn`'s Step 10b, mirroring
+Step 11/13's own per-active-player computation (`calculateRiskGauge`, the same derived-stats
+shape) but run once more for a pid about to be eliminated, before its engine state is
+discarded. `GameEngine.resolveGameTurn`'s existing bankruptcy-persistence loop (which
+already writes `cash: finalCash`) gets one more `kpiSnapshot.upsert` call using these
+captured fields. Pure `GameLoop` change only — no I/O added, just more data returned on an
+object the caller already persists from.
+
+**Eliminated players are now exempt from the disconnect-cleanup grace-period sweep** — a
+real risk this feature would otherwise have: an eliminated player who simply closes their
+tab (arguably *more* likely than an active player doing so) would previously have their
+`Player`/`Company` rows (and cascaded `KpiSnapshot` history) deleted by
+`finalizePlayerRemoval` after `RECONNECT_GRACE_PERIOD_MS`, defeating the entire "replay
+everyone's history" premise. `startHeartbeatCleanup`'s sweep now skips finalizing removal
+for any player whose (now-reliably-synced) in-memory `bankrupt` flag is `true` — they can
+still `room:rejoin` at any time no matter how long they've been gone, since their row is
+never deleted while anyone else remains connected to the room.
+
+**This exemption needed a matching fix to the stale-room cleanup, or the room itself would
+leak forever once any player had ever been eliminated in it.** The stale-room check used to
+require `roomState.players.size === 0` (every player actually removed) — with eliminated
+players now permanently kept, that condition could stop being reachable at all. Fixed by
+requiring instead that **every remaining player is both eliminated and currently
+disconnected** (`p.bankrupt && !p.socketId`), not just "every socket currently
+disconnected" — the latter, tried first, was a real regression: it made the stale-room
+sweep race ahead of a perfectly normal, still-active player's ordinary reconnect grace
+period (their `socketId` is also temporarily null) and delete the whole room out from
+under them before `finalizePlayerRemoval` got a chance to run properly. Requiring
+`p.bankrupt` too means only "everyone left in this room is a disconnected, eliminated
+spectator" ever counts as stale — a room stays alive as long as anyone (winner or
+spectator) is still connected, and only gets reclaimed (cascading away `LegalCaseHistory`,
+`KpiSnapshot`, etc.) once literally nobody is. Covered directly by two
+`gameEngine.test.ts` regression tests: one confirming an eliminated player's row survives
+indefinitely while another player stays connected, one confirming the whole room still
+gets cleaned up once everyone (including that eliminated player) has actually disconnected.
+
+**`GameEngine.getGameTimeline(roomId)`** (→ `game:getGameTimeline` / `game:gameTimelineResult`)
+is pure serialization, no `GameLoop`/`DecisionEngine` involvement — decision names are
+resolved client-side against the already-cached deck (the same pattern
+`ActiveDecisionCard` already uses), and everything else is either already in Postgres
+verbatim (`KpiSnapshot`, `LegalCaseHistory`) or raw JSON already sitting in
+`Company.engineState.activeDecisions`. Queries **every** `Player` in the room regardless
+of `bankrupt` (mirroring `buildGameOverPayload`'s existing "everyone, not just active"
+query shape, not `loadActiveCompanyPlayers`'s active-only one), ordered by `createdAt` —
+this stable join order is what lets the client assign each player a stable categorical
+chart color by array position, without needing its own id-to-color persistence. The one
+genuinely new thing about this handler: it's the first payload-less client→server request
+in the codebase (no per-target selection, unlike `game:getKpiHistory`), and it's
+deliberately allowed in **both** `GAME_PHASE` and `AFTERMATH` — every other on-demand
+handler only allows `GAME_PHASE`. It also calls `touchRoomActivity` so a room being
+actively watched (read-only, no state-mutating actions) doesn't get stale-swept out from
+under a spectator.
+
+**Client-side, `App.tsx` splits "am I eliminated" (durable) from "have I acknowledged it"
+(transient)** — a new `gameStore.hasAcknowledgedElimination` flag (default `false`,
+deliberately **not** persisted to `localStorage`, so a page reload while still eliminated
+briefly re-shows the acknowledgment screen once more before returning to spectating; reset
+by both `setSelfEliminationReason` defensively and `resetSession()`). `LostOverlay`'s old
+single "Return to Start" button is now two: "Watch the rest of the game" (calls
+`acknowledgeElimination()`) and "Leave" (the old `returnToLanding()`, unchanged). Once
+acknowledged, `App.tsx` renders `<GameTimelineView mode="live" />` in place of the normal
+`currentPhase` switch — but only while `currentPhase !== 'AFTERMATH'`; the instant the game
+actually ends, the switch's existing `AFTERMATH` case (`GameOver`, itself just
+`GameTimelineView` in `'finished'` mode) takes over automatically, since every socket still
+in the room — survivors and spectators alike — receives the same `phase:changed` broadcast
+and lands on the same finished-game replay together. No special-casing needed for that
+transition; it falls out of the existing phase switch for free.
+
+Verified end-to-end with a live 3-player Playwright run (not just unit tests): one player
+forfeits, sees the watch/leave choice, chooses to watch, and the live spectator view
+renders with a working chart/standings/OUT badge; the two remaining players ready up to
+force a turn resolution, and the spectator's view auto-advances to the new round with no
+action on their part; a second player forfeits (ending the game, since only one remains
+active), and every participant — the winner, the first spectator (already watching), and
+the second player (choosing to watch from their own forfeit screen after the fact) — all
+land on the identical finished-game replay, each correctly seeing their own name
+highlighted as "(You)".
+
+`gameEngine.test.ts` gained `describe` blocks for `persistLegalCaseHistory`
+(create/resolve, the same-turn filed-and-resolved case, the `resolvedRound: null` overwrite
+guard) and `getGameTimeline` (active+bankrupt players, grouped KPI history, decisions
+derived from raw `engineState`, lawsuits from `LegalCaseHistory`, reachability during
+`AFTERMATH`), plus extended `resolveGameTurn`/`forfeitGame`/heartbeat-sweep tests for
+`eliminatedRound` and the exemption. `gameLoop.test.ts`'s existing bankruptcy/merger tests
+gained `finalVariables`/`finalDerived`/`finalRiskGauge` assertions. Client-side,
+`GameTimelineView.utils.test.ts` duplicates and tests `getKpiFieldValue`/`buildHappenings`/
+`rankPlayersAtRound` (the same "duplicate small pure logic, keep this test file lightweight"
+convention `GamePhase.utils.test.ts` established), and `gameStore.test.ts` covers
+`hasAcknowledgedElimination`/`acknowledgeElimination` and their interaction with
+`setSelfEliminationReason`/`resetSession`. `tests/api/room.test.ts` gained a real-Postgres
+round trip for both `Player.eliminatedRound` and `LegalCaseHistory`'s full lifecycle
+(including its cascade-delete-with-room behavior) — extend these, not just the happy path,
+if you touch any part of this feature again.

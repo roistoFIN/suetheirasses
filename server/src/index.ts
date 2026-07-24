@@ -141,7 +141,7 @@ app.put('/api/admin/config', requireAdminToken, async (req, res) => {
   }
 });
 
-// The pure, scalar, named-input formulas from FORMULAS.md §2-§7 — DB-backed
+// The pure, scalar, named-input formulas (competitiveness, P&L, risk gauge, etc.) — DB-backed
 // (see CLAUDE.md's "Formulas are DB-backed"). No POST/DELETE — the key set is
 // fixed, since each one is referenced by name at a specific calcEngine.ts call
 // site GameLoop hard-depends on; only the expression/description text is editable.

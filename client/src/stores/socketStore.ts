@@ -191,7 +191,7 @@ export const useSocketStore = create<SocketState>((set, get) => ({
       updateTimer(data.timeLeft);
     });
 
-    socket.on(ServerEvents.PLAYER_BANKRUPT, (data: { playerId: string; playerName: string }) => {
+    socket.on(ServerEvents.PLAYER_BANKRUPT, (data: { playerId: string; playerName: string; reason?: 'bankruptcy' | 'merger'; acquirerId?: string; acquirerName?: string }) => {
       console.log('Player bankrupt:', data);
       const { markPlayerBankrupt, player, setSelfEliminationReason, enqueueBankruptcyEvent } = useGameStore.getState();
       markPlayerBankrupt(data.playerId);
@@ -199,14 +199,17 @@ export const useSocketStore = create<SocketState>((set, get) => ({
         // Mine — flag it so App.tsx's full-screen "lost" takeover replaces whatever phase
         // would otherwise render (see game:left below for the forfeit case, which upgrades
         // this to 'forfeit' right after). No bankruptcyEvents entry for myself — the
-        // takeover screen already tells me, no need for the generic one too.
-        setSelfEliminationReason('bankrupt');
+        // takeover screen already tells me, no need for the generic one too. A majority-
+        // ownership takeover is `reason: 'merger'` here — distinct from
+        // a plain bankruptcy, shown as `'merged'` with the acquirer's name.
+        setSelfEliminationReason(data.reason === 'merger' ? 'merged' : 'bankrupt', data.acquirerName);
       } else {
         // Someone else's elimination — everyone still in the game gets a "X has gone
-        // bankrupt" info-window modal, overlaid on top of the still-running game (see
-        // App.tsx's BankruptcyModal), queued so it's shown even if this same elimination
-        // ends the game (game:over/phase:changed follow right after this same event).
-        enqueueBankruptcyEvent({ playerId: data.playerId, playerName: data.playerName });
+        // bankrupt"/"X was acquired by Y" info-window modal, overlaid on top of the
+        // still-running game (see App.tsx's BankruptcyModal), queued so it's shown even
+        // if this same elimination ends the game (game:over/phase:changed follow right
+        // after this same event).
+        enqueueBankruptcyEvent({ playerId: data.playerId, playerName: data.playerName, reason: data.reason, acquirerName: data.acquirerName });
       }
     });
 

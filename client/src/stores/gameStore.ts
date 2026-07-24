@@ -79,18 +79,31 @@ interface GameState {
   /** Wipes room/player/in-game state back to a fresh landing-page state — used when a player is kicked or otherwise removed from a room they can no longer resume. */
   resetSession: () => void;
 
-  /** Set once this player's own bankruptcy is detected (natural cash<0 elimination, or a `game:leave` forfeit) — GamePhase shows a full-screen "lost" takeover keyed off this instead of redirecting instantly, so the player has a moment to see it before returning to the landing page. */
-  selfElimination: { reason: 'bankrupt' | 'forfeit' } | null;
-  setSelfEliminationReason: (reason: 'bankrupt' | 'forfeit') => void;
+  /** Set once this player's own elimination is detected (natural cash<0 bankruptcy, a
+   * `game:leave` forfeit, or being on the losing end of a majority-ownership takeover) —
+   * GamePhase shows a full-screen "lost" takeover keyed off this
+   * instead of redirecting instantly, so the player has a moment to see it before
+   * returning to the landing page. `acquirerName` is only set for `'merged'`. */
+  selfElimination: { reason: 'bankrupt' | 'forfeit' | 'merged'; acquirerName?: string } | null;
+  setSelfEliminationReason: (reason: 'bankrupt' | 'forfeit' | 'merged', acquirerName?: string) => void;
 
-  /** One "X has gone bankrupt" notice queued per elimination every *other* still-in-the-game
-   * player should be told about — the eliminated player themselves gets `selfElimination`'s
-   * full-screen takeover instead, never this. Queued (not a single value) since more than one
-   * player can be eliminated in the same turn. App.tsx renders `bankruptcyEvents[0]` as a
-   * full-screen takeover ahead of the phase switch — including ahead of AFTERMATH/GameOver, so
-   * the message is seen even when this same elimination ends the game. */
-  bankruptcyEvents: { playerId: string; playerName: string }[];
-  enqueueBankruptcyEvent: (event: { playerId: string; playerName: string }) => void;
+  /** True once the player has chosen "Watch the rest of the game" on the "lost" takeover
+   * screen — App.tsx swaps from the one-time takeover to the live GameTimelineView
+   * spectator view once this flips. Deliberately resets each session/reload (not
+   * persisted to localStorage) rather than surviving a refresh — the simpler default,
+   * matching every other elimination-related flag in this store. */
+  hasAcknowledgedElimination: boolean;
+  acknowledgeElimination: () => void;
+
+  /** One "X has gone bankrupt"/"X was acquired by Y" notice queued per elimination every
+   * *other* still-in-the-game player should be told about — the eliminated player
+   * themselves gets `selfElimination`'s full-screen takeover instead, never this. Queued
+   * (not a single value) since more than one player can be eliminated in the same turn.
+   * `reason`/`acquirerName` distinguish a merger takeover from a plain bankruptcy —
+   * `reason` defaults to `'bankruptcy'` for any event that doesn't set it (forfeit is
+   * never queued here at all, only ever via `selfElimination`). */
+  bankruptcyEvents: { playerId: string; playerName: string; reason?: 'bankruptcy' | 'merger'; acquirerName?: string }[];
+  enqueueBankruptcyEvent: (event: { playerId: string; playerName: string; reason?: 'bankruptcy' | 'merger'; acquirerName?: string }) => void;
   dismissBankruptcyEvent: () => void;
 }
 
@@ -111,6 +124,7 @@ export const useGameStore = create<GameState>((set) => ({
   notification: null,
   isRejoining: false,
   selfElimination: null,
+  hasAcknowledgedElimination: false,
   bankruptcyEvents: [],
   annualReports: new Map(),
   annualReportLoading: new Set(),
@@ -226,9 +240,14 @@ export const useGameStore = create<GameState>((set) => ({
       annualReports: new Map(),
       annualReportLoading: new Set(),
       selfElimination: null,
+      hasAcknowledgedElimination: false,
       bankruptcyEvents: [],
     }),
-  setSelfEliminationReason: (reason) => set({ selfElimination: { reason } }),
+  setSelfEliminationReason: (reason, acquirerName) =>
+    // Defensively resets hasAcknowledgedElimination too, in case this ever fires twice —
+    // a stale `true` would skip straight past the "watch or leave" choice.
+    set({ selfElimination: { reason, acquirerName }, hasAcknowledgedElimination: false }),
+  acknowledgeElimination: () => set({ hasAcknowledgedElimination: true }),
   enqueueBankruptcyEvent: (event) =>
     set((state) => ({ bankruptcyEvents: [...state.bankruptcyEvents, event] })),
   dismissBankruptcyEvent: () =>

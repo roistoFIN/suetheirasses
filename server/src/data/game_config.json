@@ -11,7 +11,9 @@
     "digDeeperCost": 10000,
     "negotiationPeriodTurns": 2,
     "lawsuitFilingCost": 15000,
-    "statuteOfLimitationsYears": 10
+    "statuteOfLimitationsYears": 10,
+    "semaphoreGreenMax": 0.15,
+    "semaphoreYellowMax": 0.40
   },
 
   "playerStartingValues": {
@@ -74,16 +76,15 @@
       "_comment": "demand ja outrage ovat pisteskaalalla (~-60..+60), jaetaan 100:lla kaavassa ennen painotusta"
     },
     "legalProcess": {
-      "semaphoreGreenMax": 0.15,
-      "semaphoreYellowMax": 0.40,
       "scrutinyLegalRiskMultiplier": 0.3,
-      "legalExposureRatioCap": 0.8,
-      "buySharesLegalRiskThresholdPercent": 0.05
+      "legalExposureRatioCap": 0.8
     },
     "riskGauge": {
-      "riskWeightLegalExposure_w1": 0.5,
-      "riskWeightScrutiny_w2": 0.25,
-      "riskWeightOutrage_w3": 0.25
+      "riskWeightLegalExposure_w1": 0.32,
+      "riskWeightScrutiny_w2": 0.16,
+      "riskWeightOutrage_w3": 0.16,
+      "riskWeightOwnership_w4": 0.16,
+      "riskWeightSolvency_w5": 0.2
     },
     "ownership": {
       "takeoverThresholdPercent": 0.5

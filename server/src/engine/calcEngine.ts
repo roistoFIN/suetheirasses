@@ -1,5 +1,6 @@
 /**
- * Calculation Engine — implements all financial & market formulas from FORMULAS.md
+ * Calculation Engine — implements all financial & market formulas (the pure, scalar,
+ * named-input ones — see the `Formula` DB table / defaultFormulas.ts for the current set)
  * 
  * Order of operations per player per turn:
  * 1. Depreciation ledger (per purchase)
@@ -20,18 +21,58 @@ import { evalNamed, type FormulaSet } from './formulaEngine.js';
 const ASSET_LIFE = 10;       // years for physical assets
 const INTANGIBLE_LIFE = 5;   // years for intangible assets
 
-// Assets that create depreciation entries (genuine purchases)
-export const DEPRECIATING_ASSETS = new Set([
-  'New Factory',
-  'Vertical Integration',
-  'Off-Balance-Sheet Special Purpose Vehicle',
-  'Energy Efficiency Retrofit',
-  'Organic Shift',           // intangible variant
-  'Pelleting Research and Development',
-  'Patent Portfolio',
-  'Quality Certification',
-  'Raw Material Monopoly',   // intangible variant
-]);
+// ============================================================
+// Share ownership — a company's cap table lives in
+// `PlayerVariables.shareOwnership`, a `Record<string, number>` of fractions summing to
+// 1.0. Two reserved sentinel keys, never a real player id:
+//   "self"           — the company's own founding player's retained stake
+//   "EXTERNAL_MARKET" — floating shares not held by any specific player
+// Any other key is a real player id holding a cross-company stake (bought via Buy Shares).
+// `totalSharesOutstanding` is a separate absolute count, used only for per-share pricing
+// (`stockValue = marketEquity / totalSharesOutstanding`, below).
+// ============================================================
+export const SELF_OWNERSHIP_KEY = 'self';
+export const EXTERNAL_MARKET_KEY = 'EXTERNAL_MARKET';
+
+/** Divides every value in a shareOwnership map by their own sum, so it always reads as
+ * exactly 1.0 in total — a cheap guard against float drift accumulating across many
+ * turns of repeated dilution/acquisition math. Returns a NEW object (shareOwnership must
+ * never be mutated in place — see `applySharesAmount`'s doc comment for why). */
+export function renormalizeShareOwnership(shareOwnership: Record<string, number>): Record<string, number> {
+  const sum = Object.values(shareOwnership).reduce((s, v) => s + v, 0);
+  if (sum === 0) return { ...shareOwnership };
+  const normalized: Record<string, number> = {};
+  for (const [key, value] of Object.entries(shareOwnership)) {
+    normalized[key] = value / sum;
+  }
+  return normalized;
+}
+
+/**
+ * Share Issuance's effect: increases `totalSharesOutstanding` by
+ * `sharesIssued` and dilutes every existing shareOwnership key proportionally
+ * (`f' = f * oldTotal / newTotal`), crediting the newly issued shares 100% to
+ * `EXTERNAL_MARKET`. Mutates `vars` in place (the caller, `applyDecisionImpacts`, already
+ * works on its own local shallow copy `v`) — but always REPLACES `vars.shareOwnership`
+ * with a brand-new object rather than writing into the existing one, since a shallow
+ * `{ ...vars }` copy still shares the same nested `shareOwnership` object reference with
+ * whatever `vars` it was copied from; mutating it in place would silently corrupt that
+ * other reference too.
+ */
+function applySharesAmount(vars: PlayerVariables, sharesIssued: number): void {
+  const oldTotal = vars.totalSharesOutstanding || 0;
+  const newTotal = oldTotal + sharesIssued;
+  if (newTotal <= 0) return;
+
+  const diluted: Record<string, number> = {};
+  for (const [key, fraction] of Object.entries(vars.shareOwnership ?? {})) {
+    diluted[key] = oldTotal > 0 ? fraction * (oldTotal / newTotal) : 0;
+  }
+  diluted[EXTERNAL_MARKET_KEY] = (diluted[EXTERNAL_MARKET_KEY] ?? 0) + sharesIssued / newTotal;
+
+  vars.totalSharesOutstanding = newTotal;
+  vars.shareOwnership = renormalizeShareOwnership(diluted);
+}
 
 /**
  * Step 1: Apply depreciation ledger updates.
@@ -78,15 +119,17 @@ export function applyDepreciation(
 }
 
 /**
- * Add a new depreciation entry when an asset purchase occurs.
+ * Add a new depreciation entry when an asset purchase occurs. Any positive absolute
+ * addition to `assets`/`intangibleAssets` on a decision's deployment year is treated as a
+ * genuine purchase — not gated by a hardcoded decision-name allowlist (previously
+ * `DEPRECIATING_ASSETS`, removed: it silently fell out of sync with the actual,
+ * admin-editable decision library — see CLAUDE.md).
  */
 export function addDepreciationEntry(
-  decisionName: string,
   assetType: 'assets' | 'intangibleAssets',
   value: number,
   currentYear: number,
 ): DepreciationLedgerEntry | null {
-  if (!DEPRECIATING_ASSETS.has(decisionName)) return null;
   if (value <= 0) return null;
 
   const usefulLife = assetType === 'assets' ? ASSET_LIFE : INTANGIBLE_LIFE;
@@ -210,16 +253,16 @@ export function calculatePL(
   const { baseFinanceCost, interestRate, taxRate } = admin.finance;
   const { revenueDelta = 0, financeCostDelta = 0, taxCostDelta = 0 } = absScheduleDeltas ?? {};
 
-  // FORMULAS §4: Add decision-driven ABSOLUTE schedule additions to revenue
+  // Add decision-driven ABSOLUTE schedule additions to revenue
   const revenue = evalNamed(formulas, 'revenue', { volume, price: vars.price, revenueDelta });
   const cogs = evalNamed(formulas, 'cogs', { materialCostPerTon: vars.materialCostPerTon, logisticsCostPerTon: vars.logisticsCostPerTon, volume });
   const grossProfit = evalNamed(formulas, 'grossProfit', { revenue, cogs });
   const ebitda = evalNamed(formulas, 'ebitda', { grossProfit, operatingExpenses: vars.operatingExpenses, staffCost: vars.staffCost, otherIncome: vars.otherIncome });
   const ebit = evalNamed(formulas, 'ebit', { ebitda, depreciation });
-  // FORMULAS §4: Add decision-driven ABSOLUTE schedule additions to financeCost
+  // Add decision-driven ABSOLUTE schedule additions to financeCost
   const financeCost = evalNamed(formulas, 'financeCost', { baseFinanceCost, debt: Number(vars.debt), interestRate, financeCostDelta });
   const profitBeforeTax = evalNamed(formulas, 'profitBeforeTax', { ebit, financeCost });
-  // FORMULAS §4: Add decision-driven ABSOLUTE schedule adjustments to taxCost
+  // Add decision-driven ABSOLUTE schedule adjustments to taxCost
   const taxCost = evalNamed(formulas, 'taxCost', { profitBeforeTax, taxRate, taxCostDelta });
   const netProfit = evalNamed(formulas, 'netProfit', { profitBeforeTax, taxCost });
 
@@ -227,7 +270,7 @@ export function calculatePL(
 }
 
 /**
- * Step 5: Update balance sheet per FORMULAS §5.
+ * Step 5: Update balance sheet.
  *
  * cash_i       += netProfit_i + depreciation_i
  * reserves_i   += netProfit_i
@@ -251,7 +294,7 @@ export function updateBalanceSheet(
 
   const newCash = evalNamed(formulas, 'newCash', { cash: vars.cash, netProfit, depreciation });
   const newReserves = evalNamed(formulas, 'newReserves', { reserves: vars.reserves, netProfit });
-  // FORMULAS §5: Add decision-driven ABSOLUTE schedule additions to receivables
+  // Add decision-driven ABSOLUTE schedule additions to receivables
   const receivables = evalNamed(formulas, 'receivables', { revenue, DSO, receivablesDelta });
   // Book equity (for financial statements)
   const equity = evalNamed(formulas, 'equity', {
@@ -272,7 +315,7 @@ export function updateBalanceSheet(
 }
 
 /**
- * Step 6: Calculate adjusted legal risk probability per FORMULAS §6.
+ * Step 6: Calculate adjusted legal risk probability.
  * 
  * adjustedProbability_case = baseProbability_legalRisk
  *                            * (1 + scrutinyLegalRiskMultiplier * scrutiny_defendant / 100
@@ -292,7 +335,8 @@ export function calculateAdjustedProbability(
 }
 
 /**
- * Calculate legal exposure ratio (capped) per FORMULAS §6 & §7.
+ * Calculate legal exposure ratio (capped) — feeds both the legal-risk probability
+ * snowball effect and the Risk Gauge.
  * 
  * legalExposureRatio_i = MIN(legalExposureRatioCap, legalExposure_i / cash_i)
  */
@@ -312,22 +356,113 @@ export function calculateLegalExposureRatio(
 }
 
 /**
- * Step 7: Calculate Global Risk Gauge per FORMULAS §7.
- * 
+ * Majority-ownership takeover risk (0-1), for the Risk Gauge's 4th term — a deliberate
+ * addition beyond the Risk Gauge's original 3-term design. Majority-ownership takeover
+ * (any real player crossing `takeoverThresholdPercent` of this
+ * company's `shareOwnership`) is a fully independent way to lose the game that the
+ * original risk gauge never reflected at all; a player could sit at a comfortable
+ * legal/reputational score while a rival held 48% of their company with zero warning.
+ *
+ * Deliberately keyed off the *largest single external holder's* stake, not
+ * `1 - selfOwnership` — the actual elimination trigger only cares about one player
+ * crossing the threshold, so dilution spread thin across many small holders or the
+ * public float (`EXTERNAL_MARKET`, excluded here — it can never itself trigger a
+ * takeover) correctly reads as low risk, while a single concentrated buyer correctly
+ * reads as high risk even if the founder's own stake is still comfortably above 50%.
+ *
+ * Scaled linearly against `takeoverThresholdPercent` (0 at 0% held, 1.0 right at the
+ * threshold) and capped at 1 — once a holder is AT the threshold the game has already
+ * ended for this player via the real elimination check, so anything beyond 1 has no
+ * further meaning here.
+ */
+export function calculateOwnershipRisk(
+  shareOwnership: Record<string, number> | undefined,
+  takeoverThresholdPercent: number,
+): number {
+  if (!shareOwnership || takeoverThresholdPercent <= 0) return 0;
+  let maxExternalStake = 0;
+  for (const [key, fraction] of Object.entries(shareOwnership)) {
+    if (key === SELF_OWNERSHIP_KEY || key === EXTERNAL_MARKET_KEY) continue;
+    if (fraction > maxExternalStake) maxExternalStake = fraction;
+  }
+  return Math.min(1, maxExternalStake / takeoverThresholdPercent);
+}
+
+/**
+ * Naive one-turn-ahead cash projection (0-1 term input, the Risk Gauge's 5th term) — a
+ * deliberate simplification, not the real prediction engine (`GameLoop.predictFutureKpis`,
+ * which re-runs the full turn-resolution engine in a sandbox). Calling that from inside
+ * `calculateRiskGauge` isn't viable here: the risk gauge is computed *inside*
+ * `resolveTurn` itself, for every player, every turn, so reaching for the sandboxed
+ * predictor would mean `resolveTurn` recursively calling itself once per player per turn —
+ * a real recursion/perf risk, not just extra computation. Instead: linear extrapolation
+ * of this turn's own net cash movement — "if the trend this turn continues, where does
+ * cash land next turn." Cheap, synchronous, and already has both inputs on hand
+ * (`cashAfterThisTurn` is `vars.cash` post-balance-sheet-update; `cashBeforeThisTurn` is
+ * `PlayerTurnContext.prevCash`, snapshotted before this turn's processing began — the
+ * same field the bankruptcy waterfall pool already reuses for an unrelated purpose).
+ */
+export function predictNextTurnCashLinear(cashAfterThisTurn: number, cashBeforeThisTurn: number): number {
+  const thisTurnDelta = cashAfterThisTurn - cashBeforeThisTurn;
+  return cashAfterThisTurn + thisTurnDelta;
+}
+
+/**
+ * Legal-solvency risk (0-1), for the Risk Gauge's 5th term — a deliberate addition beyond
+ * the Risk Gauge's original design, distinct from the existing legal-exposure-ratio term
+ * (w1): that term compares raw legal exposure against *current* cash and feeds back into
+ * `adjustedProbability`'s snowball effect; this term asks a narrower,
+ * forward-looking question — "given where cash is trending, could these open cases
+ * actually bankrupt me next turn?" Uses the same probability-weighted `legalExposure`
+ * aggregate the w1 term already computes (a case you're likely to lose counts more than a
+ * hopeless one), but against `predictNextTurnCashLinear`'s projection instead of today's
+ * cash.
+ *
+ * `CASH_FLOOR` guards the division for a predicted cash at or below zero — a company
+ * already trending toward insolvency reads as maximum risk from any nonzero exposure,
+ * rather than flipping the ratio's sign or dividing by zero.
+ */
+const SOLVENCY_RISK_CASH_FLOOR = 1;
+
+export function calculateSolvencyRisk(legalExposure: number, predictedNextCash: number): number {
+  if (legalExposure <= 0) return 0;
+  return Math.min(1, legalExposure / Math.max(predictedNextCash, SOLVENCY_RISK_CASH_FLOOR));
+}
+
+/**
+ * Step 7: Calculate Global Risk Gauge — a weighted blend of 5 terms, 2 of which are
+ * deliberate additions beyond the gauge's original 3-term design.
+ *
  * legalExposure_i = SUM(open case probability * stakes) for all open cases where i is defendant
  * legalExposureRatio_i = MIN(0.8, legalExposure_i / cash_i)
  * risk_i (0-100) = 100 * ( w1*(legalExposureRatio_i / 0.8)
  *                         + w2*(scrutiny_i / 100)
- *                         + w3*(outrage_i / 100) )
+ *                         + w3*(outrage_i / 100)
+ *                         + w4*ownershipRisk_i
+ *                         + w5*solvencyRisk_i )
+ *
+ * The w4/ownershipRisk and w5/solvencyRisk terms are deliberate deviations from the
+ * gauge's original 3-term design — see `calculateOwnershipRisk`/`calculateSolvencyRisk`'s
+ * doc comments above and CLAUDE.md's "Risk Gauge takeover term" and "Risk Gauge solvency
+ * term" sections.
  */
 export function calculateRiskGauge(
   vars: PlayerVariables,
   openCases: Array<{ probability: number; stakes: number }>,
   admin: AdminVariables,
   formulas: FormulaSet,
+  // Cash at the start of this turn, before this turn's own P&L/balance-sheet movement —
+  // defaults to vars.cash (assumes no movement) for callers with no real turn-context
+  // "before" snapshot to give (e.g. getInitialSnapshot, where no cases exist yet anyway
+  // so this term is 0 regardless).
+  prevCash: number = vars.cash,
 ): number {
-  const { riskWeightLegalExposure_w1: w1, riskWeightScrutiny_w2: w2, riskWeightOutrage_w3: w3 } = admin.riskGauge;
+  const {
+    riskWeightLegalExposure_w1: w1, riskWeightScrutiny_w2: w2, riskWeightOutrage_w3: w3,
+    riskWeightOwnership_w4: w4, riskWeightSolvency_w5: w5,
+  } = admin.riskGauge;
   const { legalExposureRatioCap } = admin.legalProcess;
+  const { takeoverThresholdPercent } = admin.ownership;
 
   // Calculate legal exposure (sum of probabilities × stakes for open cases) — a
   // genuine aggregation over a dynamic collection, stays as code, not a formula.
@@ -340,8 +475,13 @@ export function calculateRiskGauge(
   // treatment as every other pre-aggregated input (e.g. legalExposure above).
   const absOutrage = Math.abs(vars.outrage);
 
+  const ownershipRisk = calculateOwnershipRisk(vars.shareOwnership, takeoverThresholdPercent);
+
+  const predictedNextCash = predictNextTurnCashLinear(vars.cash, prevCash);
+  const solvencyRisk = calculateSolvencyRisk(legalExposure, predictedNextCash);
+
   return evalNamed(formulas, 'riskGauge', {
-    w1, w2, w3, legalExposureRatio, legalExposureRatioCap, scrutiny: vars.scrutiny, absOutrage,
+    w1, w2, w3, w4, w5, legalExposureRatio, legalExposureRatioCap, scrutiny: vars.scrutiny, absOutrage, ownershipRisk, solvencyRisk,
   });
 }
 
@@ -369,11 +509,26 @@ export function getScheduleValue(
 
   // elapsedYears=0 maps to key 1, elapsedYears=1 maps to key 2, etc.
   // Once elapsedYears+1 exceeds the highest explicit key, fall through to 'default'
-  // — this is where most decisions' permanent, post-maturity effect lives (FORMULAS §9).
+  // — this is where most decisions' permanent, post-maturity effect lives.
   if (elapsedYears >= 0 && elapsedYears + 1 <= maxKey) {
     return schedule[String(elapsedYears + 1)] ?? schedule['default'] ?? 0;
   }
   return schedule['default'] ?? 0;
+}
+
+// Fields with a hard floor of 0 and no ceiling — additive relative-multiplier stacking
+// (see applyDecisionImpacts'/applyTargetImpacts' Phase 2 above) can otherwise drive one
+// of these negative (e.g. several Maintenance-Neglect-style decisions stacking a large
+// enough negative relative effect on the same field), which has no real-world meaning for
+// any of the four. Applied unconditionally after every impact application, own-effect or
+// target.*-routed alike, so the two code paths can never disagree about the floor.
+const ZERO_FLOOR_FIELDS = ['processingLevel', 'capacityUtilization', 'installedCapacity', 'price'] as const;
+
+function clampFloorZeroFields(v: PlayerVariables): PlayerVariables {
+  for (const field of ZERO_FLOOR_FIELDS) {
+    if (v[field] < 0) v[field] = 0;
+  }
+  return v;
 }
 
 /** A single depreciation ledger entry returned by applyDecisionImpacts for genuine asset purchases. */
@@ -387,13 +542,13 @@ export interface DepreciationLedgerEntry {
   remainingYears: number;
 }
 
-//** Absolute schedule deltas extracted from a single impact application (FORMULAS §4-§5). */
+//** Absolute schedule deltas extracted from a single impact application. */
 export interface AbsoluteScheduleDeltas {
   revenueDelta: number;
   financeCostDelta: number;
   taxCostDelta: number;
   receivablesDelta: number;
-  /** Direct absolute `cash` schedule value applied this turn (FORMULAS §5/§16 — income-side line for the bankruptcy waterfall pool). */
+  /** Direct absolute `cash` schedule value applied this turn (income-side line for the bankruptcy/merger waterfall pool). */
   cashDelta: number;
 }
 
@@ -416,26 +571,26 @@ export interface ApplyImpactsResult {
  */
 export function applyDecisionImpacts(
   vars: PlayerVariables,
-  decisionName: string,
   impacts: Record<string, { type: 'absolute' | 'relative'; schedule: Record<number | string, number> }>,
   elapsedYears: number,
   currentYear?: number,
 ): ApplyImpactsResult {
   const v = { ...vars };
   const newDepreciationEntries: DepreciationLedgerEntry[] = [];
-  // Track absolute additions to P&L fields (FORMULAS §4-§5)
+  // Track absolute additions to P&L fields
   let revenueDelta = 0;
   let financeCostDelta = 0;
   let taxCostDelta = 0;
   let receivablesDelta = 0;
   let cashDelta = 0;
 
-  // Phase 1 — accumulate per-field relative multipliers additively (FORMULAS §9)
+  // Phase 1 — accumulate per-field relative multipliers additively
   const fieldMultipliers = new Map<string, number>();
 
   for (const [field, impact] of Object.entries(impacts)) {
     if (field.startsWith('competitor')) continue; // Handled in cross-player resolution
     if (field.startsWith('target.')) continue; // Routed to the targeted player — see extractTargetImpacts/applyTargetImpacts
+    if (field === 'sharesAmount') continue; // Special-cased below — not a real PlayerVariables field, see applySharesAmount
 
     const value = getScheduleValue(impact.schedule, elapsedYears);
     if (value === 0) continue;
@@ -451,27 +606,55 @@ export function applyDecisionImpacts(
     if (field.startsWith('competitor')) continue;
     if (field.startsWith('target.')) continue;
 
+    if (field === 'sharesAmount') {
+      // Share Issuance's own-share-count increase — not a real
+      // PlayerVariables field, so never written generically like every other field
+      // here. A positive value on the deployment year increases totalSharesOutstanding
+      // and dilutes every existing shareOwnership key proportionally, crediting the
+      // newly issued shares 100% to EXTERNAL_MARKET. See applySharesAmount's doc comment
+      // for why this needed its own special case (mirrors the target.*/competitor* skip
+      // pattern right above, for the same "not a field applyDecisionImpacts can write
+      // generically" reason).
+      const sharesIssued = elapsedYears === 0 ? getScheduleValue(impact.schedule, elapsedYears) : 0;
+      if (sharesIssued > 0) {
+        applySharesAmount(v, sharesIssued);
+      }
+      continue;
+    }
+
     const value = getScheduleValue(impact.schedule, elapsedYears);
     if (value === 0) continue;
 
     if (impact.type === 'absolute') {
-      (v as any)[field] += value;
+      // ?? 0 matters: several optional PlayerVariables fields (revenue, financeCost,
+      // taxCost — all "Derived (computed each turn)" fields never seeded by
+      // startingVars()) start genuinely undefined, not 0. A bare `+= value` on an
+      // undefined base is `undefined + number` = NaN in JS, which then persists forever
+      // (NaN + anything is still NaN, and nothing else in the turn ever overwrites these
+      // three specific fields the way receivables/equity/etc. get freshly recomputed each
+      // turn) — a real, reported bug: Channel Stuffing (impacts.revenue), Tax Planning
+      // (impacts.taxCost), and Payday Loan (impacts.financeCost) each silently corrupted
+      // the deploying player's own `variables.revenue`/`taxCost`/`financeCost` to NaN
+      // forever, the instant any player anywhere first deployed one. Caught by a random
+      // 4-player game simulation, not by hand — see CLAUDE.md's "applyDecisionImpacts'
+      // absolute-impact write corrupted an undefined field to NaN" section.
+      (v as any)[field] = ((v as any)[field] ?? 0) + value;
 
-      // Track absolute additions to P&L fields for delta passing (FORMULAS §4-§5)
+      // Track absolute additions to P&L fields for delta passing
       if (field === 'revenue') revenueDelta += value;
       else if (field === 'financeCost') financeCostDelta += value;
       else if (field === 'taxCost') taxCostDelta += value;
       else if (field === 'receivables') receivablesDelta += value;
       else if (field === 'cash') cashDelta += value;
 
-      // FORMULAS §1: Track genuine asset purchases that need depreciation entries.
-      // Only create entries on the first year (elapsedYears === 0) when the purchase is new.
-      if (elapsedYears === 0 && value > 0 && DEPRECIATING_ASSETS.has(decisionName)) {
-        if (field === 'assets' || field === 'intangibleAssets') {
-          const entry = addDepreciationEntry(decisionName, field as 'assets' | 'intangibleAssets', value, currentYear ?? 0);
-          if (entry) {
-            newDepreciationEntries.push(entry);
-          }
+      // Track genuine asset purchases that need depreciation entries.
+      // Only create entries on the first year (elapsedYears === 0) when the purchase is
+      // new — any decision with a positive assets/intangibleAssets addition qualifies,
+      // regardless of name (see addDepreciationEntry's doc comment).
+      if (elapsedYears === 0 && value > 0 && (field === 'assets' || field === 'intangibleAssets')) {
+        const entry = addDepreciationEntry(field, value, currentYear ?? 0);
+        if (entry) {
+          newDepreciationEntries.push(entry);
         }
       }
     } else {
@@ -483,7 +666,7 @@ export function applyDecisionImpacts(
     }
   }
 
-  return { updatedVars: v, newDepreciationEntries, absDeltas: { revenueDelta, financeCostDelta, taxCostDelta, receivablesDelta, cashDelta } };
+  return { updatedVars: clampFloorZeroFields(v), newDepreciationEntries, absDeltas: { revenueDelta, financeCostDelta, taxCostDelta, receivablesDelta, cashDelta } };
 }
 
 /**
@@ -530,7 +713,11 @@ export function applyTargetImpacts(
     const value = getScheduleValue(impact.schedule, elapsedYears);
     if (value === 0) continue;
     if (impact.type === 'absolute') {
-      (v as any)[field] += value;
+      // Same undefined-base-produces-NaN guard as applyDecisionImpacts' own absolute
+      // branch above — none of the 9 real target.* fields currently hit this in
+      // practice (all seeded, non-optional), but a future admin-added target.* mapping
+      // to an optional field would otherwise silently reintroduce the same bug.
+      (v as any)[field] = ((v as any)[field] ?? 0) + value;
     } else {
       const multiplier = fieldMultipliers.get(field) ?? 0;
       const currentVal = (v as any)[field];
@@ -540,7 +727,7 @@ export function applyTargetImpacts(
     }
   }
 
-  return v;
+  return clampFloorZeroFields(v);
 }
 
 /**

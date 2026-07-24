@@ -466,23 +466,38 @@ const Matchmaking: React.FC = () => {
         </Stack>
       </Paper>
 
-      <Modal opened={aboutOpen} onClose={() => setAboutOpen(false)} title={<Title order={3}>⚖️ Sue Their Asses</Title>} centered size="md">
+      <Modal opened={aboutOpen} onClose={() => setAboutOpen(false)} title={<Title order={3}>⚖️🐔 Sue Their Asses</Title>} centered size="md">
         <Stack gap="md">
           <Text size="sm">
-            A multiplayer business strategy game for 2-4 players. Everyone runs a rival
-            company, competing for the same market — and the instant your cash goes
-            negative, you're eliminated. Last company standing wins.
+            Welcome to the cutthroat, deep-fried underbelly of industrial poultry. You and
+            up to 3 rival executives each run a chicken empire, competing for the exact same
+            coop-to-table market — and the instant your cash goes negative, your henhouse
+            folds and you're out. Last tycoon standing keeps the whole flock.
           </Text>
-          <Text size="sm">Each round, every player simultaneously:</Text>
+          <Text size="sm">Each round, every ruthless chicken executive simultaneously:</Text>
           <List size="sm" spacing={4}>
-            <List.Item>Deploys strategic and operational decisions to grow their company — some safe, some legally risky</List.Item>
-            <List.Item>Watches rivals for risky moves worth suing them over, and files lawsuits against them</List.Item>
-            <List.Item>Negotiates or fights any lawsuits filed against them</List.Item>
+            <List.Item>
+              Deploys strategic and operational decisions to grow the business — some are
+              wholesome (build a factory, train the staff), some are merely Grey Area
+              (creative accounting, a strongly-worded press release), and some are flat-out
+              Dirty (releasing a fox into a rival's henhouse, quietly pumping your own birds
+              full of water before they hit the scale, lacing a competitor's feed with
+              laxatives — yes, that is a real move you can make)
+            </List.Item>
+            <List.Item>
+              Watches every other coop for something suspiciously fowl going on, and files a
+              lawsuit over it — sometimes with real evidence, sometimes on nothing but a
+              hunch and a grudge, because SUE THEIR ASSES doesn't wait for proof
+            </List.Item>
+            <List.Item>Negotiates a settlement, or drags a rival to court and lets a judge decide who's really been up to no good in the coop</List.Item>
           </List>
           <Text size="sm">
-            Decisions affect price, market share, revenue, and legal exposure — a risky
-            decision can boost your numbers fast, but it's also a lawsuit waiting to
-            happen. Outlast every other player to win.
+            Decisions move price, market share, revenue, and legal exposure — a sufficiently
+            dirty move can send your numbers soaring, right up until a rival's lawyer smells
+            blood in the henhouse. Or skip the lawsuits entirely: quietly buy up more than
+            half of a rival's shares and take their whole operation in a hostile takeover.
+            Outlast, outlawyer, or out-acquire every other company to become the last chicken
+            tycoon standing.
           </Text>
           <Button onClick={() => setAboutOpen(false)}>Got it</Button>
         </Stack>

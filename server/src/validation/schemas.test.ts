@@ -269,6 +269,8 @@ describe('Validation Schemas', () => {
         negotiationPeriodTurns: 2,
         lawsuitFilingCost: 15000,
         statuteOfLimitationsYears: 10,
+        semaphoreGreenMax: 0.15,
+        semaphoreYellowMax: 0.4,
       },
       playerStartingValues: {
         cash: 100000, assets: 50000, intangibleAssets: 10000, debt: 20000, reserves: 30000,
@@ -285,10 +287,10 @@ describe('Validation Schemas', () => {
           competitivenessWeight_loss_wl: 0.15, competitivenessWeight_demand_wd: 0.1, outrageDemandWeight: 0.5,
         },
         legalProcess: {
-          semaphoreGreenMax: 0.15, semaphoreYellowMax: 0.4, scrutinyLegalRiskMultiplier: 0.02,
-          legalExposureRatioCap: 0.8, buySharesLegalRiskThresholdPercent: 0.05,
+          scrutinyLegalRiskMultiplier: 0.02,
+          legalExposureRatioCap: 0.8,
         },
-        riskGauge: { riskWeightLegalExposure_w1: 0.3, riskWeightScrutiny_w2: 0.2, riskWeightOutrage_w3: 0.25 },
+        riskGauge: { riskWeightLegalExposure_w1: 0.25, riskWeightScrutiny_w2: 0.2, riskWeightOutrage_w3: 0.2, riskWeightOwnership_w4: 0.2, riskWeightSolvency_w5: 0.15 },
         ownership: { takeoverThresholdPercent: 0.5 },
         finance: { baseFinanceCost: 2000, interestRate: 0.05, taxRate: 0.2, daysSalesOutstanding_DSO: 30 },
         depreciation: { assetUsefulLifeYears: 10, intangibleUsefulLifeYears: 5 },

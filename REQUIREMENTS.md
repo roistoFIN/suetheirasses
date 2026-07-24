@@ -1,31 +1,22 @@
 ## Future Roadmap / To-Do
 
 # Lobby
+- Add chicken manoeur business domain to "About" info
 
 # Game
-- If there are two players left in the game (or two player game was started), the first dig deeper is not needed because it is obious who was it. It must Start straight from the second dig deeper round (done?)
-- Indirect affects of other players' decisions must be risen to player's knowledge also like direct ones ("somebody did something to you"). Name indirect action "Somebody did something that indirectly affects you.". Also enable dig deeper functionality to these. (done?)
-- Remove "No open lawsuits" from Open Lawsuits -box, it is displayed in topic. Same for "No active decisions" in Active Decisions -box
-- Add one dig deeper to open law suit, where player has been sued. With this dig deeper, the propability of success is shown. Before that it must be unknown.
-- Is the decision matured, if the affect continues? Maybe it is then "Ongoing"? For example "Hype Initial Coin Offering" outrage keeps groving forever. Selvitä, mitkä päätökset tuovat jatkuvan vaikutuksen ja varsinkin sellaiset, mitkä tuovat jatkuvan kasvun. Mieti, pitäisikö näitä rajoittaa.
-- Rajaukset decisions ja open lawsuits -bokseihin
-- In graphs, Actual and Predicted has the same color. Make Predicted have red color
-- Competitor Intel's FULL FILING: Change "ANNUAL REPORT" to "ANNUAL REPORTS". Remove "✨ AI-generated"
-- Description to Active Decisions' ongoing decisions like "Pelleting Research and Development" has "Invest in technology to process feed into high-efficiency pellets, driving up product value and margins.".
-- "Show details" also to Active Decisions' ongoing decisions
-- "MAKE IMPORTANT DECISIONS" rajausnapit omille riveillensä
-- Rikokset vanhenevat 10 vuodessa. Tämä on takaraja päätöksen oikeuteen haastamisesta (eli mahdollisuus voittaa tippuu nollaan)
-- Erikokoiset napit yläpalkissa ovat rumia. Tee niistä samankokoisia
-- Search -hakukenttä myös päätöksiin
-- No need to show queued law suit in SUE THEM buttons info view, since it goes to Open Lawsuits -box. Close the window automatically, when lawsuit is selected.
-- Rename "Next turn" news item "Turn has been changed"
-- Are decisions or law suits hard coded somewhere? They shouldn't since admin can add or remove them from admin portal
+- "Ownership / takeover risk" and "Legal solvency risk" behind clicking "THREAT LEVEL" must have history graphs and arrows like other elements
+- Add generated related ANNUAL REPORT text to "[player] did something to you" after one dig deeper when player's name is known.
+- Add filter function to "Active Decision" box. The decisions can be filtered by their status. Also add sorting functionality to sort ascending or descending by turn, attaced player name, etc. Also make max size for the box and scrollbar to scroll through decisions. Max three decisions at the clanse can be seen. 
+- Go through the documentation. Do you find illogicalities or overlapping rules? Suggest improvements to the game logic.
+- Next create a simulated real 4 players game and test case, where players are smarter. They dig deeper to make the right calls for suying if they have money. Analyze how this changes game dynamics: especially are there too good or bad decisions and are the initial values of the variables corret. Also keep an eye on bugs. (done?)
+
 
 # Game over
-- Win or lose window even if bankrupt
+- Graphs 
  
 # UI
 - Chicken maneur theme
+- Erikokoiset napit yläpalkissa ovat rumia. Tee niistä samankokoisia
 
 # Other
 - Spectator view

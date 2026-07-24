@@ -134,10 +134,16 @@ export function validateGameReady(data: unknown): GameReadyPayload {
 const decisionEntrySchema = z.object({
   name: z.string().min(1).max(100),
   targetId: z.string().min(1).max(50).optional(),
+  /** Dollar amount for a `shareTransactionType` decision (Buy Shares' investment, Sell
+   * Shares' sale) — meaningless for any other decision, so left optional rather than
+   * required generically. Server-side execution (`GameLoop`'s share-transaction step)
+   * still clamps this against real affordability/holdings regardless of what's sent
+   * here — this only guards against a malformed/hostile payload shape. */
+  amount: z.number().positive().finite().max(1e12).optional(),
 });
 
 /** A deliberate lawsuit filing — sue a target over a ground drawn from one of their
- * actually-deployed decisions (never auto-generated just from legal risk, FORMULAS §6).
+ * actually-deployed decisions (never auto-generated just from legal risk).
  * Exported and reused as-is for `game:fileLawsuit`'s payload — same shape as one entry
  * of `submitDecisionsSchema`'s `lawsuits` array. */
 export const lawsuitEntrySchema = z.object({
@@ -358,6 +364,10 @@ export const decisionDefinitionSchema = z.object({
   requiresTarget: z.boolean().optional(),
   legalRiskConditions: z.record(z.string(), z.unknown()).optional(),
   cashFlowCategory: z.enum(['operating', 'investing', 'financing']).optional(),
+  /** Marks this decision as a real share-ownership trade (Buy Shares / Sell Shares) —
+   * see `DecisionDefinition.shareTransactionType`/CLAUDE.md. Admin-editable like every
+   * other field here; the engine reads it generically, never a hardcoded decision name. */
+  shareTransactionType: z.enum(['buy', 'sell']).optional(),
 });
 
 /** Inferred TypeScript type for a validated decision definition. */
@@ -387,6 +397,8 @@ const gameSettingsSchema = z.object({
   negotiationPeriodTurns: z.number(),
   lawsuitFilingCost: z.number(),
   statuteOfLimitationsYears: z.number(),
+  semaphoreGreenMax: z.number(),
+  semaphoreYellowMax: z.number(),
 });
 
 const playerStartingValuesSchema = z.object({
@@ -431,16 +443,15 @@ const adminVariablesSchema = z.object({
     outrageDemandWeight: z.number(),
   }),
   legalProcess: z.object({
-    semaphoreGreenMax: z.number(),
-    semaphoreYellowMax: z.number(),
     scrutinyLegalRiskMultiplier: z.number(),
     legalExposureRatioCap: z.number(),
-    buySharesLegalRiskThresholdPercent: z.number(),
   }),
   riskGauge: z.object({
     riskWeightLegalExposure_w1: z.number(),
     riskWeightScrutiny_w2: z.number(),
     riskWeightOutrage_w3: z.number(),
+    riskWeightOwnership_w4: z.number(),
+    riskWeightSolvency_w5: z.number(),
   }),
   ownership: z.object({
     takeoverThresholdPercent: z.number(),
@@ -479,7 +490,7 @@ export function validateGameConfig(data: unknown): ValidatedGameConfig {
 }
 
 // ============================================================
-// Admin Portal — formulas (FORMULAS.md §2-§7, DB-backed via the `Formula` table).
+// Admin Portal — formulas (the 23 pure-math formulas, DB-backed via the `Formula` table).
 // The key set is fixed (no create/delete route) — only `expression`/`description`
 // are ever written, and every expression is validated against BOTH syntax (via the
 // real parser, not a regex) AND a fixed per-key variable whitelist before it's
@@ -515,7 +526,7 @@ export const FORMULA_VARIABLES: Record<string, string[]> = {
   stockValue: ['marketEquity', 'totalSharesOutstanding'],
   adjustedProbability: ['baseProbability', 'scrutinyLegalRiskMultiplier', 'defendantScrutiny', 'defendantLegalExposureRatio'],
   legalExposureRatio: ['legalExposureRatioCap', 'legalExposure', 'cash'],
-  riskGauge: ['w1', 'w2', 'w3', 'legalExposureRatio', 'legalExposureRatioCap', 'scrutiny', 'absOutrage'],
+  riskGauge: ['w1', 'w2', 'w3', 'w4', 'w5', 'legalExposureRatio', 'legalExposureRatioCap', 'scrutiny', 'absOutrage', 'ownershipRisk', 'solvencyRisk'],
 };
 
 /** Zod schema for the body of `PUT /api/admin/formulas/:key`. */

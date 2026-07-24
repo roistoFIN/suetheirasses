@@ -10,8 +10,8 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "1": -100000,
-          "2": -100000,
+          "1": -60000,
+          "2": -60000,
           "default": 0
         }
       },
@@ -28,7 +28,7 @@
         "schedule": {
           "1": 0.0,
           "2": 0.0,
-          "default": -0.3
+          "default": -0.15
         }
       },
       "operatingExpenses": {
@@ -51,7 +51,7 @@
         "type": "relative",
         "schedule": {
           "1": 0.0,
-          "2": 0.0,
+          "2": 0.15,
           "default": 0.4
         }
       }
@@ -111,14 +111,14 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "1": -80000,
+          "1": -50000,
           "default": 0
         }
       },
       "assets": {
         "type": "absolute",
         "schedule": {
-          "1": 80000,
+          "1": 50000,
           "default": 0
         }
       },
@@ -1161,7 +1161,7 @@
   {
     "decision": "Raw Material Monopoly",
     "level": "Strategic",
-    "description": "Sign exclusive contracts to corner the market on vital raw materials, starving competitors of essential production inputs.",
+    "description": "Sign exclusive contracts to corner the market on vital raw materials, starving competitors of essential production inputs and locking in cheaper supply for yourself.",
     "nature": "Dirty",
     "offensiveAction": true,
     "excludes": [],
@@ -1169,21 +1169,21 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "1": -40000,
+          "1": -25000,
           "default": 0
         }
       },
       "materialCostPerTon": {
         "type": "relative",
         "schedule": {
-          "1": 0.1,
-          "default": 0.05
+          "1": -0.1,
+          "default": -0.05
         }
       },
       "intangibleAssets": {
         "type": "absolute",
         "schedule": {
-          "1": 40000,
+          "1": 25000,
           "default": 0
         }
       },
@@ -1309,7 +1309,7 @@
   {
     "decision": "Venture Capital Shadow Money",
     "level": "Strategic",
-    "description": "Accept massive funding from anonymous, high-risk venture capital sources. Boosts cash but severely escalates personal CEO risk.",
+    "description": "Accept massive funding from anonymous, high-risk venture capital sources. Boosts cash immediately but carries real repayment obligations for years afterward, on top of severely escalating personal CEO risk.",
     "nature": "Dirty",
     "offensiveAction": false,
     "excludes": [],
@@ -1318,6 +1318,16 @@
         "type": "absolute",
         "schedule": {
           "1": 250000,
+          "default": 0
+        }
+      },
+      "financeCost": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0,
+          "2": 15000,
+          "3": 15000,
+          "4": 15000,
           "default": 0
         }
       }
@@ -2247,7 +2257,7 @@
   {
     "decision": "Excess Dividend",
     "level": "Operational",
-    "description": "Pay out a massive cash dividend to please shareholders, heavily draining company cash and equity reserves.",
+    "description": "Pay out a cash dividend to please shareholders, modestly draining company cash and equity reserves.",
     "nature": "Grey Area",
     "offensiveAction": false,
     "excludes": [],
@@ -2255,7 +2265,7 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "1": -80000,
+          "1": -20000,
           "default": 0
         }
       }
@@ -2265,16 +2275,16 @@
         "name": "Creditor Invalidation of Capital Distribution (UVTA Action)",
         "description": "As a creditor or claimant, challenge the competitor's unlawful dividend distributions; they are deliberately draining cash to shareholders to evade paying your outstanding claims.",
         "probability": {
-          "1": 0.12,
-          "2": 0.2,
-          "default": 0.15
+          "1": 0.06,
+          "2": 0.1,
+          "default": 0.08
         },
         "impact": {
           "type": "relative",
           "target": "equity",
           "schedule": {
-            "1": -0.05,
-            "default": -0.1
+            "1": -0.025,
+            "default": -0.05
           }
         }
       },
@@ -2282,16 +2292,16 @@
         "name": "Corporate Insolvency & Fraudulent Transfer Action",
         "description": "Sue to claw back the dividend payouts, arguing the distribution leaves the competitor undercapitalized to cover outstanding tort and operational liabilities.",
         "probability": {
-          "1": 0.1,
-          "2": 0.16,
-          "default": 0.12
+          "1": 0.05,
+          "2": 0.08,
+          "default": 0.06
         },
         "impact": {
           "type": "relative",
           "target": "equity",
           "schedule": {
-            "1": -0.04,
-            "default": -0.08
+            "1": -0.02,
+            "default": -0.04
           }
         }
       }
@@ -3246,14 +3256,8 @@
     "excludes": [],
     "variableAmount": true,
     "requiresTarget": true,
-    "impacts": {
-      "target.operatingExpenses": {
-        "type": "relative",
-        "schedule": {
-          "default": 0.15
-        }
-      }
-    },
+    "shareTransactionType": "buy",
+    "impacts": {},
     "legalRisks": [
       {
         "name": "Breach of Corporate Fiduciary Duty & Raiding Injunction",
@@ -3310,6 +3314,7 @@
     "excludes": [],
     "variableAmount": true,
     "requiresTarget": true,
+    "shareTransactionType": "sell",
     "impacts": {},
     "legalRisks": [],
     "competitorsView": [

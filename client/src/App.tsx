@@ -5,44 +5,61 @@ import { useGameStore } from './stores/gameStore';
 import Matchmaking from './pages/Matchmaking';
 import GamePhase from './pages/GamePhase';
 import GameOver from './pages/GameOver';
+import GameTimelineView from './pages/GameTimelineView';
 import AdminPortal from './pages/AdminPortal';
 
-const LOST_COPY: Record<'bankrupt' | 'forfeit', { title: string; body: string }> = {
+const LOST_COPY: Record<'bankrupt' | 'forfeit' | 'merged', { title: string; body: (acquirerName?: string) => string }> = {
   bankrupt: {
     title: "YOU'VE GONE BANKRUPT",
-    body: "Your cash ran out and the bank came knocking. You're out of the game — the rest of the table plays on without you.",
+    body: () => "Your cash ran out and the bank came knocking. You're out of the game — the rest of the table plays on without you.",
   },
   forfeit: {
     title: 'YOU FORFEITED',
-    body: "You left the game, which means an instant loss — you're marked bankrupt and the rest of the table plays on without you.",
+    body: () => "You left the game, which means an instant loss — you're marked bankrupt and the rest of the table plays on without you.",
+  },
+  merged: {
+    title: 'YOUR COMPANY WAS ACQUIRED',
+    body: (acquirerName) => `${acquirerName ?? 'A rival'} bought up more than half of your company's shares and took control. You're out of the game — the rest of the table plays on without you.`,
   },
 };
 
 /**
- * Full-screen takeover shown the moment this player's own bankruptcy is detected —
- * natural cash<0 elimination or a voluntary `game:leave` forfeit (see socketStore.ts's
- * player:bankrupt/game:left handlers, which set `gameStore.selfElimination`). Checked
+ * Full-screen takeover shown the moment this player's own elimination is detected —
+ * natural cash<0 bankruptcy, a voluntary `game:leave` forfeit, or losing a majority-
+ * ownership takeover (`'merged'`) — see socketStore.ts's
+ * player:bankrupt/game:left handlers, which set `gameStore.selfElimination`. Checked
  * in App.tsx ahead of the currentPhase switch so it wins even if that same elimination
  * also ended the game and flipped the room to AFTERMATH — a player who lost this way
  * sees this, not the winner's GameOver screen.
+ *
+ * A one-time acknowledgment gate, not a dead end: "Watch the rest of the game" flips
+ * `gameStore.hasAcknowledgedElimination`, which swaps this overlay for the live
+ * GameTimelineView spectator view (see App's own render logic below) — the player's
+ * socket was never disconnected on elimination, so it's been receiving every
+ * `turn:resolved`/`phase:changed` broadcast the whole time regardless. "Leave" is the
+ * old behavior unchanged, for anyone who'd rather not watch.
  */
-const LostOverlay: React.FC<{ reason: 'bankrupt' | 'forfeit' }> = ({ reason }) => {
-  const { returnToLanding } = useSocketStore();
+const LostOverlay: React.FC<{ reason: 'bankrupt' | 'forfeit' | 'merged'; acquirerName?: string; onWatch: () => void; onLeave: () => void }> = ({ reason, acquirerName, onWatch, onLeave }) => {
   const copy = LOST_COPY[reason];
 
   return (
     <Container size="xs" py="xl">
       <Paper withBorder p="xl" shadow="lg">
-        <Image src="/images/lost.png" alt="Eliminated" radius="md" mb="md" />
+        <Image src={reason === 'merged' ? '/images/acquired.png' : '/images/lost.png'} alt="Eliminated" radius="md" mb="md" />
         <Title order={2} ta="center" mb="xs" c="red">
           {copy.title}
         </Title>
         <Text ta="center" c="dimmed" mb="lg">
-          {copy.body}
+          {copy.body(acquirerName)}
         </Text>
-        <Button fullWidth color="red" onClick={returnToLanding}>
-          Return to Start
-        </Button>
+        <Stack gap="xs">
+          <Button fullWidth color="blue" onClick={onWatch}>
+            Watch the rest of the game
+          </Button>
+          <Button fullWidth color="red" variant="outline" onClick={onLeave}>
+            Leave
+          </Button>
+        </Stack>
       </Paper>
     </Container>
   );
@@ -69,7 +86,7 @@ const LostOverlay: React.FC<{ reason: 'bankrupt' | 'forfeit' }> = ({ reason }) =
  * over the GameOver screen that phase change swaps in underneath, exactly like it did
  * before, just without blocking the view of whichever screen is actually current.
  */
-const BankruptcyModal: React.FC<{ playerName: string; onDismiss: () => void }> = ({ playerName, onDismiss }) => (
+const BankruptcyModal: React.FC<{ playerName: string; reason?: 'bankruptcy' | 'merger'; acquirerName?: string; onDismiss: () => void }> = ({ playerName, reason, acquirerName, onDismiss }) => (
   <Modal
     opened
     onClose={onDismiss}
@@ -78,12 +95,16 @@ const BankruptcyModal: React.FC<{ playerName: string; onDismiss: () => void }> =
     title={<Text fw={700} fz="0.9rem">💀 PLAYER ELIMINATED</Text>}
   >
     <Stack gap="md">
-      <Image src="/images/lost.png" alt="Eliminated" radius="md" />
+      <Image src={reason === 'merger' ? '/images/acquired.png' : '/images/lost.png'} alt="Eliminated" radius="md" />
       <Text ta="center" fw={700} c="red">
-        {playerName.toUpperCase()} HAS GONE BANKRUPT
+        {reason === 'merger'
+          ? `${playerName.toUpperCase()}'S COMPANY WAS ACQUIRED`
+          : `${playerName.toUpperCase()} HAS GONE BANKRUPT`}
       </Text>
       <Text ta="center" c="dimmed" size="sm">
-        Their cash ran out and the bank came knocking — they're out of the game.
+        {reason === 'merger'
+          ? `${acquirerName ?? 'A rival'} bought up more than half of their company's shares — they're out of the game.`
+          : "Their cash ran out and the bank came knocking — they're out of the game."}
       </Text>
       <Button fullWidth color="red" onClick={onDismiss}>
         Got it
@@ -129,8 +150,8 @@ const NotificationBanner: React.FC = () => {
  * first, ahead of any game-phase state.
  */
 const App: React.FC = () => {
-  const { connect, disconnect } = useSocketStore();
-  const { currentPhase, isRejoining, selfElimination, bankruptcyEvents, dismissBankruptcyEvent } = useGameStore();
+  const { connect, disconnect, returnToLanding } = useSocketStore();
+  const { currentPhase, isRejoining, selfElimination, hasAcknowledgedElimination, acknowledgeElimination, bankruptcyEvents, dismissBankruptcyEvent } = useGameStore();
   const isAdminRoute = window.location.pathname.startsWith('/admin');
 
   useEffect(() => {
@@ -145,9 +166,11 @@ const App: React.FC = () => {
   // Checked ahead of the phase switch below — see LostOverlay's doc comment for why.
   // No NotificationBanner here: if this same elimination also ended the game, the
   // generic "Game Over! X wins!" broadcast would otherwise stack on top of this
-  // already-conclusive full-screen takeover and read as contradictory.
-  if (selfElimination) {
-    return <LostOverlay reason={selfElimination.reason} />;
+  // already-conclusive full-screen takeover and read as contradictory. Only shown
+  // once per session — see LostOverlay's own doc comment for what happens after
+  // "Watch the rest of the game" is chosen.
+  if (selfElimination && !hasAcknowledgedElimination) {
+    return <LostOverlay reason={selfElimination.reason} acquirerName={selfElimination.acquirerName} onWatch={acknowledgeElimination} onLeave={returnToLanding} />;
   }
 
   // Attempting to resume a saved session (page reload, back button, brief network
@@ -165,15 +188,25 @@ const App: React.FC = () => {
   }
 
   let page: React.ReactNode;
-  switch (currentPhase) {
-    case 'GAME_PHASE':
-      page = <GamePhase />;
-      break;
-    case 'AFTERMATH':
-      page = <GameOver />;
-      break;
-    default:
-      page = <Matchmaking />;
+  // An eliminated player who chose to keep watching gets the live spectator view
+  // instead of the normal phase switch below — but only until the game actually ends:
+  // once currentPhase flips to AFTERMATH, the switch's own AFTERMATH case (GameOver,
+  // itself just GameTimelineView in "finished" mode) takes over automatically, since
+  // every socket still in the room — survivors and spectators alike — gets the same
+  // phase:changed broadcast and should land on the same finished-game replay together.
+  if (selfElimination && hasAcknowledgedElimination && currentPhase !== 'AFTERMATH') {
+    page = <GameTimelineView mode="live" />;
+  } else {
+    switch (currentPhase) {
+      case 'GAME_PHASE':
+        page = <GamePhase />;
+        break;
+      case 'AFTERMATH':
+        page = <GameOver />;
+        break;
+      default:
+        page = <Matchmaking />;
+    }
   }
 
   return (
@@ -181,7 +214,12 @@ const App: React.FC = () => {
       <NotificationBanner />
       {page}
       {bankruptcyEvents.length > 0 && (
-        <BankruptcyModal playerName={bankruptcyEvents[0].playerName} onDismiss={dismissBankruptcyEvent} />
+        <BankruptcyModal
+          playerName={bankruptcyEvents[0].playerName}
+          reason={bankruptcyEvents[0].reason}
+          acquirerName={bankruptcyEvents[0].acquirerName}
+          onDismiss={dismissBankruptcyEvent}
+        />
       )}
     </>
   );

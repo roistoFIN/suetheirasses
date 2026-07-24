@@ -1,6 +1,8 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { GameLoop, type EngineDataInput } from './gameLoop';
 import { DEFAULT_FORMULA_SEEDS } from './defaultFormulas';
+import { SELF_OWNERSHIP_KEY, EXTERNAL_MARKET_KEY, calculateRiskGauge } from './calcEngine';
+import { buildFormulaSet } from './formulaEngine';
 import type { GameConfig, PlayerVariables, LegalCaseData } from '@suetheirasses/shared';
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -56,6 +58,8 @@ function makeConfig(overrides: Partial<GameConfig> = {}): GameConfig {
       negotiationPeriodTurns: 2,
       lawsuitFilingCost: 15000,
       statuteOfLimitationsYears: 10,
+      semaphoreGreenMax: 0.15,
+      semaphoreYellowMax: 0.4,
     },
     playerStartingValues: {
       cash: 100000,
@@ -106,14 +110,13 @@ function makeConfig(overrides: Partial<GameConfig> = {}): GameConfig {
       legalProcess: {
         scrutinyLegalRiskMultiplier: 0.02,
         legalExposureRatioCap: 0.8,
-        semaphoreGreenMax: 0.15,
-        semaphoreYellowMax: 0.4,
-        buySharesLegalRiskThresholdPercent: 0.05,
       },
       riskGauge: {
         riskWeightLegalExposure_w1: 0.3,
         riskWeightScrutiny_w2: 0.2,
         riskWeightOutrage_w3: 0.25,
+        riskWeightOwnership_w4: 0,
+        riskWeightSolvency_w5: 0,
       },
       ownership: {
         takeoverThresholdPercent: 0.5,
@@ -286,6 +289,78 @@ describe('GameLoop', () => {
           },
         ],
       },
+      {
+        decision: 'Buy Shares',
+        level: 'Strategic',
+        description: 'Buy a block of another company\'s shares',
+        nature: 'Grey Area',
+        offensiveAction: true,
+        excludes: [],
+        requiresTarget: true,
+        variableAmount: true,
+        shareTransactionType: 'buy',
+        impacts: {},
+        legalRisks: [
+          {
+            name: 'Breach of Corporate Fiduciary Duty & Raiding Injunction',
+            description: 'Sue for the hostile stake acquisition',
+            probability: { 1: 0.1, default: 0.08 },
+            impact: { type: 'absolute', target: 'cash', schedule: { default: -35000 } },
+          },
+        ],
+        legalRiskConditions: { minPercentAcquiredInSingleTransaction: 0.05 },
+      },
+      {
+        decision: 'Sell Shares',
+        level: 'Strategic',
+        description: 'Sell held shares back to the external market',
+        nature: 'Traditional',
+        offensiveAction: false,
+        excludes: [],
+        requiresTarget: true,
+        variableAmount: true,
+        shareTransactionType: 'sell',
+        impacts: {},
+        legalRisks: [],
+      },
+      {
+        decision: 'Share Issuance',
+        level: 'Strategic',
+        description: 'Issue new equity to the market',
+        nature: 'Traditional',
+        offensiveAction: false,
+        excludes: [],
+        impacts: {
+          cash: { type: 'absolute', schedule: { 1: 150000, default: 0 } },
+          sharesAmount: { type: 'absolute', schedule: { 1: 5000, default: 0 } },
+        },
+        legalRisks: [],
+      },
+      {
+        decision: 'Risky Fundraising',
+        level: 'Operational',
+        description: 'Raise cash through a legally dubious scheme (relative-type legal-risk fixture)',
+        nature: 'Dirty',
+        offensiveAction: false,
+        excludes: [],
+        impacts: {
+          cash: { type: 'absolute', schedule: { 1: 100000, default: 0 } },
+        },
+        legalRisks: [
+          {
+            name: 'Fraudulent Capital Procurement',
+            description: 'Sue over the fraudulent fundraising scheme',
+            probability: { 1: 0.3, default: 0.75 },
+            impact: { type: 'relative', target: 'equity', schedule: { 1: -0.15, default: -0.45 } },
+          },
+          {
+            name: 'Unfair Competition via Fundraising',
+            description: 'Sue over the resulting unfair competitive advantage',
+            probability: { 1: 0.1, default: 0.4 },
+            impact: { type: 'relative', target: 'revenue', schedule: { 1: -0.1, default: -0.4 } },
+          },
+        ],
+      },
     ]);
   });
 
@@ -400,6 +475,66 @@ describe('GameLoop', () => {
 
       expect(outcome.result.players[0].activeDecisions).toHaveLength(1);
       expect(outcome.result.players[0].activeDecisions[0].decisionName).toBe('Quality Certification');
+    });
+
+    it('carries a target-bearing decision\'s targetId through to the client-facing activeDecisions entry (regression)', () => {
+      // ActiveDecisionInstance used to have no targetId at all — the client's "Active
+      // Decisions" box had no way to show/sort by who a player's own decision targeted,
+      // even though the underlying deployed instance always tracked it.
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [],
+        operational: [{ name: 'Bot Attack', targetId: 'player-2' }, { name: 'Quality Certification' }],
+        lawsuits: [],
+      });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+      const activeDecisions = outcome.result.players[0].activeDecisions;
+
+      expect(activeDecisions.find((d) => d.decisionName === 'Bot Attack')?.targetId).toBe('player-2');
+      // A decision with no target concept at all carries no targetId, not an empty string.
+      expect(activeDecisions.find((d) => d.decisionName === 'Quality Certification')?.targetId).toBeUndefined();
+    });
+
+    it('does not silently drop a later turn\'s decisions just because an earlier turn already used the same-level per-turn budget (regression)', () => {
+      // A real, reported bug: canDeploy used to re-derive "how many decisions of this
+      // level does this player have" from the player's ENTIRE historical
+      // engineState.activeDecisions list (never pruned — matured decisions stay forever),
+      // making the "max N per turn" check a lifetime cap in practice. Turn 1 here uses
+      // the full strategic (2) and operational (3) budget this room's config allows —
+      // completely normal play, not an edge case. Turn 2 then submits ONE more decision
+      // of each level; both used to be silently dropped (canDeploy rejected them, so
+      // processNewDecisions just `continue`d past them with no error, no active decision
+      // created, and no trace left anywhere) even though they're entirely new decisions,
+      // unrelated to anything deployed in turn 1.
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [{ name: 'New Factory' }, { name: 'Share Issuance' }],
+        operational: [{ name: 'Quality Certification' }, { name: 'Water Pumping' }],
+        lawsuits: [],
+      });
+      const outcome1 = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+      const aliceUpdate1 = outcome1.companyUpdates.find((u) => u.playerId === 'player-1')!;
+      expect(outcome1.result.players[0].activeDecisions.map((d) => d.decisionName).sort()).toEqual(
+        ['New Factory', 'Quality Certification', 'Share Issuance', 'Water Pumping'].sort(),
+      );
+
+      const players2 = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: aliceUpdate1.variables, engineState: aliceUpdate1.engineState },
+        { id: 'player-2', name: 'Bob' },
+      ]);
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [{ name: 'Buy Shares' }],
+        operational: [{ name: 'Bot Attack', targetId: 'player-2' }],
+        lawsuits: [],
+      });
+      const outcome2 = gameLoop.resolveTurn('room-1', 2, players2);
+
+      const aliceNames = outcome2.result.players.find((p) => p.playerId === 'player-1')!.activeDecisions.map((d) => d.decisionName);
+      expect(aliceNames).toContain('Buy Shares');
+      expect(aliceNames).toContain('Bot Attack');
+      // The other player must see the effect too — Bot Attack targets them, so it should
+      // show up as an incoming attack, not just silently vanish for both parties.
+      const bobIncoming = outcome2.result.players.find((p) => p.playerId === 'player-2')!.incomingAttacks;
+      expect(bobIncoming.length).toBeGreaterThan(0);
     });
 
     it('should block deploying same decision twice before maturity', () => {
@@ -642,6 +777,53 @@ describe('GameLoop', () => {
       expect(outcome.result.players[0].riskGauge).toBeDefined();
       expect(outcome.result.players[0].riskGauge).toBeGreaterThanOrEqual(0);
       expect(outcome.result.players[0].riskGauge).toBeLessThanOrEqual(100);
+    });
+
+    // Regression for the risk gauge's 5th term (solvency risk, see CLAUDE.md's "Risk
+    // Gauge solvency term"): resolveTurn must feed the real ctx.prevCash (this player's
+    // cash BEFORE this turn's own P&L moved it) into calculateRiskGauge, not silently
+    // fall back to its "assume no trend" default (prevCash = post-turn cash). Isolates
+    // the gauge to only w5 weighted, so the whole result is this one term.
+    it('threads a real cash trend (via ctx.prevCash) into the solvency-risk term, not the "no trend" default', () => {
+      gameLoop.updateConfig({
+        ...config,
+        adminVariables: {
+          ...config.adminVariables,
+          riskGauge: { riskWeightLegalExposure_w1: 0, riskWeightScrutiny_w2: 0, riskWeightOutrage_w3: 0, riskWeightOwnership_w4: 0, riskWeightSolvency_w5: 1 },
+        },
+      });
+
+      const openCase: LegalCaseData = {
+        id: 'case-1', roomId: 'room-1', plaintiffId: 'player-2', defendantId: 'player-1',
+        decisionName: 'Water Pumping', groundName: 'Environmental Violation', description: 'x',
+        baseProbability: 0.5, adjustedProbability: 0.5, plaintiffFullyInvestigated: false,
+        defendantInvestigated: false, stakes: 100000, status: 'negotiating', offers: [], turnsNegotiating: 0,
+        verdict: undefined, createdAt: new Date('2024-01-01'), resolvedAt: undefined,
+      };
+      // No revenue (installedCapacity/capacityUtilization: 0) — cash this turn moves only
+      // by fixed costs, a real, predictable DECLINE, so prevCash > post-turn cash.
+      const targetVars = makeVars({ cash: 200000, installedCapacity: 0, capacityUtilization: 0 });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
+        { id: 'player-1', name: 'Alice', variables: targetVars, engineState: { legalCases: [openCase] } },
+        { id: 'player-2', name: 'Bob', variables: makeVars({ installedCapacity: 0, capacityUtilization: 0 }), engineState: { legalCases: [openCase] } },
+      ]));
+
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+      const realGauge = alice.riskGauge;
+
+      // What the "no trend assumed" default (prevCash defaulted to post-turn cash) would
+      // have produced for these exact same post-turn variables/case — computed directly
+      // against the same admin config/formulas resolveTurn just used.
+      const formulas = buildFormulaSet(DEFAULT_FORMULA_SEEDS);
+      const postTurnVars: PlayerVariables = { ...targetVars, cash: alice.variables.cash, legalExposureRatio: alice.variables.legalExposureRatio };
+      const openCases = [{ probability: 0.5, stakes: 100000 }];
+      const noTrendAssumedGauge = calculateRiskGauge(postTurnVars, openCases, config.adminVariables, formulas);
+
+      // A real decline this turn must read as MORE dangerous than assuming no trend at
+      // all — if resolveTurn had silently used the default instead of ctx.prevCash, these
+      // two numbers would be identical.
+      expect(realGauge).toBeGreaterThan(noTrendAssumedGauge);
     });
   });
 
@@ -921,6 +1103,780 @@ describe('GameLoop', () => {
         const bobCase = outcome2.result.players.find((p) => p.playerId === 'player-2')?.legalCases[0];
         expect(bobCase?.plaintiffFullyInvestigated).toBe(true);
       });
+    });
+  });
+
+  describe('resolveTurn — relative-type legal-risk stakes are priced off the defendant\'s own current field, not the raw schedule fraction (regression)', () => {
+    // A real, reported bug: a `relative`-type legal risk's schedule value is a fraction
+    // (e.g. -0.45), meant to be scaled against the defendant's own current value of
+    // `impact.target` (equity/revenue) — not read as a raw dollar figure the way an
+    // `absolute`-type risk's schedule already is. Reading it as a raw figure silently
+    // produced stakes like 0.45, which rounds to display as "$0" everywhere stakes are
+    // shown (the settlement offer bracket, the "You paid/received" trial-outcome line).
+    it('prices an equity-relative ground off the defendant\'s own turn-computed equity, not the raw schedule fraction', () => {
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [], operational: [{ name: 'Risky Fundraising' }], lawsuits: [],
+      });
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [], operational: [],
+        lawsuits: [{ targetId: 'player-1', decisionName: 'Risky Fundraising', groundName: 'Fraudulent Capital Procurement' }],
+      });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+
+      const aliceEquity = outcome.result.players.find((p) => p.playerId === 'player-1')!.derived.equity;
+      const aliceCase = outcome.result.players.find((p) => p.playerId === 'player-1')!.legalCases[0];
+      // Stakes always use the default schedule value regardless of elapsedYears — same
+      // "not time-scaled the way probability is" convention absolute-type grounds already
+      // follow (see the Environmental Violation test below, unaffected by this fix).
+      expect(aliceCase.stakes).toBeCloseTo(aliceEquity * 0.45, 4);
+      expect(aliceCase.stakes).toBeGreaterThan(1); // sanity check against the bug's sub-$1 output
+    });
+
+    it('prices a revenue-relative ground off the defendant\'s own turn-computed revenue, not the raw schedule fraction', () => {
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [], operational: [{ name: 'Risky Fundraising' }], lawsuits: [],
+      });
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [], operational: [],
+        lawsuits: [{ targetId: 'player-1', decisionName: 'Risky Fundraising', groundName: 'Unfair Competition via Fundraising' }],
+      });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+
+      const aliceRevenue = outcome.result.players.find((p) => p.playerId === 'player-1')!.derived.revenue;
+      const aliceCase = outcome.result.players.find((p) => p.playerId === 'player-1')!.legalCases[0];
+      expect(aliceCase.stakes).toBeCloseTo(aliceRevenue * 0.4, 4);
+      expect(aliceCase.stakes).toBeGreaterThan(1);
+    });
+
+    it('still prices an absolute-type ground (e.g. Environmental Violation) exactly as before, unaffected by the relative-type fix', () => {
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+      });
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [], operational: [],
+        lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
+      });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+
+      const aliceCase = outcome.result.players.find((p) => p.playerId === 'player-1')!.legalCases[0];
+      expect(aliceCase.stakes).toBe(22050);
+    });
+  });
+
+  describe('resolveTurn — lawsuit voids the sued decision (regression)', () => {
+    /** Alice deploys Water Pumping (permanent -50/year materialCostPerTon effect,
+     * matures instantly since it has only a 'default' schedule key) in turn 1; Bob
+     * sues over it the same turn. Advances two more turns so the case crosses
+     * makeConfig's negotiationPeriodTurns (2) and is forced to trial, resolving in
+     * that same third turn — the same sequence as the "should force a case to
+     * trial..." test above. Returns the players array for that third, trial-resolving
+     * call so each test can control the verdict via Math.random. */
+    function fileAndForceToTrial() {
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+      });
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [], operational: [],
+        lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
+      });
+      const outcome1 = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+      const aliceUpdate1 = outcome1.companyUpdates.find(u => u.playerId === 'player-1')!;
+      const bobUpdate1 = outcome1.companyUpdates.find(u => u.playerId === 'player-2')!;
+
+      const players2 = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: aliceUpdate1.variables, engineState: aliceUpdate1.engineState },
+        { id: 'player-2', name: 'Bob', variables: bobUpdate1.variables, engineState: bobUpdate1.engineState },
+      ]);
+      const outcome2 = gameLoop.resolveTurn('room-1', 2, players2);
+      const aliceUpdate2 = outcome2.companyUpdates.find(u => u.playerId === 'player-1')!;
+      const bobUpdate2 = outcome2.companyUpdates.find(u => u.playerId === 'player-2')!;
+
+      const players3 = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: aliceUpdate2.variables, engineState: aliceUpdate2.engineState },
+        { id: 'player-2', name: 'Bob', variables: bobUpdate2.variables, engineState: bobUpdate2.engineState },
+      ]);
+      return players3;
+    }
+
+    it('should void the sued instance when the plaintiff wins at trial — cancels forthcoming effects, matures it immediately, and frees it for redeployment', () => {
+      const players3 = fileAndForceToTrial();
+
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0); // Math.random() < adjProb is always true → plaintiff wins
+      const outcome3 = gameLoop.resolveTurn('room-1', 3, players3);
+      randomSpy.mockRestore();
+
+      const alice3 = outcome3.result.players.find((p) => p.playerId === 'player-1')!;
+      expect(alice3.legalCases[0].verdict).toBe('won');
+
+      const wpInstance3 = alice3.activeDecisions.find((d) => d.decisionName === 'Water Pumping')!;
+      expect(wpInstance3.isMatured).toBe(true);
+      expect(wpInstance3.voidedByLawsuit).toBe(true);
+
+      // Forthcoming effects are cancelled — materialCostPerTon must not move again on
+      // the very next turn (Water Pumping's -50/year would otherwise keep applying
+      // forever, since it only has a 'default' schedule key).
+      const aliceUpdate3 = outcome3.companyUpdates.find((u) => u.playerId === 'player-1')!;
+      const players4 = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: aliceUpdate3.variables, engineState: aliceUpdate3.engineState },
+        { id: 'player-2', name: 'Bob' },
+      ]);
+      const outcome4 = gameLoop.resolveTurn('room-1', 4, players4);
+      const alice4 = outcome4.result.players.find((p) => p.playerId === 'player-1')!;
+      expect(alice4.variables.materialCostPerTon).toBe(alice3.variables.materialCostPerTon);
+
+      // The decision is now redeployable — canDeploy no longer blocks it now that its
+      // only matured instance was voided rather than a successful completion.
+      const aliceUpdate4 = outcome4.companyUpdates.find((u) => u.playerId === 'player-1')!;
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+      });
+      const players5 = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: aliceUpdate4.variables, engineState: aliceUpdate4.engineState },
+        { id: 'player-2', name: 'Bob' },
+      ]);
+      const outcome5 = gameLoop.resolveTurn('room-1', 5, players5);
+      const alice5 = outcome5.result.players.find((p) => p.playerId === 'player-1')!;
+      expect(alice5.activeDecisions.filter((d) => d.decisionName === 'Water Pumping')).toHaveLength(2);
+    });
+
+    it('should NOT void the sued instance when the defendant wins at trial', () => {
+      const players3 = fileAndForceToTrial();
+
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.999); // Math.random() < adjProb is always false → defendant wins
+      const outcome3 = gameLoop.resolveTurn('room-1', 3, players3);
+      randomSpy.mockRestore();
+
+      const alice3 = outcome3.result.players.find((p) => p.playerId === 'player-1')!;
+      expect(alice3.legalCases[0].verdict).toBe('lost');
+
+      const wpInstance3 = alice3.activeDecisions.find((d) => d.decisionName === 'Water Pumping')!;
+      expect(wpInstance3.voidedByLawsuit).toBe(false);
+    });
+
+    it('should void the sued instance when an unanswered offer auto-settles at a turn boundary (Step 8b)', () => {
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+      });
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [], operational: [],
+        lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
+      });
+      const outcome1 = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+      const aliceUpdate1 = outcome1.companyUpdates.find((u) => u.playerId === 'player-1')!;
+      const bobUpdate1 = outcome1.companyUpdates.find((u) => u.playerId === 'player-2')!;
+      const caseId = aliceUpdate1.engineState.legalCases[0].id;
+
+      // The defendant (Alice) makes an offer out-of-band — nobody responds before the
+      // next turn boundary, so Step 8b treats the standing offer as accepted.
+      const offerPlayers = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: aliceUpdate1.variables, engineState: aliceUpdate1.engineState },
+        { id: 'player-2', name: 'Bob', variables: bobUpdate1.variables, engineState: bobUpdate1.engineState },
+      ]);
+      const offerOutcome = gameLoop.makeOffer('player-1', caseId, 5000, offerPlayers);
+      expect(offerOutcome.success).toBe(true);
+      if (!offerOutcome.success) return;
+
+      const players2 = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: aliceUpdate1.variables, engineState: offerOutcome.defendant.engineState },
+        { id: 'player-2', name: 'Bob', variables: bobUpdate1.variables, engineState: offerOutcome.plaintiff.engineState },
+      ]);
+      const outcome2 = gameLoop.resolveTurn('room-1', 2, players2);
+
+      const alice2 = outcome2.result.players.find((p) => p.playerId === 'player-1')!;
+      const case2 = alice2.legalCases[0];
+      expect(case2.status).toBe('resolved');
+      expect(case2.verdict).toBe('settled');
+
+      const wpInstance2 = alice2.activeDecisions.find((d) => d.decisionName === 'Water Pumping')!;
+      expect(wpInstance2.isMatured).toBe(true);
+      expect(wpInstance2.voidedByLawsuit).toBe(true);
+    });
+  });
+
+  describe('resolveTurn — a permanent effect naturally expires at the statute of limitations (regression)', () => {
+    it('stops applying New Factory\'s permanent installedCapacity effect once it ages past makeConfig\'s statuteOfLimitationsYears (10), and frees it for redeployment', () => {
+      const players = makePlayers([
+        {
+          id: 'player-1', name: 'Alice',
+          variables: makeVars({ installedCapacity: 20000 }),
+          engineState: { activeDecisions: [{ id: 'nf-1', definitionName: 'New Factory', deployedYear: 1, elapsedYears: 9, isMatured: true }] },
+        },
+        { id: 'player-2', name: 'Bob' },
+      ]);
+
+      const outcome = gameLoop.resolveTurn('room-1', 11, players);
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+
+      // elapsedYears becomes 10 this turn — at the statute — so New Factory's permanent
+      // +5000/turn installedCapacity effect no longer applies (it would have, pre-feature).
+      expect(alice.variables.installedCapacity).toBe(20000);
+
+      const nfInstance = alice.activeDecisions.find((d) => d.decisionName === 'New Factory')!;
+      expect(nfInstance.elapsedYears).toBe(10);
+      expect(nfInstance.isMatured).toBe(true);
+      expect(nfInstance.voidedByLawsuit).toBe(false); // expired naturally, not sued over
+
+      // And it's now redeployable — canDeploy no longer blocks it.
+      const aliceUpdate = outcome.companyUpdates.find((u) => u.playerId === 'player-1')!;
+      gameLoop.submitDecisions('room-1', 'player-1', { strategic: [{ name: 'New Factory' }], operational: [], lawsuits: [] });
+      const players2 = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: aliceUpdate.variables, engineState: aliceUpdate.engineState },
+        { id: 'player-2', name: 'Bob' },
+      ]);
+      const outcome2 = gameLoop.resolveTurn('room-1', 12, players2);
+      const alice2 = outcome2.result.players.find((p) => p.playerId === 'player-1')!;
+      expect(alice2.activeDecisions.filter((d) => d.decisionName === 'New Factory')).toHaveLength(2);
+    });
+
+    it('still blocks redeployment while the instance is younger than the statute of limitations', () => {
+      const players = makePlayers([
+        { id: 'player-1', name: 'Alice', engineState: { activeDecisions: [{ id: 'nf-1', definitionName: 'New Factory', deployedYear: 1, elapsedYears: 8, isMatured: true }] } },
+        { id: 'player-2', name: 'Bob' },
+      ]);
+      gameLoop.submitDecisions('room-1', 'player-1', { strategic: [{ name: 'New Factory' }], operational: [], lawsuits: [] });
+
+      const outcome = gameLoop.resolveTurn('room-1', 10, players);
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+      expect(alice.activeDecisions.filter((d) => d.decisionName === 'New Factory')).toHaveLength(1);
+    });
+  });
+
+  describe('resolveTurn — one lawsuit per decision instance, ever (regression)', () => {
+    it('gives the first plaintiff a real case and a same-turn second plaintiff a hopeless (0%) one, first come first served', () => {
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+      });
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [], operational: [],
+        lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
+      });
+      gameLoop.submitDecisions('room-1', 'player-3', {
+        strategic: [], operational: [],
+        lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
+      });
+      const players = makePlayers([
+        { id: 'player-1', name: 'Alice' },
+        { id: 'player-2', name: 'Bob' },
+        { id: 'player-3', name: 'Carol' },
+      ]);
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, players);
+      const aliceCases = outcome.result.players.find((p) => p.playerId === 'player-1')!.legalCases;
+      expect(aliceCases).toHaveLength(2);
+
+      const bobCase = aliceCases.find((c) => c.plaintiffId === 'player-2')!;
+      const carolCase = aliceCases.find((c) => c.plaintiffId === 'player-3')!;
+      expect(bobCase.baseProbability).toBeGreaterThan(0);
+      expect(bobCase.defendantDecisionInstanceId).toBeDefined();
+      expect(carolCase.baseProbability).toBe(0);
+      expect(carolCase.defendantDecisionInstanceId).toBeUndefined();
+    });
+
+    it('keeps blocking a second lawsuit against the same instance even after the first case resolves and drops out of legalCases history', () => {
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+      });
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [], operational: [],
+        lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
+      });
+      const outcome1 = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+      const originalCaseId = outcome1.companyUpdates.find((u) => u.playerId === 'player-1')!.engineState.legalCases[0].id;
+      let aliceUpdate = outcome1.companyUpdates.find((u) => u.playerId === 'player-1')!;
+      let bobUpdate = outcome1.companyUpdates.find((u) => u.playerId === 'player-2')!;
+
+      const players2 = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: aliceUpdate.variables, engineState: aliceUpdate.engineState },
+        { id: 'player-2', name: 'Bob', variables: bobUpdate.variables, engineState: bobUpdate.engineState },
+      ]);
+      const outcome2 = gameLoop.resolveTurn('room-1', 2, players2);
+      aliceUpdate = outcome2.companyUpdates.find((u) => u.playerId === 'player-1')!;
+      bobUpdate = outcome2.companyUpdates.find((u) => u.playerId === 'player-2')!;
+
+      // Forced to trial this turn (negotiationPeriodTurns crossed) — force a defendant win
+      // (verdict 'lost') so the instance stays un-voided, isolating the everSued mechanism
+      // from the separate lawsuit-voiding one tested elsewhere.
+      const players3 = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: aliceUpdate.variables, engineState: aliceUpdate.engineState },
+        { id: 'player-2', name: 'Bob', variables: bobUpdate.variables, engineState: bobUpdate.engineState },
+      ]);
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.999);
+      const outcome3 = gameLoop.resolveTurn('room-1', 3, players3);
+      randomSpy.mockRestore();
+      const alice3 = outcome3.result.players.find((p) => p.playerId === 'player-1')!;
+      expect(alice3.legalCases[0].verdict).toBe('lost');
+      expect(alice3.activeDecisions.find((d) => d.decisionName === 'Water Pumping')!.voidedByLawsuit).toBe(false);
+      aliceUpdate = outcome3.companyUpdates.find((u) => u.playerId === 'player-1')!;
+      bobUpdate = outcome3.companyUpdates.find((u) => u.playerId === 'player-2')!;
+
+      // One more turn — the resolved case drops out of persisted engineState.legalCases
+      // entirely (the pre-existing "resolved cases are transient" behavior).
+      const players4 = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: aliceUpdate.variables, engineState: aliceUpdate.engineState },
+        { id: 'player-2', name: 'Bob', variables: bobUpdate.variables, engineState: bobUpdate.engineState },
+      ]);
+      const outcome4 = gameLoop.resolveTurn('room-1', 4, players4);
+      aliceUpdate = outcome4.companyUpdates.find((u) => u.playerId === 'player-1')!;
+      bobUpdate = outcome4.companyUpdates.find((u) => u.playerId === 'player-2')!;
+      expect(aliceUpdate.engineState.legalCases.find((c) => c.id === originalCaseId)).toBeUndefined();
+
+      // A fresh lawsuit against the same still-live (not voided) instance must still be
+      // hopeless — the instance itself remembers it was already sued, independent of
+      // whether the original case is still visible in anyone's persisted history.
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [], operational: [],
+        lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
+      });
+      const players5 = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: aliceUpdate.variables, engineState: aliceUpdate.engineState },
+        { id: 'player-2', name: 'Bob', variables: bobUpdate.variables, engineState: bobUpdate.engineState },
+      ]);
+      const outcome5 = gameLoop.resolveTurn('room-1', 5, players5);
+      const newCase = outcome5.result.players.find((p) => p.playerId === 'player-1')!.legalCases[0];
+      expect(newCase.baseProbability).toBe(0);
+      expect(newCase.defendantDecisionInstanceId).toBeUndefined();
+    });
+
+    it('allows suing a freshly redeployed instance of the same decision name — the block is per instance, not per name', () => {
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+      });
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [], operational: [],
+        lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
+      });
+      const outcome1 = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+      let aliceUpdate = outcome1.companyUpdates.find((u) => u.playerId === 'player-1')!;
+      let bobUpdate = outcome1.companyUpdates.find((u) => u.playerId === 'player-2')!;
+
+      const players2 = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: aliceUpdate.variables, engineState: aliceUpdate.engineState },
+        { id: 'player-2', name: 'Bob', variables: bobUpdate.variables, engineState: bobUpdate.engineState },
+      ]);
+      const outcome2 = gameLoop.resolveTurn('room-1', 2, players2);
+      aliceUpdate = outcome2.companyUpdates.find((u) => u.playerId === 'player-1')!;
+      bobUpdate = outcome2.companyUpdates.find((u) => u.playerId === 'player-2')!;
+
+      // Force a plaintiff win this turn — voids the original instance and frees it for
+      // redeployment (the separate lawsuit-voiding feature tested elsewhere).
+      const players3 = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: aliceUpdate.variables, engineState: aliceUpdate.engineState },
+        { id: 'player-2', name: 'Bob', variables: bobUpdate.variables, engineState: bobUpdate.engineState },
+      ]);
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+      const outcome3 = gameLoop.resolveTurn('room-1', 3, players3);
+      randomSpy.mockRestore();
+      aliceUpdate = outcome3.companyUpdates.find((u) => u.playerId === 'player-1')!;
+      bobUpdate = outcome3.companyUpdates.find((u) => u.playerId === 'player-2')!;
+
+      // Redeploy Water Pumping (allowed now the old instance is voided) and sue the NEW
+      // instance in the very same turn.
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+      });
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [], operational: [],
+        lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
+      });
+      const players4 = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: aliceUpdate.variables, engineState: aliceUpdate.engineState },
+        { id: 'player-2', name: 'Bob', variables: bobUpdate.variables, engineState: bobUpdate.engineState },
+      ]);
+      const outcome4 = gameLoop.resolveTurn('room-1', 4, players4);
+      const alice4 = outcome4.result.players.find((p) => p.playerId === 'player-1')!;
+      expect(alice4.activeDecisions.filter((d) => d.decisionName === 'Water Pumping')).toHaveLength(2);
+      expect(alice4.legalCases).toHaveLength(1);
+      expect(alice4.legalCases[0].baseProbability).toBeGreaterThan(0);
+    });
+  });
+
+  describe('resolveTurn — Buy/Sell Shares (share-ownership & takeover mechanic)', () => {
+    // Fresh objects every call — GameLoop reads `company.variables` by reference
+    // (no internal clone), so reusing one binding across two independent resolveTurn
+    // calls in the same test (e.g. a baseline-vs-actual comparison) would let the first
+    // call's mutations leak into the second's "starting" fixture.
+    const makeTargetVars = (overrides: Partial<PlayerVariables> = {}) => makeVars({
+      cash: 50000, totalSharesOutstanding: 10000, stockValue: 10,
+      shareOwnership: { [SELF_OWNERSHIP_KEY]: 1.0 }, ...overrides,
+    });
+    const makeBuyerVars = (overrides: Partial<PlayerVariables> = {}) => makeVars({ cash: 100000, ...overrides });
+
+    it('dilutes the target pro-rata and pays cash to the diluted owner', () => {
+      const baseline = gameLoop.resolveTurn('room-baseline', 1, makePlayers([
+        { id: 'player-1', name: 'Alice', variables: makeTargetVars() },
+        { id: 'player-2', name: 'Bob', variables: makeBuyerVars() },
+      ]));
+      const baselineAlice = baseline.result.players.find((p) => p.playerId === 'player-1')!;
+      const baselineBob = baseline.result.players.find((p) => p.playerId === 'player-2')!;
+
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 20000 }], operational: [], lawsuits: [],
+      });
+      const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
+        { id: 'player-1', name: 'Alice', variables: makeTargetVars() },
+        { id: 'player-2', name: 'Bob', variables: makeBuyerVars() },
+      ]));
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+      const bob = outcome.result.players.find((p) => p.playerId === 'player-2')!;
+
+      // 20000 / stockValue(10) = 2000 shares of 10000 total = 20%.
+      expect(alice.variables.shareOwnership[SELF_OWNERSHIP_KEY]).toBeCloseTo(0.8, 4);
+      expect(alice.variables.shareOwnership['player-2']).toBeCloseTo(0.2, 4);
+
+      // Isolate the transaction's cash effect from everything else a turn's P&L also
+      // moves (same technique CLAUDE.md's Bot Attack regression test uses).
+      expect(bob.variables.cash - baselineBob.variables.cash).toBeCloseTo(-20000, 2);
+      expect(alice.variables.cash - baselineAlice.variables.cash).toBeCloseTo(4000, 2);
+    });
+
+    it('self-buyback reclaims a stake from EXTERNAL_MARKET without paying itself', () => {
+      const vars = makeTargetVars({
+        cash: 50000,
+        shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.6, [EXTERNAL_MARKET_KEY]: 0.4 },
+      });
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 20000 }], operational: [], lawsuits: [],
+      });
+      const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
+        { id: 'player-1', name: 'Alice', variables: vars },
+      ]));
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+
+      // fractionBought = 20000/10/10000 = 0.2. Founder's own 0.6 dilutes to 0.48, then
+      // gains the full 0.2 back on top (self-targeting is the same buyer key as the
+      // diluted "self" row) -> 0.68. EXTERNAL_MARKET dilutes from 0.4 to 0.32.
+      expect(alice.variables.shareOwnership[SELF_OWNERSHIP_KEY]).toBeCloseTo(0.68, 4);
+      expect(alice.variables.shareOwnership[EXTERNAL_MARKET_KEY]).toBeCloseTo(0.32, 4);
+      // A single player was loaded — if self-buyback incorrectly tried to pay "itself"
+      // as a separate diluted owner, this would double-count into a cash change beyond
+      // just the "-20000 spent" side; can't isolate cleanly without a baseline here, but
+      // the ownership math above is the real proof the self-referential leg netted to zero.
+    });
+
+    it('Sell Shares returns shares to EXTERNAL_MARKET only, never pro-rata to other players', () => {
+      const vars = makeTargetVars({
+        cash: 10000,
+        shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.7, [EXTERNAL_MARKET_KEY]: 0.3 },
+      });
+      const baseline = gameLoop.resolveTurn('room-baseline', 1, makePlayers([{ id: 'player-1', name: 'Alice', variables: makeTargetVars({ cash: 10000, shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.7, [EXTERNAL_MARKET_KEY]: 0.3 } }) }]));
+      const baselineAlice = baseline.result.players.find((p) => p.playerId === 'player-1')!;
+
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [{ name: 'Sell Shares', targetId: 'player-1', amount: 15000 }], operational: [], lawsuits: [],
+      });
+      const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([{ id: 'player-1', name: 'Alice', variables: vars }]));
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+
+      // fractionSold = 15000/10/10000 = 0.15.
+      expect(alice.variables.shareOwnership[SELF_OWNERSHIP_KEY]).toBeCloseTo(0.55, 4);
+      expect(alice.variables.shareOwnership[EXTERNAL_MARKET_KEY]).toBeCloseTo(0.45, 4);
+      expect(alice.variables.cash - baselineAlice.variables.cash).toBeCloseTo(15000, 2);
+    });
+
+    it('caps a Sell Shares sale at the current value of the actual holding', () => {
+      const vars = makeTargetVars({ shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.1, [EXTERNAL_MARKET_KEY]: 0.9 } });
+      // Holding value = 0.1 * 10000 shares * $10 = $10,000 — request far more than that.
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [{ name: 'Sell Shares', targetId: 'player-1', amount: 500000 }], operational: [], lawsuits: [],
+      });
+      const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([{ id: 'player-1', name: 'Alice', variables: vars }]));
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+
+      expect(alice.variables.shareOwnership[SELF_OWNERSHIP_KEY]).toBeCloseTo(0, 4);
+      expect(alice.variables.shareOwnership[EXTERNAL_MARKET_KEY]).toBeCloseTo(1, 4);
+    });
+
+    it('resolves two same-target Buy Shares purchases in submission-arrival order (FIFO) — the second computes against the first\'s already-diluted cap table', () => {
+      const vars = makeTargetVars();
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 50000 }], operational: [], lawsuits: [],
+      });
+      gameLoop.submitDecisions('room-1', 'player-3', {
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 50000 }], operational: [], lawsuits: [],
+      });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
+        { id: 'player-1', name: 'Alice', variables: vars },
+        { id: 'player-2', name: 'Bob', variables: makeBuyerVars() },
+        { id: 'player-3', name: 'Carol', variables: makeBuyerVars() },
+      ]));
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+
+      // Both buy the same fixed 50% of TOTAL shares outstanding (fractionBought is
+      // always sharesBought/totalShares, independent of who currently holds what) — but
+      // applied SEQUENTIALLY, each purchase dilutes EVERY existing holder at that moment,
+      // including any earlier buyer. Bob (first) starts by diluting only "self" (0.5/0.5
+      // split). Carol (second) then dilutes BOTH existing holders — self and Bob — by
+      // another 50%, landing self=0.25, Bob=0.25, Carol=0.5. This is the correct,
+      // intentional consequence of "always pro-rata from ALL current owners" applied
+      // in strict arrival order, not a bug — a later buyer of the same size
+      // ends up proportionally larger, since they dilute every earlier buyer too.
+      expect(alice.variables.shareOwnership[SELF_OWNERSHIP_KEY]).toBeCloseTo(0.25, 4);
+      expect(alice.variables.shareOwnership['player-2']).toBeCloseTo(0.25, 4);
+      expect(alice.variables.shareOwnership['player-3']).toBeCloseTo(0.5, 4);
+      const total = Object.values(alice.variables.shareOwnership).reduce((s, v) => s + v, 0);
+      expect(total).toBeCloseTo(1, 4);
+    });
+
+    it('applies a resubmit-but-unrelated-change without resetting an already-queued Buy Shares entry\'s FIFO timestamp', () => {
+      // player-2 queues Buy Shares first, then (still before the turn resolves) submits
+      // an unrelated second decision — the full-replacement submission architecture means
+      // this resends player-2's ENTIRE pending state, but Buy Shares' own timestamp must
+      // stay pinned to when IT was first queued, not reset to "now".
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 50000 }], operational: [], lawsuits: [],
+      });
+      gameLoop.submitDecisions('room-1', 'player-3', {
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 50000 }], operational: [], lawsuits: [],
+      });
+      // player-2 touches something unrelated — full-replacement resend of their whole
+      // submission, Buy Shares entry included verbatim.
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 50000 }], operational: [{ name: 'Quality Certification' }], lawsuits: [],
+      });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
+        { id: 'player-1', name: 'Alice', variables: makeTargetVars() },
+        { id: 'player-2', name: 'Bob', variables: makeBuyerVars() },
+        { id: 'player-3', name: 'Carol', variables: makeBuyerVars() },
+      ]));
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+
+      // If player-2's resubmit had wrongly reset their Buy Shares timestamp to "now"
+      // (after player-3's), the two buyers' resulting fractions would be swapped —
+      // whichever result actually matches "Bob still resolved first" (same numbers as
+      // the FIFO ordering test above) proves the timestamp survived the unrelated resubmit.
+      expect(alice.variables.shareOwnership['player-2']).toBeCloseTo(0.25, 4);
+      expect(alice.variables.shareOwnership['player-3']).toBeCloseTo(0.5, 4);
+    });
+
+    it('classifies Buy Shares as a direct attack (not broadcast to everyone) despite having no target.* impacts (isIndirectEffect regression)', () => {
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 20000 }], operational: [], lawsuits: [],
+      });
+      gameLoop.submitDecisions('room-1', 'player-3', { strategic: [], operational: [], lawsuits: [] });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
+        { id: 'player-1', name: 'Alice', variables: makeTargetVars() },
+        { id: 'player-2', name: 'Bob', variables: makeBuyerVars() },
+        { id: 'player-3', name: 'Carol', variables: makeVars() },
+      ]));
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+      const carol = outcome.result.players.find((p) => p.playerId === 'player-3')!;
+
+      expect(alice.incomingAttacks).toHaveLength(1);
+      expect(alice.incomingAttacks[0].isIndirect).toBe(false);
+      expect(alice.incomingAttacks[0].decisionName === undefined || alice.incomingAttacks[0].decisionName === undefined).toBe(true); // not yet dug into
+      // Carol was never the target — Buy Shares must not broadcast to her the way a
+      // genuinely indirect (no-target) decision like Water Pumping would.
+      expect(carol.incomingAttacks).toHaveLength(0);
+    });
+
+    it('cannot be sued over once the acquisition fraction falls short of legalRiskConditions.minPercentAcquiredInSingleTransaction', () => {
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        // 1000 / 10 / 10000 = 1% — below the fixture's 5% minPercentAcquiredInSingleTransaction.
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 1000 }], operational: [], lawsuits: [],
+      });
+      const outcome1 = gameLoop.resolveTurn('room-1', 1, makePlayers([
+        { id: 'player-1', name: 'Alice', variables: makeTargetVars() },
+        { id: 'player-2', name: 'Bob', variables: makeBuyerVars() },
+      ]));
+      const aliceUpdate1 = outcome1.companyUpdates.find((u) => u.playerId === 'player-1')!;
+      const bobUpdate1 = outcome1.companyUpdates.find((u) => u.playerId === 'player-2')!;
+
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [], operational: [],
+        lawsuits: [{ targetId: 'player-2', decisionName: 'Buy Shares', groundName: 'Breach of Corporate Fiduciary Duty & Raiding Injunction' }],
+      });
+      const outcome2 = gameLoop.resolveTurn('room-1', 2, makePlayers([
+        { id: 'player-1', name: 'Alice', variables: aliceUpdate1.variables, engineState: aliceUpdate1.engineState },
+        { id: 'player-2', name: 'Bob', variables: bobUpdate1.variables, engineState: bobUpdate1.engineState },
+      ]));
+      const bobCase = outcome2.result.players.find((p) => p.playerId === 'player-2')!.legalCases[0];
+
+      expect(bobCase.baseProbability).toBe(0);
+    });
+  });
+
+  describe('resolveTurn — majority-ownership takeover elimination', () => {
+    it('eliminates the target once an acquirer crosses 50%, reusing the bankruptcy case waterfall to pay off open cases against the eliminated player', () => {
+      const targetVars = makeVars({
+        cash: 20000, totalSharesOutstanding: 10000, stockValue: 10,
+        shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.55, 'player-3': 0.45 },
+      });
+      // player-3 already holds a case against player-1 (the target) that should be paid
+      // from the waterfall pool exactly like a bankruptcy would pay it.
+      const existingCase: LegalCaseData = {
+        id: 'case-1', roomId: 'room-1', plaintiffId: 'player-3', defendantId: 'player-1',
+        decisionName: 'Water Pumping', groundName: 'Environmental Violation', description: 'x',
+        baseProbability: 0.5, adjustedProbability: undefined, plaintiffFullyInvestigated: false,
+        defendantInvestigated: false, stakes: 5000, status: 'negotiating', offers: [], turnsNegotiating: 0,
+        verdict: undefined, createdAt: new Date('2024-01-01'), resolvedAt: undefined,
+      };
+
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        // 60000/10/10000 = 60% — crosses the 50% threshold, on top of the existing 45%
+        // held by player-3 (a different acquirer — only ONE acquirer can be found; the
+        // buyer here, player-2, is the one who ends up over 50%).
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 60000 }], operational: [], lawsuits: [],
+      });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
+        { id: 'player-1', name: 'Alice', variables: targetVars, engineState: { legalCases: [existingCase] } },
+        { id: 'player-2', name: 'Bob', variables: makeVars({ cash: 200000 }) },
+        { id: 'player-3', name: 'Carol', variables: makeVars(), engineState: { legalCases: [existingCase] } },
+      ]));
+
+      expect(outcome.result.players.find((p) => p.playerId === 'player-1')).toBeUndefined();
+      expect(outcome.result.gameOver).toBe(false); // player-3 (and the acquirer) still active
+      const merged = outcome.bankruptedPlayers.find((b) => b.playerId === 'player-1')!;
+      expect(merged.reason).toBe('merger');
+      expect(merged.acquirerId).toBe('player-2');
+      // A merger elimination gets the same final-snapshot capture as a bankruptcy —
+      // both reasons flow through the same buildFinalSnapshot call.
+      expect(merged.finalVariables).toBeDefined();
+      expect(merged.finalDerived).toBeDefined();
+      expect(typeof merged.finalRiskGauge).toBe('number');
+
+      // Carol's case against Alice gets paid from the waterfall pool, same as a bankruptcy would.
+      const carol = outcome.result.players.find((p) => p.playerId === 'player-3')!;
+      expect(carol.legalCases[0].status).toBe('resolved');
+      expect(carol.variables.cash).toBeGreaterThan(makeVars().cash); // received a payout
+    });
+
+    it('transfers the eliminated company\'s cash/assets/intangibleAssets to the acquirer', () => {
+      const targetVars = makeVars({
+        cash: 20000, assets: 80000, intangibleAssets: 5000,
+        totalSharesOutstanding: 10000, stockValue: 10,
+        shareOwnership: { [SELF_OWNERSHIP_KEY]: 1.0 },
+      });
+      const buyerVars = makeVars({ cash: 200000, assets: 10000, intangibleAssets: 1000 });
+
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 60000 }], operational: [], lawsuits: [],
+      });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
+        { id: 'player-1', name: 'Alice', variables: targetVars },
+        { id: 'player-2', name: 'Bob', variables: buyerVars },
+      ]));
+      const merged = outcome.bankruptedPlayers.find((b) => b.playerId === 'player-1')!;
+      const bob = outcome.result.players.find((p) => p.playerId === 'player-2')!;
+
+      // Bob's own assets/intangibleAssets grew by (at least) Alice's contributed values —
+      // not an exact equality since Bob's own turn P&L/depreciation also move these fields,
+      // but the eliminated company's finalCash/assets/intangibleAssets were all positive
+      // contributions on top of whatever Bob's own turn produced.
+      expect(merged.finalCash).toBeGreaterThan(0);
+      expect(bob.variables.assets).toBeGreaterThanOrEqual(targetVars.assets + 10000 - 1000); // generous slack for Bob's own depreciation this turn
+      expect(bob.variables.intangibleAssets).toBeGreaterThanOrEqual(targetVars.intangibleAssets + 1000 - 100);
+    });
+
+    it('does not complete a takeover if the prospective acquirer is bankrupt the same turn', () => {
+      // Zero production (installedCapacity/capacityUtilization: 0) on BOTH players
+      // suppresses volume/revenue entirely, so each player's cash change this turn is
+      // just fixed costs — small and predictable — never enough to flip a deeply
+      // negative or comfortably positive starting cash to the other sign.
+      const targetVars = makeVars({
+        cash: 500000, installedCapacity: 0, capacityUtilization: 0,
+        totalSharesOutstanding: 10000, stockValue: 10,
+        shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.4, 'player-2': 0.6 },
+      });
+      // Bob (the would-be acquirer) is deeply insolvent this turn regardless of Alice.
+      const buyerVars = makeVars({ cash: -500000, installedCapacity: 0, capacityUtilization: 0 });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
+        { id: 'player-1', name: 'Alice', variables: targetVars },
+        { id: 'player-2', name: 'Bob', variables: buyerVars },
+      ]));
+
+      const bankruptedIds = outcome.bankruptedPlayers.map((b) => b.playerId);
+      expect(bankruptedIds).toContain('player-2');
+      expect(bankruptedIds).not.toContain('player-1');
+      // Alice survives — Bob's >50% stake never gets to trigger her elimination.
+      expect(outcome.result.players.find((p) => p.playerId === 'player-1')).toBeDefined();
+    });
+
+    it('sweeps an eliminated player\'s cross-holdings in other, still-active companies back to EXTERNAL_MARKET', () => {
+      // player-2 (going bankrupt this turn) holds a 30% cross-stake in player-3's company.
+      const survivorVars = makeVars({
+        cash: 500000, installedCapacity: 0, capacityUtilization: 0,
+        shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.7, 'player-2': 0.3 },
+      });
+      const bankruptVars = makeVars({ cash: -100000, installedCapacity: 0, capacityUtilization: 0 });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
+        { id: 'player-2', name: 'Bob', variables: bankruptVars },
+        { id: 'player-3', name: 'Carol', variables: survivorVars },
+      ]));
+
+      expect(outcome.bankruptedPlayers.map((b) => b.playerId)).toContain('player-2');
+      const carol = outcome.result.players.find((p) => p.playerId === 'player-3')!;
+      expect(carol.variables.shareOwnership['player-2']).toBeUndefined();
+      expect(carol.variables.shareOwnership[EXTERNAL_MARKET_KEY]).toBeCloseTo(0.3, 4);
+      expect(carol.variables.shareOwnership[SELF_OWNERSHIP_KEY]).toBeCloseTo(0.7, 4);
+
+      // BankruptedPlayer must also carry a full final snapshot — persistKpiSnapshots
+      // (the caller) excludes eliminated players from its normal per-turn write, so this
+      // is the only place a bankrupted player's true end-of-game KPI numbers come from
+      // (see CLAUDE.md's game-timeline section).
+      const bob = outcome.bankruptedPlayers.find((b) => b.playerId === 'player-2')!;
+      expect(bob.finalVariables.cash).toBeLessThan(0);
+      expect(bob.finalDerived).toEqual(
+        expect.objectContaining({
+          equity: expect.any(Number),
+          revenue: expect.any(Number),
+          stockValue: expect.any(Number),
+          marketShare: expect.any(Number),
+        }),
+      );
+      expect(typeof bob.finalRiskGauge).toBe('number');
+      expect(bob.finalRiskGauge).toBeGreaterThanOrEqual(0);
+    });
+
+    // Regression for the dead-config bug fixed alongside the Risk Gauge's ownership-risk
+    // term: the elimination check used to hardcode `> 0.5` directly, ignoring
+    // `adminVariables.ownership.takeoverThresholdPercent` even though it was seeded,
+    // validated, and admin-editable the whole time. Confirms an admin-lowered threshold
+    // actually takes effect on the real elimination trigger, not just on the gauge.
+    it('honors an admin-configured takeoverThresholdPercent below 50%', () => {
+      gameLoop.updateConfig({ ...config, adminVariables: { ...config.adminVariables, ownership: { takeoverThresholdPercent: 0.3 } } });
+
+      const targetVars = makeVars({
+        cash: 500000, installedCapacity: 0, capacityUtilization: 0,
+        // Only 35% held by player-2 — would NOT trigger at the default 50% threshold,
+        // but does at the admin-configured 30%.
+        shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.65, 'player-2': 0.35 },
+      });
+      const buyerVars = makeVars({ cash: 200000, installedCapacity: 0, capacityUtilization: 0 });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
+        { id: 'player-1', name: 'Alice', variables: targetVars },
+        { id: 'player-2', name: 'Bob', variables: buyerVars },
+      ]));
+
+      const merged = outcome.bankruptedPlayers.find((b) => b.playerId === 'player-1');
+      expect(merged?.reason).toBe('merger');
+      expect(merged?.acquirerId).toBe('player-2');
+    });
+
+    it('does not trigger at 35% under the default 50% threshold (control for the test above)', () => {
+      const targetVars = makeVars({
+        cash: 500000, installedCapacity: 0, capacityUtilization: 0,
+        shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.65, 'player-2': 0.35 },
+      });
+      const buyerVars = makeVars({ cash: 200000, installedCapacity: 0, capacityUtilization: 0 });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
+        { id: 'player-1', name: 'Alice', variables: targetVars },
+        { id: 'player-2', name: 'Bob', variables: buyerVars },
+      ]));
+
+      expect(outcome.bankruptedPlayers.find((b) => b.playerId === 'player-1')).toBeUndefined();
+      expect(outcome.result.players.find((p) => p.playerId === 'player-1')).toBeDefined();
     });
   });
 
@@ -1800,15 +2756,21 @@ describe('GameLoop', () => {
       ]);
     }
 
-    it('keeps the player\'s own already-active decision applying its schedule into every predicted turn', () => {
-      // 'Bot Attack' only touches the deploying player's own vars via a flat
-      // `cash: -12000/turn` — its other two impact fields are `target.*`, routed to
-      // whichever rival is targeted, never back onto the attacker themselves. That
-      // makes it a cleanly isolated cash-only effect to compare against an otherwise-
-      // identical fixture without it (unlike 'New Factory', whose installedCapacity
-      // bump feeds back into volume/revenue and swamps its own cash schedule).
+    it('does not keep re-applying an already-matured decision\'s effect into future predicted turns (regression — a decision\'s own effect lands once, at maturity, then holds)', () => {
+      // 'Bot Attack' only touches the deploying player's own vars via a flat, instant-
+      // maturity `cash: -12000` (no explicit schedule years — its other two impact fields
+      // are `target.*`, routed to whichever rival is targeted, never back onto the
+      // attacker themselves). In real play that -12000 lands exactly once, at deployment
+      // (Step 1's applyImpactsForYear call) — by the time an instance like this sits in
+      // engineState at isMatured:true, its one-time cost has already happened and is
+      // already baked into whatever cash value is persisted alongside it; nothing further
+      // should ever come from it again, in a real turn or in a sandboxed prediction. This
+      // used to assert the opposite (`toBeLessThan`, an ever-widening gap) — a real,
+      // reported finding from a randomized-play simulation that a matured decision's
+      // 'default' effect was being re-applied every single subsequent turn forever
+      // (bounded only by the statute of limitations) instead of landing once and holding.
       const withAttack = makePlayers([
-        { id: 'player-1', name: 'Alice', variables: makeVars({ cash: 500000 }), engineState: { activeDecisions: [{ id: 'inst-1', definitionName: 'Bot Attack', deployedYear: 1, elapsedYears: 0, isMatured: false, targetId: 'player-2' }] } },
+        { id: 'player-1', name: 'Alice', variables: makeVars({ cash: 500000 }), engineState: { activeDecisions: [{ id: 'inst-1', definitionName: 'Bot Attack', deployedYear: 1, elapsedYears: 0, isMatured: true, targetId: 'player-2' }] } },
         { id: 'player-2', name: 'Bob' },
       ]);
       const withoutAttack = makePlayers([
@@ -1822,8 +2784,37 @@ describe('GameLoop', () => {
       expect(predictedWithAttack.predicted).toHaveLength(3);
       expect(predictedWithoutAttack.predicted).toHaveLength(3);
       for (let i = 0; i < 3; i++) {
-        expect(predictedWithAttack.predicted[i].variables.cash).toBeLessThan(predictedWithoutAttack.predicted[i].variables.cash);
+        expect(predictedWithAttack.predicted[i].variables.cash).toBeCloseTo(predictedWithoutAttack.predicted[i].variables.cash, 5);
       }
+    });
+
+    it('keeps applying a still-maturing decision\'s remaining schedule into predicted turns, but stops for good once it matures', () => {
+      // 'New Factory' (this file's fixture) has cash: {1: -30000, default: -30000} — a
+      // one-year-explicit-then-permanent schedule, maturity threshold 1 — deployed fresh
+      // (elapsedYears 0, not yet matured). suppressRevenue pins capacityUtilization at 0
+      // for the whole prediction (nothing in this fixture's New Factory ever changes
+      // capacityUtilization), which pins maxSupply/volume/revenue at 0 regardless of
+      // installedCapacity's own growth — isolating New Factory's direct cash-schedule
+      // effect from the revenue-side confound its installedCapacity bump would otherwise
+      // introduce (see makePredictFixture's own doc comment on why New Factory normally
+      // "swamps its own cash schedule").
+      const withDecision = makePredictFixture(500000, { withDecision: true, suppressRevenue: true });
+      const withoutDecision = makePredictFixture(500000, { withDecision: false, suppressRevenue: true });
+
+      const predictedWith = gameLoop.predictFutureKpis('player-1', 5, withDecision, 3);
+      const predictedWithout = gameLoop.predictFutureKpis('player-1', 5, withoutDecision, 3);
+
+      // Predicted turn 1 (elapsedYears 0->1, exactly at the maturity threshold): the
+      // 'default' cash value is consulted for the first time here — the gap opens up.
+      const gapTurn1 = predictedWithout.predicted[0].variables.cash - predictedWith.predicted[0].variables.cash;
+      expect(gapTurn1).toBeCloseTo(30000, 1);
+
+      // Predicted turns 2 and 3 (elapsedYears 1->2, 2->3: both past the threshold): no
+      // further cash is drained by this instance — the gap must not keep growing.
+      const gapTurn2 = predictedWithout.predicted[1].variables.cash - predictedWith.predicted[1].variables.cash;
+      const gapTurn3 = predictedWithout.predicted[2].variables.cash - predictedWith.predicted[2].variables.cash;
+      expect(gapTurn2).toBeCloseTo(gapTurn1, 1);
+      expect(gapTurn3).toBeCloseTo(gapTurn1, 1);
     });
 
     it('rounds are sequential starting at currentRound + 1', () => {

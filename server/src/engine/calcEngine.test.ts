@@ -9,10 +9,16 @@ import {
   calculateAdjustedProbability,
   calculateLegalExposureRatio,
   calculateRiskGauge,
+  calculateOwnershipRisk,
+  predictNextTurnCashLinear,
+  calculateSolvencyRisk,
   applyDecisionImpacts,
+  applyTargetImpacts,
   calculateMaturityYears,
   getScheduleValue,
-  DEPRECIATING_ASSETS,
+  renormalizeShareOwnership,
+  SELF_OWNERSHIP_KEY,
+  EXTERNAL_MARKET_KEY,
 } from './calcEngine';
 import { buildFormulaSet } from './formulaEngine';
 import { DEFAULT_FORMULA_SEEDS } from './defaultFormulas';
@@ -79,14 +85,13 @@ function makeAdmin(overrides: Partial<AdminVariables> = {}): AdminVariables {
     legalProcess: {
       scrutinyLegalRiskMultiplier: 0.02,
       legalExposureRatioCap: 0.8,
-      semaphoreGreenMax: 0.15,
-      semaphoreYellowMax: 0.4,
-      buySharesLegalRiskThresholdPercent: 0.05,
     },
     riskGauge: {
       riskWeightLegalExposure_w1: 0.3,
       riskWeightScrutiny_w2: 0.2,
       riskWeightOutrage_w3: 0.25,
+      riskWeightOwnership_w4: 0,
+      riskWeightSolvency_w5: 0,
     },
     ownership: {
       takeoverThresholdPercent: 0.5,
@@ -103,8 +108,8 @@ function makeAdmin(overrides: Partial<AdminVariables> = {}): AdminVariables {
 
 describe('calcEngine', () => {
   describe('addDepreciationEntry', () => {
-    it('should create an entry for a depreciating asset', () => {
-      const entry = addDepreciationEntry('New Factory', 'assets', 100000, 2024);
+    it('should create an entry for a positive assets addition', () => {
+      const entry = addDepreciationEntry('assets', 100000, 2024);
       expect(entry).not.toBeNull();
       expect(entry!.assetType).toBe('assets');
       expect(entry!.originalValue).toBe(100000);
@@ -115,24 +120,24 @@ describe('calcEngine', () => {
     });
 
     it('should use 5-year life for intangible assets', () => {
-      const entry = addDepreciationEntry('Patent Portfolio', 'intangibleAssets', 50000, 2024);
+      const entry = addDepreciationEntry('intangibleAssets', 50000, 2024);
       expect(entry).not.toBeNull();
       expect(entry!.usefulLife).toBe(5);
       expect(entry!.annualAmount).toBe(10000);
     });
 
-    it('should return null for non-depreciating assets', () => {
-      expect(addDepreciationEntry('Sale & Leaseback', 'assets', 10000, 2024)).toBeNull();
-      expect(addDepreciationEntry('Maintenance Neglect', 'assets', 5000, 2024)).toBeNull();
-    });
-
-    it('should return null for non-depreciating decision names', () => {
-      expect(addDepreciationEntry('Random Decision', 'assets', 10000, 2024)).toBeNull();
+    // Regression: this used to be gated by a hardcoded decision-name allowlist
+    // (DEPRECIATING_ASSETS) — any decision (existing, renamed, or newly admin-added) with
+    // a genuine positive asset addition must depreciate, not just the ones a developer
+    // happened to list by name in source. See CLAUDE.md.
+    it('should create an entry for a positive assets addition regardless of which decision produced it — no hardcoded name allowlist', () => {
+      expect(addDepreciationEntry('assets', 10000, 2024)).not.toBeNull();
+      expect(addDepreciationEntry('assets', 5000, 2024)).not.toBeNull();
     });
 
     it('should return null for zero or negative values', () => {
-      expect(addDepreciationEntry('New Factory', 'assets', 0, 2024)).toBeNull();
-      expect(addDepreciationEntry('New Factory', 'assets', -100, 2024)).toBeNull();
+      expect(addDepreciationEntry('assets', 0, 2024)).toBeNull();
+      expect(addDepreciationEntry('assets', -100, 2024)).toBeNull();
     });
   });
 
@@ -415,6 +420,168 @@ describe('calcEngine', () => {
 
       expect(result).toBe(75); // w1*1 + w2*1 + w3*1 = 0.3 + 0.2 + 0.25 = 0.75 -> 75
     });
+
+    it('does not go below 0 when scrutiny is negative (regression — found by random-play simulation)', () => {
+      // Unlike outrage (fed through Math.abs before the formula ever sees it), scrutiny
+      // has no floor of its own and nothing drives it back up once negative — the
+      // formula's scrutiny term used to be a bare MIN(1,scrutiny/100), with no lower
+      // clamp, so a negative scrutiny value could push the whole gauge below its
+      // documented 0-100 range.
+      const vars = makeVars({ cash: 100000, scrutiny: -80, outrage: 0 });
+      const admin = makeAdmin();
+
+      const result = calculateRiskGauge(vars, [], admin, DEFAULT_FORMULAS);
+
+      expect(result).toBe(0);
+    });
+
+    // Deliberate deviation from the Risk Gauge's original 3-term design — see
+    // calcEngine.ts's calculateOwnershipRisk doc comment and CLAUDE.md's "Risk Gauge
+    // takeover term" section. Majority-ownership takeover is a fully independent way to
+    // lose the game; these confirm the gauge actually reflects it now.
+    it('includes the ownership/takeover-risk term (w4) when a real player holds a stake', () => {
+      const vars = makeVars({
+        cash: 100000,
+        scrutiny: 0,
+        outrage: 0,
+        shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.75, rival: 0.25 },
+      });
+      const admin = makeAdmin({
+        riskGauge: { riskWeightLegalExposure_w1: 0, riskWeightScrutiny_w2: 0, riskWeightOutrage_w3: 0, riskWeightOwnership_w4: 1, riskWeightSolvency_w5: 0 },
+      });
+
+      const result = calculateRiskGauge(vars, [], admin, DEFAULT_FORMULAS);
+
+      // Rival holds 0.25 of a 0.5 takeoverThresholdPercent -> ownershipRisk = 0.5 -> 100*1*0.5 = 50.
+      expect(result).toBeCloseTo(50, 5);
+    });
+
+    it('stays 0 when no real player holds a stake, even with w4 weighted fully', () => {
+      const vars = makeVars({
+        cash: 100000,
+        scrutiny: 0,
+        outrage: 0,
+        shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.6, [EXTERNAL_MARKET_KEY]: 0.4 },
+      });
+      const admin = makeAdmin({
+        riskGauge: { riskWeightLegalExposure_w1: 0, riskWeightScrutiny_w2: 0, riskWeightOutrage_w3: 0, riskWeightOwnership_w4: 1, riskWeightSolvency_w5: 0 },
+      });
+
+      const result = calculateRiskGauge(vars, [], admin, DEFAULT_FORMULAS);
+
+      expect(result).toBe(0);
+    });
+
+    // Deliberate 5th-term addition beyond the Risk Gauge's original design, distinct from
+    // w1's current-cash legal exposure ratio — see calcEngine.ts's calculateSolvencyRisk
+    // doc comment and CLAUDE.md's "Risk Gauge solvency term" section.
+    it('includes the solvency-risk term (w5) using a projected next-turn cash, not current cash', () => {
+      const vars = makeVars({ cash: 100000, scrutiny: 0, outrage: 0 });
+      const admin = makeAdmin({
+        riskGauge: { riskWeightLegalExposure_w1: 0, riskWeightScrutiny_w2: 0, riskWeightOutrage_w3: 0, riskWeightOwnership_w4: 0, riskWeightSolvency_w5: 1 },
+      });
+      const openCases = [{ probability: 1, stakes: 40000 }]; // legalExposure = 40000
+
+      // prevCash 60000 -> cash rose 40000 this turn -> projected next-turn cash = 100000+40000 = 140000.
+      const risingTrend = calculateRiskGauge(vars, openCases, admin, DEFAULT_FORMULAS, 60000);
+      // prevCash 140000 -> cash fell 40000 this turn -> projected next-turn cash = 100000-40000 = 60000.
+      const fallingTrend = calculateRiskGauge(vars, openCases, admin, DEFAULT_FORMULAS, 140000);
+
+      expect(risingTrend).toBeCloseTo(100 * (40000 / 140000), 5);
+      expect(fallingTrend).toBeCloseTo(100 * (40000 / 60000), 5);
+      // Same current cash and exposure both times — only the trend (via prevCash) differs,
+      // and a worsening trend must read as strictly more dangerous.
+      expect(fallingTrend).toBeGreaterThan(risingTrend);
+    });
+
+    it('defaults prevCash to current cash (assumes no trend) when the caller has none to give', () => {
+      const vars = makeVars({ cash: 100000, scrutiny: 0, outrage: 0 });
+      const admin = makeAdmin({
+        riskGauge: { riskWeightLegalExposure_w1: 0, riskWeightScrutiny_w2: 0, riskWeightOutrage_w3: 0, riskWeightOwnership_w4: 0, riskWeightSolvency_w5: 1 },
+      });
+      const openCases = [{ probability: 1, stakes: 40000 }];
+
+      const noPrevCashGiven = calculateRiskGauge(vars, openCases, admin, DEFAULT_FORMULAS);
+      const explicitFlatTrend = calculateRiskGauge(vars, openCases, admin, DEFAULT_FORMULAS, 100000);
+
+      expect(noPrevCashGiven).toBeCloseTo(explicitFlatTrend, 5);
+    });
+  });
+
+  describe('calculateOwnershipRisk', () => {
+    it('is 0 when no shareOwnership is set (e.g. before round 1)', () => {
+      expect(calculateOwnershipRisk(undefined, 0.5)).toBe(0);
+    });
+
+    it('is 0 when only self and EXTERNAL_MARKET hold stakes — neither can trigger a takeover', () => {
+      const ownership = { [SELF_OWNERSHIP_KEY]: 0.7, [EXTERNAL_MARKET_KEY]: 0.3 };
+      expect(calculateOwnershipRisk(ownership, 0.5)).toBe(0);
+    });
+
+    it('scales linearly toward 1 as the largest real-player stake approaches the threshold', () => {
+      const ownership = { [SELF_OWNERSHIP_KEY]: 0.75, rival: 0.25 };
+      expect(calculateOwnershipRisk(ownership, 0.5)).toBeCloseTo(0.5, 5); // 0.25 / 0.5
+    });
+
+    it('caps at 1 once a holder is at or beyond the threshold', () => {
+      const ownership = { [SELF_OWNERSHIP_KEY]: 0.1, rival: 0.9 };
+      expect(calculateOwnershipRisk(ownership, 0.5)).toBe(1);
+    });
+
+    it('uses the single largest real-player stake, not a sum across multiple holders', () => {
+      const ownership = { [SELF_OWNERSHIP_KEY]: 0.5, rivalA: 0.3, rivalB: 0.2 };
+      // rivalA alone (0.3) is the risk signal, not rivalA+rivalB (0.5) — a takeover only
+      // ever needs ONE player to cross the threshold, dilution spread across several
+      // minority holders is genuinely lower risk than one concentrated buyer.
+      expect(calculateOwnershipRisk(ownership, 0.5)).toBeCloseTo(0.6, 5); // 0.3 / 0.5
+    });
+
+    it('is 0 when takeoverThresholdPercent is misconfigured to 0 (guards the division)', () => {
+      const ownership = { [SELF_OWNERSHIP_KEY]: 0.4, rival: 0.6 };
+      expect(calculateOwnershipRisk(ownership, 0)).toBe(0);
+    });
+  });
+
+  describe('predictNextTurnCashLinear', () => {
+    it('projects forward by the same delta this turn just moved', () => {
+      // Cash went from 80k to 100k this turn (+20k) — projected to keep climbing by
+      // another 20k next turn.
+      expect(predictNextTurnCashLinear(100000, 80000)).toBe(120000);
+    });
+
+    it('projects a continued decline the same way', () => {
+      // Cash went from 100k to 60k this turn (-40k) — projected to keep falling.
+      expect(predictNextTurnCashLinear(60000, 100000)).toBe(20000);
+    });
+
+    it('holds steady when this turn had no net cash movement', () => {
+      expect(predictNextTurnCashLinear(50000, 50000)).toBe(50000);
+    });
+
+    it('can project a negative next-turn cash when the decline is steep enough', () => {
+      expect(predictNextTurnCashLinear(10000, 100000)).toBe(-80000);
+    });
+  });
+
+  describe('calculateSolvencyRisk', () => {
+    it('is 0 with no open legal exposure, regardless of predicted cash', () => {
+      expect(calculateSolvencyRisk(0, 100000)).toBe(0);
+      expect(calculateSolvencyRisk(0, -50000)).toBe(0);
+    });
+
+    it('scales as the fraction of predicted cash the exposure would consume', () => {
+      expect(calculateSolvencyRisk(40000, 100000)).toBeCloseTo(0.4, 5);
+    });
+
+    it('caps at 1 once exposure meets or exceeds predicted cash', () => {
+      expect(calculateSolvencyRisk(40000, 20000)).toBe(1);
+      expect(calculateSolvencyRisk(40000, 40000)).toBe(1);
+    });
+
+    it('caps at 1 (not a negative or >1 ratio) when predicted cash is at or below zero — the floor guards the division', () => {
+      expect(calculateSolvencyRisk(40000, 0)).toBe(1);
+      expect(calculateSolvencyRisk(40000, -100000)).toBe(1);
+    });
   });
 
   describe('applyDecisionImpacts', () => {
@@ -427,7 +594,7 @@ describe('calcEngine', () => {
         },
       };
 
-      const result = applyDecisionImpacts(vars, 'Test', impacts, 1);
+      const result = applyDecisionImpacts(vars, impacts, 1);
 
       expect(result.updatedVars.processingLevel).toBeCloseTo(0.6, 4);
     });
@@ -442,12 +609,12 @@ describe('calcEngine', () => {
       };
 
       // elapsedYears=3 to hit default schedule
-      const result = applyDecisionImpacts(vars, 'Pelleting Research and Development', impacts, 3);
+      const result = applyDecisionImpacts(vars, impacts, 3);
 
       expect(result.updatedVars.processingLevel).toBeCloseTo(0.5 * 1.2, 4);
     });
 
-    it('should accumulate multiple relative impacts additively (FORMULAS §9)', () => {
+    it('should accumulate multiple relative impacts additively', () => {
       // Simulates two matured New Factory instances each with installedCapacity +0.4
       const baseVars = makeVars({ installedCapacity: 10000 });
       const impacts1 = {
@@ -464,7 +631,7 @@ describe('calcEngine', () => {
       };
 
       // First instance: 10000 * (1 + 0.4) = 14000
-      const r1 = applyDecisionImpacts(baseVars, 'New Factory', impacts1, 3);
+      const r1 = applyDecisionImpacts(baseVars, impacts1, 3);
       expect(r1.updatedVars.installedCapacity).toBeCloseTo(14000, 4);
 
       // Second instance on top of first: 14000 * (1 + 0.4) would be WRONG (multiplicative)
@@ -476,8 +643,94 @@ describe('calcEngine', () => {
           schedule: { default: 0.8 }, // 0.4 + 0.4
         },
       };
-      const rCombined = applyDecisionImpacts(baseVars, 'Two Factories', combinedImpacts, 3);
+      const rCombined = applyDecisionImpacts(baseVars, combinedImpacts, 3);
       expect(rCombined.updatedVars.installedCapacity).toBeCloseTo(18000, 4);
+    });
+
+    describe('absolute impacts on an initially-undefined field (regression — used to produce NaN)', () => {
+      // revenue/financeCost/taxCost are optional "Derived (computed each turn)"
+      // PlayerVariables fields — never seeded by startingVars(), so genuinely undefined
+      // until something writes to them. A bare `v[field] += value` on `undefined` is
+      // `NaN` in JS, and it stayed NaN forever afterward since nothing else in a turn
+      // overwrites these three fields. Found via a random 4-player game simulation
+      // (Channel Stuffing has a direct impacts.revenue field in the real library).
+      it('does not produce NaN when an absolute impact targets a field the player has never had a value for', () => {
+        const vars = makeVars();
+        delete (vars as any).revenue;
+        const impacts = { revenue: { type: 'absolute' as const, schedule: { 1: 40000, default: 0 } } };
+
+        const result = applyDecisionImpacts(vars, impacts, 0);
+
+        expect(result.updatedVars.revenue).toBe(40000);
+      });
+
+      it('still accumulates additively once the field has a real value', () => {
+        const vars = makeVars({ revenue: 10000 } as any);
+        const impacts = { revenue: { type: 'absolute' as const, schedule: { 1: 40000, default: 0 } } };
+
+        const result = applyDecisionImpacts(vars, impacts, 0);
+
+        expect(result.updatedVars.revenue).toBe(50000);
+      });
+    });
+
+    describe('zero-floor fields (processingLevel/capacityUtilization/installedCapacity/price)', () => {
+      it('clamps a field to 0 when accumulated relative impacts would drive it negative', () => {
+        const vars = makeVars({ processingLevel: 0.5 });
+        const impacts = {
+          processingLevel: {
+            type: 'relative' as const,
+            // Combined multiplier of -1.5: 0.5 * (1 - 1.5) = -0.25, would go negative
+            schedule: { default: -1.5 },
+          },
+        };
+
+        const result = applyDecisionImpacts(vars, impacts, 3);
+
+        expect(result.updatedVars.processingLevel).toBe(0);
+      });
+
+      it('clamps an absolute impact the same way', () => {
+        const vars = makeVars({ capacityUtilization: 0.2 });
+        const impacts = {
+          capacityUtilization: {
+            type: 'absolute' as const,
+            schedule: { 1: -0.5, default: -0.5 },
+          },
+        };
+
+        const result = applyDecisionImpacts(vars, impacts, 0);
+
+        expect(result.updatedVars.capacityUtilization).toBe(0);
+      });
+
+      it('does not clamp a field outside the zero-floor set (e.g. outrage can go negative)', () => {
+        const vars = makeVars({ outrage: 10 });
+        const impacts = {
+          outrage: {
+            type: 'absolute' as const,
+            schedule: { 1: -30, default: -30 },
+          },
+        };
+
+        const result = applyDecisionImpacts(vars, impacts, 0);
+
+        expect(result.updatedVars.outrage).toBe(-20);
+      });
+
+      it('leaves an already-positive value untouched', () => {
+        const vars = makeVars({ price: 100 });
+        const impacts = {
+          price: {
+            type: 'relative' as const,
+            schedule: { default: -0.1 },
+          },
+        };
+
+        const result = applyDecisionImpacts(vars, impacts, 3);
+
+        expect(result.updatedVars.price).toBeCloseTo(90, 4);
+      });
     });
 
     it('should use default schedule when matured', () => {
@@ -489,7 +742,7 @@ describe('calcEngine', () => {
         },
       };
 
-      const result = applyDecisionImpacts(vars, 'Test', impacts, 5);
+      const result = applyDecisionImpacts(vars, impacts, 5);
 
       expect(result.updatedVars.processingLevel).toBeCloseTo(0.6, 4);
     });
@@ -503,7 +756,7 @@ describe('calcEngine', () => {
         },
       };
 
-      const result = applyDecisionImpacts(vars, 'Test', impacts, 1);
+      const result = applyDecisionImpacts(vars, impacts, 1);
 
       expect(result.updatedVars.competitorPrice).toBe(400);
     });
@@ -518,7 +771,7 @@ describe('calcEngine', () => {
       };
 
       // elapsedYears=0 → key "1" (this decision's deployment-year value, which is 0)
-      const result = applyDecisionImpacts(vars, 'Test', impacts, 0);
+      const result = applyDecisionImpacts(vars, impacts, 0);
 
       expect(result.updatedVars.processingLevel).toBe(0.5);
     });
@@ -537,7 +790,7 @@ describe('calcEngine', () => {
       };
 
       // elapsedYears=3 to hit default schedule
-      const result = applyDecisionImpacts(vars, 'Pelleting Research and Development', impacts, 3);
+      const result = applyDecisionImpacts(vars, impacts, 3);
 
       expect(result.updatedVars.processingLevel).toBeCloseTo(0.6, 4);
       expect(result.updatedVars.supplySecurity).toBeCloseTo(0.45, 4);
@@ -553,7 +806,7 @@ describe('calcEngine', () => {
       };
 
       // Year 0 (deployment): should create entry for +100000
-      const result = applyDecisionImpacts(vars, 'New Factory', impacts, 0, 2024);
+      const result = applyDecisionImpacts(vars, impacts, 0, 2024);
 
       expect(result.updatedVars.assets).toBeCloseTo(150000, 4); // 50000 + 100000
       expect(result.newDepreciationEntries).toHaveLength(1);
@@ -575,13 +828,17 @@ describe('calcEngine', () => {
       // Year 0 (deployment): would create entry, but we're testing year 1 (advancing)
       // At elapsedYears=1, it reads schedule key 2, but we don't have key 2, so it uses default (0)
       // Result: 50000 + 0 = 50000
-      const result = applyDecisionImpacts(vars, 'New Factory', impacts, 1, 2024);
+      const result = applyDecisionImpacts(vars, impacts, 1, 2024);
 
       expect(result.updatedVars.assets).toBeCloseTo(50000, 4); // 50000 + 0
       expect(result.newDepreciationEntries || []).toHaveLength(0);
     });
 
-    it('should not create depreciation for non-depreciating decisions', () => {
+    // Regression: this used to depend on a hardcoded decision-name allowlist
+    // (DEPRECIATING_ASSETS) — this function has no idea which decision produced this
+    // impact at all (decisionName was removed from its signature), so any positive
+    // assets/intangibleAssets addition on the deployment year depreciates. See CLAUDE.md.
+    it('should create a depreciation entry for a positive assets addition regardless of which decision produced it', () => {
       const vars = makeVars({ assets: 50000 });
       const impacts = {
         assets: {
@@ -590,9 +847,25 @@ describe('calcEngine', () => {
         },
       };
 
-      const result = applyDecisionImpacts(vars, 'Sale & Leaseback', impacts, 0, 2024);
+      const result = applyDecisionImpacts(vars, impacts, 0, 2024);
 
       expect(result.updatedVars.assets).toBeCloseTo(60000, 4);
+      expect(result.newDepreciationEntries).toHaveLength(1);
+      expect(result.newDepreciationEntries![0].originalValue).toBe(10000);
+    });
+
+    it('should not create a depreciation entry for a negative assets change (a sale/depletion, not a purchase)', () => {
+      const vars = makeVars({ assets: 50000 });
+      const impacts = {
+        assets: {
+          type: 'absolute' as const,
+          schedule: { 1: -10000, default: 0 },
+        },
+      };
+
+      const result = applyDecisionImpacts(vars, impacts, 0, 2024);
+
+      expect(result.updatedVars.assets).toBeCloseTo(40000, 4);
       expect(result.newDepreciationEntries).toHaveLength(0);
     });
 
@@ -605,11 +878,131 @@ describe('calcEngine', () => {
         },
       };
 
-      const result = applyDecisionImpacts(vars, 'Test', impacts, 3);
+      const result = applyDecisionImpacts(vars, impacts, 3);
 
       expect(result).toHaveProperty('updatedVars');
       expect(result).toHaveProperty('newDepreciationEntries');
       expect(Array.isArray(result.newDepreciationEntries)).toBe(true);
+    });
+
+    describe('sharesAmount (Share Issuance)', () => {
+      it('should increase totalSharesOutstanding and credit the new shares to EXTERNAL_MARKET on the deployment year', () => {
+        const vars = makeVars({ totalSharesOutstanding: 10000, shareOwnership: { [SELF_OWNERSHIP_KEY]: 1.0 } });
+        const impacts = { sharesAmount: { type: 'absolute' as const, schedule: { 1: 5000, default: 0 } } };
+
+        const result = applyDecisionImpacts(vars, impacts, 0);
+
+        expect(result.updatedVars.totalSharesOutstanding).toBe(15000);
+        // Founder diluted from 100% to 10000/15000 = 2/3; the new 5000 shares (1/3) go to EXTERNAL_MARKET.
+        expect(result.updatedVars.shareOwnership[SELF_OWNERSHIP_KEY]).toBeCloseTo(2 / 3, 4);
+        expect(result.updatedVars.shareOwnership[EXTERNAL_MARKET_KEY]).toBeCloseTo(1 / 3, 4);
+      });
+
+      it('should dilute an existing cross-holding proportionally too, not just the founder', () => {
+        const vars = makeVars({
+          totalSharesOutstanding: 10000,
+          shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.6, rival: 0.4 },
+        });
+        const impacts = { sharesAmount: { type: 'absolute' as const, schedule: { 1: 10000, default: 0 } } };
+
+        const result = applyDecisionImpacts(vars, impacts, 0);
+
+        expect(result.updatedVars.totalSharesOutstanding).toBe(20000);
+        expect(result.updatedVars.shareOwnership[SELF_OWNERSHIP_KEY]).toBeCloseTo(0.3, 4);
+        expect(result.updatedVars.shareOwnership.rival).toBeCloseTo(0.2, 4);
+        expect(result.updatedVars.shareOwnership[EXTERNAL_MARKET_KEY]).toBeCloseTo(0.5, 4);
+      });
+
+      it('should not issue shares on a non-deployment year even if the schedule has a value there', () => {
+        const vars = makeVars({ totalSharesOutstanding: 10000, shareOwnership: { [SELF_OWNERSHIP_KEY]: 1.0 } });
+        const impacts = { sharesAmount: { type: 'absolute' as const, schedule: { 1: 5000, 2: 5000, default: 0 } } };
+
+        // elapsedYears=1 (advancing, not deploying) — sharesAmount must NOT re-trigger.
+        const result = applyDecisionImpacts(vars, impacts, 1);
+
+        expect(result.updatedVars.totalSharesOutstanding).toBe(10000);
+      });
+
+      it('should not write a literal "sharesAmount" field onto vars — it is not a real PlayerVariables field', () => {
+        const vars = makeVars({ totalSharesOutstanding: 10000, shareOwnership: { [SELF_OWNERSHIP_KEY]: 1.0 } });
+        const impacts = { sharesAmount: { type: 'absolute' as const, schedule: { 1: 5000, default: 0 } } };
+
+        const result = applyDecisionImpacts(vars, impacts, 0);
+
+        expect((result.updatedVars as any).sharesAmount).toBeUndefined();
+      });
+
+      it('should not mutate the original vars.shareOwnership object (never alias a shared reference)', () => {
+        const sharedOwnership = { [SELF_OWNERSHIP_KEY]: 1.0 };
+        const vars = makeVars({ totalSharesOutstanding: 10000, shareOwnership: sharedOwnership });
+        const impacts = { sharesAmount: { type: 'absolute' as const, schedule: { 1: 5000, default: 0 } } };
+
+        applyDecisionImpacts(vars, impacts, 0);
+
+        expect(sharedOwnership).toEqual({ [SELF_OWNERSHIP_KEY]: 1.0 });
+      });
+    });
+  });
+
+  describe('applyTargetImpacts', () => {
+    it('clamps a routed target.* field to 0 the same way applyDecisionImpacts does for its own fields', () => {
+      const targetVars = makeVars({ processingLevel: 0.3 });
+      const targetImpacts = new Map([
+        ['processingLevel', { type: 'relative' as const, schedule: { default: -2 } }],
+      ]);
+
+      const result = applyTargetImpacts(targetVars, targetImpacts, 3);
+
+      expect(result.processingLevel).toBe(0);
+    });
+
+    it('leaves a field outside the zero-floor set free to go negative (e.g. target.outrage)', () => {
+      const targetVars = makeVars({ outrage: 5 });
+      const targetImpacts = new Map([
+        ['outrage', { type: 'absolute' as const, schedule: { 1: -20, default: -20 } }],
+      ]);
+
+      const result = applyTargetImpacts(targetVars, targetImpacts, 0);
+
+      expect(result.outrage).toBe(-15);
+    });
+
+    it('does not produce NaN for an absolute target.* impact on an initially-undefined field (regression)', () => {
+      const targetVars = makeVars();
+      delete (targetVars as any).financeCost;
+      const targetImpacts = new Map([
+        ['financeCost', { type: 'absolute' as const, schedule: { 1: 9000, default: 9000 } }],
+      ]);
+
+      const result = applyTargetImpacts(targetVars, targetImpacts, 0);
+
+      expect(result.financeCost).toBe(9000);
+    });
+  });
+
+  describe('renormalizeShareOwnership', () => {
+    it('should leave an already-normalized map unchanged', () => {
+      const result = renormalizeShareOwnership({ [SELF_OWNERSHIP_KEY]: 0.6, [EXTERNAL_MARKET_KEY]: 0.4 });
+      expect(result[SELF_OWNERSHIP_KEY]).toBeCloseTo(0.6, 6);
+      expect(result[EXTERNAL_MARKET_KEY]).toBeCloseTo(0.4, 6);
+    });
+
+    it('should rescale a map that drifted away from summing to 1.0', () => {
+      const result = renormalizeShareOwnership({ [SELF_OWNERSHIP_KEY]: 0.3, [EXTERNAL_MARKET_KEY]: 0.3 });
+      expect(result[SELF_OWNERSHIP_KEY]).toBeCloseTo(0.5, 6);
+      expect(result[EXTERNAL_MARKET_KEY]).toBeCloseTo(0.5, 6);
+      expect(Object.values(result).reduce((s, v) => s + v, 0)).toBeCloseTo(1, 6);
+    });
+
+    it('should return a new object, never mutate the input', () => {
+      const input = { [SELF_OWNERSHIP_KEY]: 0.5, [EXTERNAL_MARKET_KEY]: 0.5 };
+      const result = renormalizeShareOwnership(input);
+      expect(result).not.toBe(input);
+    });
+
+    it('should return a shallow copy for an all-zero map rather than dividing by zero', () => {
+      const result = renormalizeShareOwnership({ [SELF_OWNERSHIP_KEY]: 0 });
+      expect(result[SELF_OWNERSHIP_KEY]).toBe(0);
     });
   });
 
@@ -645,9 +1038,6 @@ describe('calcEngine', () => {
         legalProcess: {
           scrutinyLegalRiskMultiplier: 0.02,
           legalExposureRatioCap: 0.5, // Custom cap
-          semaphoreGreenMax: 0.15,
-          semaphoreYellowMax: 0.4,
-          buySharesLegalRiskThresholdPercent: 0.05,
         },
       });
       const ratio = calculateLegalExposureRatio(60000, 100000, admin, DEFAULT_FORMULAS);

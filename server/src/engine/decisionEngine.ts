@@ -1,6 +1,6 @@
 /**
  * Decision Engine — manages decision deployment, exclusion rules, maturity tracking,
- * and impact application per FORMULAS.md §9-§10.
+ * and impact application.
  */
 
 import type { DecisionDefinition, PlayerVariables, AdminVariables } from '@suetheirasses/shared';
@@ -21,6 +21,54 @@ export interface DeployedDecision {
   isMatured: boolean;
   /** The player this decision's `target.*` impacts route to — set when the decision was deployed against an opponent. */
   targetId?: string;
+  /** True once a lost lawsuit cancelled this instance's forthcoming effects — see `hasPermanentEffect`/`canDeploy` and CLAUDE.md. */
+  voidedByLawsuit: boolean;
+  /** True the instant ANY lawsuit is filed against this specific instance — first come,
+   * first served: once set, no further lawsuit (from anyone, on any ground) can ever
+   * target this same instance again, regardless of how that first case resolves (settled,
+   * won, or lost). See CLAUDE.md's "one lawsuit per decision instance, ever" section. */
+  everSued: boolean;
+  /** For a Buy Shares instance only — the fraction of the target company actually
+   * acquired in this single transaction, stamped once at execution time (`GameLoop`'s
+   * share-transaction step). Gates `legalRiskConditions.minPercentAcquiredInSingleTransaction`
+   * generically — see `meetsLegalRiskConditions`/CLAUDE.md. */
+  acquisitionFraction?: number;
+}
+
+/**
+ * True if any of a decision's own (non-`target.*`/`competitor*`) impact fields carry a
+ * non-zero `'default'` schedule value — meaning that field's effect keeps being re-applied
+ * every turn forever once the schedule's explicit years run out, not just a one-time bump
+ * (see `getScheduleValue`'s doc comment). Used to gate `canDeploy`'s redeploy-lock rule: a
+ * decision that already delivered this kind of permanent improvement once (matured without
+ * being voided by a lost lawsuit) can never be redeployed to stack it again. Deliberately
+ * scoped to the decision's own fields only — `canDeploy` ORs this with the equivalent
+ * `target.*` check (`hasPermanentImpactMap` over `getTargetImpacts`) itself, rather than
+ * folding both into one function, since `collectTargetImpacts`'s statute-of-limitations
+ * cutoff only ever needs the target-side half.
+ */
+export function hasPermanentEffect(def: DecisionDefinition): boolean {
+  for (const [field, impact] of Object.entries(def.impacts)) {
+    if (field.startsWith('target.') || field.startsWith('competitor')) continue;
+    if ((impact.schedule['default'] ?? 0) !== 0) return true;
+  }
+  return false;
+}
+
+/** Same "non-zero 'default' schedule value somewhere" check as `hasPermanentEffect`, but
+ * over an already-extracted target-impact map (e.g. Bot Attack's `target.outrage`) rather
+ * than a whole `DecisionDefinition` — used by `collectTargetImpacts`'s own
+ * statute-of-limitations cutoff, and by `canDeploy`'s redeploy-lock (ORed with
+ * `hasPermanentEffect`, so a decision with only a permanent `target.*` effect and no
+ * permanent self-effect — e.g. Patent Portfolio's ongoing `target.processingLevel: -0.2` —
+ * still blocks its own redeployment while that debuff is live; this was a real gap until
+ * audited, since every other permanent-target-effect decision in the seed library happens
+ * to also carry a permanent self-cost that gated it incidentally). */
+function hasPermanentImpactMap(impacts: Map<string, { type: 'absolute' | 'relative'; schedule: Record<number | string, number> }>): boolean {
+  for (const impact of impacts.values()) {
+    if ((impact.schedule['default'] ?? 0) !== 0) return true;
+  }
+  return false;
 }
 
 /** Target impacts extracted from a decision — applied to the targeted player instead of self. */
@@ -113,6 +161,17 @@ export interface SuggestedGround {
  * winnable-looking odds for a decision a real filing would immediately resolve to 0%
  * for being too old. Defaulted so existing callers/tests that don't pass it keep the
  * pre-feature behavior (never time-barred).
+ *
+ * `alreadyClaimed` (the instance's own `everSued` flag) floors probability to 0 the same
+ * way — once any lawsuit has ever been filed against this specific instance, no further
+ * one can win, first-come-first-served (see CLAUDE.md), so a suggestion must never quote
+ * winnable odds for an instance that's already been claimed.
+ *
+ * `meetsConditions` (see `meetsLegalRiskConditions`) floors probability to 0 the same way
+ * again — a decision like Buy Shares can carry `legalRiskConditions` gating its legal
+ * risk on how much of a single transaction it actually was (e.g.
+ * `minPercentAcquiredInSingleTransaction`); a purchase too small to cross that threshold
+ * has no real legal exposure to suggest suing over.
  */
 export function pickBestGround(
   def: DecisionDefinition,
@@ -121,9 +180,11 @@ export function pickBestGround(
   admin: AdminVariables,
   formulas: FormulaSet,
   statuteOfLimitationsYears = Infinity,
+  alreadyClaimed = false,
+  meetsConditions = true,
 ): SuggestedGround | null {
   if (!def.legalRisks || def.legalRisks.length === 0) return null;
-  const timeBarred = elapsedYears >= statuteOfLimitationsYears;
+  const timeBarred = alreadyClaimed || !meetsConditions || elapsedYears >= statuteOfLimitationsYears;
   let best: SuggestedGround | null = null;
   for (const risk of def.legalRisks) {
     const base = timeBarred ? 0 : getScheduleValue(risk.probability, elapsedYears);
@@ -136,6 +197,23 @@ export function pickBestGround(
     }
   }
   return best;
+}
+
+/**
+ * Generically checks a decision's `legalRiskConditions` (a free-form, data-driven bag —
+ * never a hardcoded decision name, see CLAUDE.md) against one deployed instance's own
+ * recorded state. Today the only condition either engine or admin data actually sets is
+ * `minPercentAcquiredInSingleTransaction` (Buy Shares) — checked against the instance's
+ * `acquisitionFraction` (stamped once at execution time by the share-transaction step).
+ * A decision with no `legalRiskConditions` at all (the overwhelming majority of the
+ * library) always meets them trivially. An admin-added future condition this function
+ * doesn't recognize is likewise ignored (treated as met) rather than blocking legal risk
+ * for a decision nobody's wired a check for yet.
+ */
+export function meetsLegalRiskConditions(def: DecisionDefinition, instance: { acquisitionFraction?: number }): boolean {
+  const minPercent = def.legalRiskConditions?.minPercentAcquiredInSingleTransaction;
+  if (typeof minPercent !== 'number') return true;
+  return (instance.acquisitionFraction ?? 0) >= minPercent;
 }
 
 export class DecisionEngine {
@@ -170,19 +248,42 @@ export class DecisionEngine {
   canDeploy(
     playerDecisions: DeployedDecision[],
     decisionName: string,
-    level: 'Strategic' | 'Operational',
-    maxStrategic: number,
-    maxOperational: number,
+    statuteOfLimitationsYears = Infinity,
   ): { allowed: boolean; reason?: string } {
     const existing = playerDecisions.filter(d => d.definition.decision === decisionName);
 
-    // Can't deploy same decision twice unless the previous one has matured (FORMULAS §9)
+    // Can't deploy same decision twice unless the previous one has matured
     if (existing.length > 0 && !existing[existing.length - 1].isMatured) {
       return { allowed: false, reason: `Previous ${decisionName} hasn't matured yet` };
     }
 
     const def = this.definitions.get(decisionName);
     if (!def) return { allowed: false, reason: 'Unknown decision' };
+
+    // A decision with a permanent (non-zero 'default') effect blocks redeploying itself
+    // for as long as an instance is still actively delivering that effect — otherwise
+    // deploying it again while the first is still live would stack the same permanent KPI
+    // boost. That window ends the same way an instance stops being suable: once it's been
+    // active `statuteOfLimitationsYears` turns (`advanceAndApply`/`collectTargetImpacts`
+    // stop applying its impacts at the same point — see CLAUDE.md), it's no longer
+    // contributing anything, so a fresh deploy no longer stacks with it. An instance voided
+    // by a lost lawsuit never got to keep its effect at all, so it never blocks
+    // redeployment either.
+    //
+    // Checked on BOTH the decision's own fields (`hasPermanentEffect`) and its `target.*`
+    // fields (`hasPermanentImpactMap` over the extracted target-impact map) — a decision
+    // that only carries a permanent `target.*` debuff (no permanent self-effect at all,
+    // e.g. Patent Portfolio's ongoing `target.processingLevel: -0.2`) would otherwise be
+    // free to redeploy and stack indefinitely the instant its first instance matures, with
+    // nothing gating the exact case this rule exists to prevent — just aimed at a rival's
+    // KPI instead of the deployer's own. Most `target.*`-bearing decisions in the real
+    // library also carry a permanent self-cost that already gates them incidentally (e.g.
+    // Bot Attack's own ongoing `operatingExpenses`/`cash` effects), which is why this gap
+    // stayed invisible until audited directly against the seed data.
+    const hasPermanentTargetEffect = hasPermanentImpactMap(this.getTargetImpacts(def.impacts));
+    if ((hasPermanentEffect(def) || hasPermanentTargetEffect) && existing.some(d => d.isMatured && !d.voidedByLawsuit && d.elapsedYears < statuteOfLimitationsYears)) {
+      return { allowed: false, reason: `${decisionName} is still delivering its permanent effect and cannot be redeployed yet` };
+    }
 
     // Forward exclusions — if this decision excludes another, that other must be matured
     for (const excluded of def.excludes) {
@@ -192,7 +293,7 @@ export class DecisionEngine {
       }
     }
 
-    // Reverse exclusions — symmetrical rule (FORMULAS §10)
+    // Reverse exclusions — symmetrical rule
     for (const active of playerDecisions) {
       const activeDef = this.definitions.get(active.definition.decision);
       if (activeDef?.excludes.includes(decisionName) && !active.isMatured) {
@@ -200,16 +301,15 @@ export class DecisionEngine {
       }
     }
 
-    // Level limits from game_config.json
-    const stratCount = playerDecisions.filter(d => d.definition.level === 'Strategic').length;
-    const opCount = playerDecisions.filter(d => d.definition.level === 'Operational').length;
-
-    if (level === 'Strategic' && stratCount >= maxStrategic) {
-      return { allowed: false, reason: `Max ${maxStrategic} strategic decisions per turn reached` };
-    }
-    if (level === 'Operational' && opCount >= maxOperational) {
-      return { allowed: false, reason: `Max ${maxOperational} operational decisions per turn reached` };
-    }
+    // NOTE: there is deliberately no "max N strategic/N operational decisions" check here
+    // anymore — see CLAUDE.md's "canDeploy's level-limit check counted a player's entire
+    // lifetime of active decisions" section for why a per-turn budget check has no business
+    // being computed from `playerDecisions` (a player's ENTIRE historical active-decisions
+    // list, which only ever grows and never shrinks) at all. The real "at most
+    // maxStrategicDecisionsPerTurn/maxOperationalDecisionsPerTurn decisions of each level
+    // per turn" budget is enforced by the caller, `GameLoop.processNewDecisions`
+    // (`sub[bucket].slice(0, maxForBucket)`), which only ever attempts that many entries
+    // from THIS turn's submission — no count needs recomputing in here at all.
 
     return { allowed: true };
   }
@@ -223,11 +323,13 @@ export class DecisionEngine {
       elapsedYears: 0,
       isMatured: maturityYears === 0, // "default" only → matures immediately
       targetId,
+      voidedByLawsuit: false,
+      everSued: false,
     };
   }
 
-  applyImpactsForYear(vars: PlayerVariables, name: string, impacts: Record<string, { type: 'absolute' | 'relative'; schedule: Record<number | string, number> }>, elapsedYears: number, currentYear?: number): import('./calcEngine.js').ApplyImpactsResult {
-    const result = applyDecisionImpacts(vars, name, impacts, elapsedYears, currentYear);
+  applyImpactsForYear(vars: PlayerVariables, impacts: Record<string, { type: 'absolute' | 'relative'; schedule: Record<number | string, number> }>, elapsedYears: number, currentYear?: number): import('./calcEngine.js').ApplyImpactsResult {
+    const result = applyDecisionImpacts(vars, impacts, elapsedYears, currentYear);
     return result;
   }
 
@@ -240,17 +342,22 @@ export class DecisionEngine {
   }
 
   /**
-   * Collect this turn's cross-player effects from a player's active decisions (FORMULAS §0/A1):
+   * Collect this turn's cross-player effects from a player's active decisions:
    * every active decision that was deployed against an opponent (`targetId` set) and carries
    * `target.*` fields contributes one entry, evaluated at its own current `elapsedYears` so the
    * effect follows the same maturity schedule as the decision's self-impacts.
    */
-  collectTargetImpacts(activeDecisions: DeployedDecision[]): TargetImpactResult[] {
+  collectTargetImpacts(activeDecisions: DeployedDecision[], statuteOfLimitationsYears = Infinity): TargetImpactResult[] {
     const results: TargetImpactResult[] = [];
     for (const d of activeDecisions) {
       if (!d.targetId) continue;
+      if (d.voidedByLawsuit) continue;
       const impacts = extractTargetImpacts(d.definition.impacts);
       if (impacts.size === 0) continue;
+      // A permanent target effect (e.g. Bot Attack's indefinite target.outrage) stops the
+      // same way a permanent own-effect does — once the instance has been active as long
+      // as it could still be sued over, it's no longer contributing anything.
+      if (d.elapsedYears >= statuteOfLimitationsYears && hasPermanentImpactMap(impacts)) continue;
       results.push({ targetId: d.targetId, impacts, elapsedYears: d.elapsedYears });
     }
     return results;
@@ -258,12 +365,43 @@ export class DecisionEngine {
 
   // ── Phase B helpers ────────────────────────────────────────
 
-  /** Advance all active decisions by one year and apply their impacts. */
+  /**
+   * Advance all active decisions by one year and apply their impacts.
+   *
+   * A decision's own (non-`target.*`) impact is applied at most once per explicit
+   * schedule year, plus exactly once more at the moment it first falls through to
+   * `'default'` (i.e. the turn maturity is reached) — never again after that. Before this,
+   * every turn past maturity re-ran `applyInstance` at the (always-'default'-returning)
+   * current `elapsedYears`, so a `'default'` value — whether a `relative` field
+   * (`installedCapacity: {default: 0.4}`) or an `absolute` one
+   * (`operatingExpenses: {default: 25000}`) — kept compounding/accumulating every single
+   * turn for as long as the instance stayed alive (bounded only by
+   * `statuteOfLimitationsYears`, default 10 turns — not actually "forever," but 10 turns of
+   * continuous ×1.4 compounding is still ~29x). A real, reported finding from a randomized
+   * multi-round simulation: New Factory's `installedCapacity` grew 350 → 490 → 686 → 960 →
+   * 1345 → 1882 → 2635 over 7 turns from a single instance with zero other activity, and
+   * the *same* mechanic on the cost side (`operatingExpenses`/`capacityUtilization`) was
+   * independently driving early, hard-to-explain bankruptcies. "Permanent effect" was
+   * meant to describe a one-time, lasting step-change ("this factory permanently raised
+   * your capacity/costs"), not a perpetual annual re-investment nobody made — matches how
+   * multiple *separate* instances were already documented to combine (`base * (1 + 0.4 +
+   * 0.4)`, summed once against a stable base — a framing incompatible with any single
+   * instance's own value compounding against itself turn over turn). See CLAUDE.md's
+   * "advanceAndApply re-applied a matured decision's default effect every turn forever"
+   * section.
+   *
+   * Deliberately scoped to a decision's *own* impacts only — `target.*` effects
+   * (`collectTargetImpacts`/`applyTargetImpacts`, an ongoing attack against another player)
+   * keep their existing "re-applies every turn until the statute of limitations" behavior
+   * unchanged; that's a separate, offense/defense-balance question nobody asked to revisit
+   * here, and changing it would weaken every attacking decision in the library at once.
+   */
   advanceAndApply(
     _playerId: string,
     vars: PlayerVariables,
     activeDecisions: DeployedDecision[],
     currentYear: number,
+    statuteOfLimitationsYears = Infinity,
   ): { updatedVars: PlayerVariables; updatedActiveDecisions: DeployedDecision[]; newDepreciationEntries: import('./calcEngine.js').DepreciationLedgerEntry[]; absDeltas: { revenueDelta: number; financeCostDelta: number; taxCostDelta: number; receivablesDelta: number; cashDelta: number } } {
     let v = { ...vars };
     const decisions = [...activeDecisions];
@@ -273,14 +411,37 @@ export class DecisionEngine {
     for (const d of decisions) {
       d.elapsedYears++;
 
-      // Check maturity (FORMULAS §9)
+      // Check maturity
       const threshold = calcMaturity(d.definition.impacts);
       if (!d.isMatured && d.elapsedYears >= threshold) {
         d.isMatured = true;
       }
 
+      // A lawsuit lost over this instance cancels its forthcoming effects entirely —
+      // whatever was already applied in earlier turns stays, but no further schedule value
+      // (including a permanent 'default' one) is ever applied again.
+      if (d.voidedByLawsuit) continue;
+
+      // A permanent ('default') effect stops being re-applied once this instance has been
+      // active as long as it could still be sued over (gameSettings.statuteOfLimitationsYears)
+      // — matches canDeploy's redeploy lock, which lifts at the exact same point. Forcing
+      // isMatured here too covers the (unusual) admin config where the statute is set
+      // shorter than the decision's own maturity schedule.
+      if (hasPermanentEffect(d.definition) && d.elapsedYears >= statuteOfLimitationsYears) {
+        d.isMatured = true;
+        continue;
+      }
+
+      // Apply once per explicit schedule year, plus once more the turn 'default' is first
+      // reached (elapsedYears === threshold) — never again after (elapsedYears > threshold)
+      // — see this method's doc comment for why. A decision with no explicit years at all
+      // (threshold 0, instant maturity) applies its 'default' exactly once, at deployment
+      // (Step 1's applyImpactsForYear call with elapsedYears=0), and is skipped here on
+      // every subsequent turn (elapsedYears starts at 1 on the very next call, already > 0).
+      if (d.elapsedYears > threshold) continue;
+
       // Apply impacts — relative instances additively across matured instances
-      const result = this.applyInstance(v, d.definition.decision, d.definition.impacts, d.elapsedYears, d.isMatured, currentYear);
+      const result = this.applyInstance(v, d.definition.impacts, d.elapsedYears, d.isMatured, currentYear);
       v = result.updatedVars;
       allNewDepEntries.push(...result.newDepreciationEntries);
       allAbsDeltas.push(result.absDeltas);
@@ -296,13 +457,12 @@ export class DecisionEngine {
 
   private applyInstance(
     vars: PlayerVariables,
-    decisionName: string,
     impacts: Record<string, { type: 'absolute' | 'relative'; schedule: Record<number | string, number> }>,
     elapsedYears: number,
     _isMatured: boolean,
     currentYear: number,
   ): { updatedVars: PlayerVariables; newDepreciationEntries: import('./calcEngine.js').DepreciationLedgerEntry[]; absDeltas: { revenueDelta: number; financeCostDelta: number; taxCostDelta: number; receivablesDelta: number; cashDelta: number } } {
-    const result = applyDecisionImpacts(vars, decisionName, impacts, elapsedYears, currentYear);
+    const result = applyDecisionImpacts(vars, impacts, elapsedYears, currentYear);
     return result;
   }
 }

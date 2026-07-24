@@ -36,7 +36,7 @@ The game progresses through a continuous loop until only one player remains:
 | 3 | **Aftermath** | Terminal state — reached the instant only one player remains. Shows the winner and final standings; the game does not return to the Game Loop from here. | 30s |
 
 Bankruptcy is checked as part of every single Game Loop round, not in a separate pass: a
-player is eliminated the instant their cash goes below $0 on any turn (FORMULAS §12). The
+player is eliminated the instant their cash goes below $0 on any turn. The
 loop continues — incrementing the round and resolving again every 120s — until only one
 player remains, at which point the room moves to Aftermath and the game ends.
 
@@ -216,7 +216,7 @@ suetheirasses/
 │   ├── src/
 │   │   ├── socket/                  # Socket.IO handlers
 │   │   │   └── gameEngine.ts        # Room/phase lifecycle + GameLoop orchestration
-│   │   ├── engine/                  # Turn-resolution engine (FORMULAS.md, see below)
+│   │   ├── engine/                  # Turn-resolution engine (see below)
 │   │   │   ├── gameLoop.ts          # Orchestrates one full turn, per-room
 │   │   │   ├── calcEngine.ts        # P&L, balance sheet, market share, risk gauge
 │   │   │   ├── decisionEngine.ts    # Decision deployment, maturity, exclusions
@@ -257,9 +257,6 @@ suetheirasses/
 │   │                                 # LegalCaseData, TurnResolutionResult, GameConfig
 │   ├── tsconfig.json
 │   └── package.json
-│
-├── definitionDocumentation/         # Source of truth for game math — never derive
-│   └── FORMULAS.md                  # every formula + the per-turn calculation order
 │
 ├── tests/                           # Integration & E2E Tests
 │   ├── api/                         # Vitest interface tests (DB via testcontainers)
@@ -324,16 +321,19 @@ model Room {
 }
 
 model Player {
-  id           String     @id @default(cuid())
-  name         String
-  roomId       String
-  room         Room       @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  isHost       Boolean    @default(false)
-  bankrupt     Boolean    @default(false)
-  socketId     String?
-  createdAt    DateTime   @default(now())
-  companyId    String?    @unique
-  company      Company?
+  id              String     @id @default(cuid())
+  name            String
+  roomId          String
+  room            Room       @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  isHost          Boolean    @default(false)
+  bankrupt        Boolean    @default(false)
+  // Round eliminated in (bankruptcy, merger/takeover, or forfeit) — null while active.
+  // See "Game Timeline" below for why this is needed.
+  eliminatedRound Int?
+  socketId        String?
+  createdAt       DateTime   @default(now())
+  companyId       String?    @unique
+  company         Company?
 
   @@index([roomId])
   @@index([roomId, bankrupt])
@@ -348,7 +348,7 @@ model Company {
   player            Player  @relation(fields: [playerId], references: [id], onDelete: Cascade)
   cash              Decimal @default(100000) @db.Decimal(15, 2)
   debt              Decimal @default(0)      @db.Decimal(15, 2)
-  // Full PlayerVariables (cash, assets, price, outrage, scrutiny, ...) — FORMULAS.md
+  // Full PlayerVariables (cash, assets, price, outrage, scrutiny, ...) — the turn-resolution math
   variables         Json    @default("{}")
   // Snapshot of last turn's computed results, for UI display/history
   lastTurnSnapshot  Json?   @default("{}")
@@ -387,6 +387,33 @@ model KpiSnapshot {
   @@unique([playerId, round])
   @@index([playerId])
 }
+
+// Durable lawsuit lifecycle log — the live LegalCaseData inside Company.engineState.
+// legalCases only survives one extra turn past its own resolution, so a separate table
+// is needed to answer "every lawsuit filed/resolved" across a whole game (see "Game
+// Timeline" below). One row per case (id == LegalCaseData.id), created at filing,
+// updated once at resolution. Deliberately no FK to Player — only to Room — since a
+// Player row can be deleted independently; names are denormalized at write time.
+model LegalCaseHistory {
+  id            String   @id
+  roomId        String
+  room          Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  plaintiffId   String
+  plaintiffName String
+  defendantId   String
+  defendantName String
+  decisionName  String
+  groundName    String
+  description   String
+  stakes        Decimal  @db.Decimal(15, 2)
+  filedRound    Int
+  resolvedRound Int?
+  verdict       String?  // 'won' | 'lost' | 'settled' | 'cancelled'
+  createdAt     DateTime @default(now())
+
+  @@index([roomId])
+  @@index([roomId, filedRound])
+}
 ```
 
 ---
@@ -414,6 +441,7 @@ model KpiSnapshot {
 | `game:makeOffer` | `{ caseId, amount }` | Make (or counter) a settlement offer on a case still `'negotiating'` — instant, outside the turn-resolution cycle. Only the party who did *not* make the most recent offer may call this (the defendant, if none has been made yet). See *Lawsuits* below. |
 | `game:acceptOffer` | `{ caseId }` | Accept the other party's most recent offer, settling the case immediately for that amount — instant. Only the party who did not make that offer may call this. |
 | `game:goToCourt` | `{ caseId }` | End negotiation and send a case to trial — instant. Either party may call this at any time while the case is `'negotiating'`; only marks it `awaiting_trial`, the verdict itself is still drawn at the next turn resolution. |
+| `game:getGameTimeline` | — | Request the whole room's game-timeline replay/spectator data (every player's KPI history, every decision deployed, every lawsuit filed/resolved) — no payload, unlike every other on-demand request here. Valid in both GAME_PHASE (a live-spectating eliminated player) and AFTERMATH (the finished-game replay). See *Game Timeline* below. |
 | `game:leave` | — | Voluntary forfeit — GAME_PHASE only. Instant bankruptcy for the requesting player; the game continues for everyone else. See *Leave Game* below. |
 | `game:ready` | `{ ready }` | Toggle ready status for the in-flight turn — GAME_PHASE only. Once every active player is ready, the turn resolves immediately. See *Ready-Up* below. |
 | `chat:message` | `{ message }` | Send a chat message to the room — WAITING phase only. See *Lobby Features* above. |
@@ -433,13 +461,14 @@ model KpiSnapshot {
 | `timer:update` | `{ timeLeft }` | Countdown tick |
 | `game:deck` | `{ decisions: DecisionDefinition[], gameSettings: GameSettings }` | Sent once, right when GAME_PHASE starts — the full 45-decision library and per-turn limits, static for the whole game. Also re-sent on a successful `room:rejoin` during GAME_PHASE. |
 | `turn:resolved` | `TurnResolutionResult` (`{ round, players: PlayerTurnResult[], gameOver, winnerId? }`) | Sent twice per round-1: once immediately when the game starts (starting-position preview, `GameLoop.getInitialSnapshot`), and again whenever a GAME_PHASE turn actually finishes resolving (`GameLoop.resolveTurn`) — full per-player state either way. `GameEngine` caches the most recent one per room and re-sends it on a successful `room:rejoin` during GAME_PHASE, so a reconnecting player doesn't wait for the next turn to see where things stand. |
-| `player:bankrupt` | `{ playerId, playerName }` | Player eliminated — either their cash went below $0 this turn (FORMULAS §12), or they voluntarily forfeited via `game:leave` |
+| `player:bankrupt` | `{ playerId, playerName }` | Player eliminated — either their cash went below $0 this turn, or they voluntarily forfeited via `game:leave` |
 | `game:over` | `{ winner, finalStandings }` | Only one player remains; room moved to AFTERMATH. Also re-sent on a successful `room:rejoin` during AFTERMATH. |
 | `game:digDeeperResult` | `{ attackId, cost, newCash, attack: IncomingAttackInfo }` | Sent only to the requesting socket, never broadcast — the newly-unlocked intel tier for one attack |
 | `game:fileLawsuitResult` | `{ cost, newCash }` | Sent only to the requesting socket, on a successful `game:fileLawsuit` charge — a failed charge (insufficient funds, per-turn limit reached) is reported via the generic `error` event instead, same convention as `game:digDeeper` |
 | `game:annualReportResult` | `{ rivalPlayerId, entries: AnnualReportEntry[] }` | Sent only to the requesting socket, never broadcast — AI-narrated (or static-fallback) flavor text for the rival's active decisions |
 | `game:kpiHistoryResult` | `{ playerId, history: KpiSnapshotPoint[], predicted: KpiSnapshotPoint[], bankruptAtRound? }` | Sent only to the requesting socket — persisted KPI history (oldest round first) for whichever player was requested (`playerId`). Self requests get up to 3 predicted future turns too; rival requests always come back with `predicted: []`. |
 | `game:legalCaseUpdate` | `{ case: LegalCaseData, newCash? }` | Sent to BOTH parties on a case (never broadcast to the room) whenever `game:makeOffer`/`game:acceptOffer`/`game:goToCourt` succeeds. `newCash` is per-recipient — present only for whichever party's cash actually just moved (a settlement), undefined for an offer or a court decision. A validation failure (not your turn, case not found, etc.) goes only to the requesting socket via `error` instead. |
+| `game:gameTimelineResult` | `{ roomId, currentRound, gameOver, winnerId?, players: TimelinePlayerInfo[], kpiHistory: Record<string, KpiSnapshotPoint[]>, decisions: TimelineDecisionEvent[], lawsuits: TimelineLawsuitEvent[] }` | Sent only to the requesting socket, in response to `game:getGameTimeline` — the whole room's history at once, not per-target like `game:kpiHistoryResult`. See *Game Timeline* below. |
 | `game:left` | — | Sent only to the requesting socket, confirming a successful `game:leave` forfeit — the client's cue to show the "lost" takeover with the forfeit-specific message |
 | `game:readyUpdate` | `{ readyPlayerIds: string[], activePlayerCount: number }` | Broadcast on every `game:ready` toggle, and reset to an empty `readyPlayerIds` at the start of every new round |
 | `chat:message` | `{ playerId, playerName, message, timestamp }` | Broadcast to the room in response to a `chat:message` from any player in it |
@@ -539,7 +568,8 @@ Manages all game-related state including room state, player data, phase tracking
 | `setCompanies(companies)` | Update company data for all players |
 | `setIsRejoining(isRejoining)` | Toggle the "attempting to resume a saved session" flag — gates `App.tsx`'s first paint so Matchmaking doesn't flash before a `room:rejoin` attempt resolves |
 | `resetSession()` | Wipes room/player/in-game state back to a fresh landing-page state — used when a player is kicked, or acknowledges the "lost" takeover via **Return to Start** |
-| `setSelfEliminationReason(reason)` | Sets `selfElimination` (`'bankrupt' \| 'forfeit'`) — checked by `App.tsx` ahead of the normal phase switch to show the full-screen "lost" takeover regardless of what phase the room is actually in. Set from `player:bankrupt` for the current player's own id (`'bankrupt'`), then upgraded to `'forfeit'` if a `game:left` ack follows. |
+| `setSelfEliminationReason(reason)` | Sets `selfElimination` (`'bankrupt' \| 'forfeit' \| 'merged'`) — checked by `App.tsx` ahead of the normal phase switch to show the full-screen "lost" takeover regardless of what phase the room is actually in. Set from `player:bankrupt` for the current player's own id (`'bankrupt'` or `'merged'`), then upgraded to `'forfeit'` if a `game:left` ack follows. Also resets `hasAcknowledgedElimination` to `false`, defensively. |
+| `acknowledgeElimination()` | Sets `hasAcknowledgedElimination: true` — the "Watch the rest of the game" button's action, swapping the one-time "lost" takeover for the live `GameTimelineView` spectator view. Deliberately not persisted to `localStorage`; resets each session. See *Game Timeline* above. |
 
 #### `socketStore.ts`
 
@@ -760,9 +790,11 @@ VITE_SERVER_URL=http://localhost:3001
 
 ## 🎯 Game Mechanics
 
-Full detail lives in `definitionDocumentation/FORMULAS.md` (every formula and the exact
-per-turn calculation order) and the `Decision` table's data (seeded from, and originally
-mirrored by, `server/src/data/game_engine.json` — see *Decisions & Game Config* below).
+Full detail lives in the turn-resolution engine itself — `gameLoop.ts`'s `resolveTurn`
+(its numbered `// ── Step N ──` comments are the current, accurate execution order) and
+`calcEngine.ts`/`decisionEngine.ts`/`legalEngine.ts`'s own doc comments — plus the
+`Decision` table's data (seeded from, and originally mirrored by,
+`server/src/data/game_engine.json` — see *Decisions & Game Config* below).
 This section is a summary of what the server's `engine/` actually does.
 
 ### Business Decisions (Game Loop)
@@ -779,7 +811,7 @@ filter chips (two independent filters, not one combined chip group), one card pe
 with its description, an **EFFECTS** panel, and a DEPLOY button. The effects panel
 answers "what does this do, when does it start, how long does it last": a maturity
 badge (`INSTANT` or `MATURES IN Nt`, from the max explicit year key across the
-decision's impact schedules, FORMULAS §9) plus a per-field timeline like
+decision's impact schedules) plus a per-field timeline like
 `Yr 1: -$100,000 → Yr 2: -$100,000 → Ongoing: +40%`, built client-side from the raw
 `impacts` schedules (no server round-trip). `target.*` fields are labeled `Target's …`
 to make clear they hit the chosen opponent, not the decision-maker. Clicking DEPLOY
@@ -806,6 +838,26 @@ cancels a queued filing from that point on. All of this reads and writes the exa
 `pending` client state the deck/Sue modal already use — cancelling re-sends the same
 full-replacement `game:submitDecisions` payload with that one entry filtered out.
 
+The **Active Decisions** box itself (`ActiveDecisionsBox` in `GamePhase.tsx`) can filter
+its list by status (`All`/`Queued`/`Maturing`/`Matured`/`Voided — Sued`/`Expired`) and
+sort it — ascending or descending — by turn deployed, attacked player (for a decision
+like Bot Attack that targeted a chosen opponent, both queued and already-active), or
+decision name. The list itself is capped to roughly 3 collapsed cards' worth of height,
+scrolling for the rest, so a long game's accumulated decisions don't push the rest of the
+page down. See CLAUDE.md's *"`ActiveDecisionsBox`..."* section for the implementation.
+
+Alongside the level/nature filter chips, the deck also has a **SEARCH DECISIONS** text
+field (matching by decision name or description, the same shape as SUE THEIR ASSES'
+"SEARCH GROUNDS" field) and a **SORT BY KPI** control: a dropdown of every KPI field some
+decision in the library actually affects (derived from the live, admin-editable decision
+data, not a hardcoded list — an unaffected field never shows up as a useless option), plus
+two direction chips ("Highest → Lowest" / "Lowest → Highest") that appear once a KPI is
+picked. Ranking is by each decision's own effect on the chosen field at the moment it's
+deployed (its year-1 schedule value, or the ongoing `'default'` if it has no year-1 entry)
+— a decision that doesn't touch the chosen field at all sorts as 0, alongside whichever end
+of the list that lands it on. All three controls (level/nature filters, search, sort)
+compose freely — sort applies to whatever the filters and search already narrowed down to.
+
 Each card in the box — active or still-queued — also shows the decision's own
 description and a collapsible **SHOW DETAILS** toggle, the same **EFFECTS** timeline +
 legal-risk line the deck's own cards render, so confirming what a still-maturing or
@@ -817,23 +869,105 @@ and `Dirty` in nature. When the timer expires, `GameLoop` resolves the turn for 
 players simultaneously:
 
 1. Apply active decisions' impacts (additive relative stacking across matured instances)
+1b. Buy/Sell Shares trades execute — see *Share Ownership & Takeover* below
 2. Depreciation ledger (genuine asset purchases only)
 3. Competitiveness & market share (zero-sum across all players)
 4. Volume, capped by installed capacity
 5. P&L (revenue, COGS, EBITDA, tax, net profit)
 6. Lawsuits filed this turn resolve (or await trial) — see *Lawsuits* below
-7. Balance sheet & cash flow (one unified formula, FORMULAS §5)
-8. Bankruptcy check
-9. Global Risk Gauge
+7. Balance sheet & cash flow (one unified formula)
+8. Bankruptcy check, and a majority-ownership takeover check — see *Share Ownership & Takeover* below
+9. Global Risk Gauge (a.k.a. Threat Level — see below for its 4th and 5th terms)
 
 Results broadcast via `turn:resolved`. `legalExposure` from open cases lowers a player's
 own stock value and increases how likely every case against them is to succeed — a
-deliberate snowball effect that punishes concentrated risk-taking (FORMULAS §6, §13).
+deliberate snowball effect that punishes concentrated risk-taking.
+
+> **Deviation from the original design spec by explicit product decision:** the Risk
+> Gauge was originally specified as a fixed 3-term blend (legal exposure ratio, scrutiny,
+> outrage). It's been
+> extended with two further weighted terms:
+> - **Ownership/takeover risk** (w4) — the single largest outside stake in your company
+>   relative to the 50% takeover threshold above, since majority-ownership takeover is a
+>   fully independent way to lose the game the original gauge never reflected.
+> - **Legal-solvency risk** (w5) — the same probability-weighted open-lawsuit exposure the
+>   w1 term already computes, but compared against a projected *next-turn* cash (a naive
+>   linear extrapolation of this turn's own cash trend, not the real prediction engine —
+>   see CLAUDE.md for why) instead of today's cash. Distinct from w1: that term feeds
+>   `adjustedProbability`'s snowball effect off *current* cash; this one asks the narrower,
+>   forward-looking question "could these open cases actually bankrupt me next turn."
+>
+> Seeded weights moved `w1=0.5, w2=0.25, w3=0.25` → (adding w4) `w1=0.4, w2=0.2, w3=0.2,
+> w4=0.2` → (adding w5) `w1=0.32, w2=0.16, w3=0.16, w4=0.16, w5=0.2`, all still
+> admin-editable from `/admin`. See CLAUDE.md's *"Risk Gauge takeover term"* and *"Risk
+> Gauge solvency term"* sections for the full rationale and implementation, including why
+> the "predicted cash" and "open lawsuits" inputs mean specifically what they do — both
+> were genuinely ambiguous requests clarified before implementing, not obvious defaults.
+
+### Share Ownership & Takeover — a second way to lose the game
+
+Every company has a cap table (`PlayerVariables.shareOwnership: Record<string, number>`,
+fractions summing to 1.0) alongside `totalSharesOutstanding` (an absolute share count used
+only for per-share pricing, `stockValue = marketEquity / totalSharesOutstanding`). Two
+reserved keys, never a real player id: `"self"` (the company's own founding player's
+retained stake — every company starts here at 100%) and `"EXTERNAL_MARKET"` (floating
+shares nobody currently holds). Any other key is a real player id holding a bought-in
+cross-stake.
+
+**Share Issuance** raises capital by increasing `totalSharesOutstanding` and diluting every
+existing holder proportionally — the new shares land 100% in `EXTERNAL_MARKET` until
+someone buys them.
+
+**Buy Shares** (`requiresTarget: true`, `variableAmount: true`) is a real trade, not a fixed
+schedule: pick a target company (any player, **including your own** — a self-buyback lets
+you reclaim stake previously diluted out to `EXTERNAL_MARKET`) and a dollar investment
+amount at deploy time. Priced off the target's **stockValue as of the start of the turn**
+(last turn's close — trades don't wait for this turn's not-yet-computed balance sheet).
+Every existing holder of the target — including `EXTERNAL_MARKET` — is diluted pro-rata by
+the fraction bought; the buyer's own stake grows by that same fraction. The buyer's cash
+decreases by the full amount spent; every diluted *player* holder (never `EXTERNAL_MARKET`,
+which absorbs its own dilution with no counterparty, and never the buyer's own existing
+stake, which nets to zero — a self-buyback never pays itself) receives their pro-rata share
+of that amount in cash. Carries real legal risk (Breach of Fiduciary Duty, Williams Act
+Disclosure) — but only above a configurable minimum single-transaction size
+(`legalRiskConditions.minPercentAcquiredInSingleTransaction`, 5% by default): a token
+purchase is never suable.
+
+**Sell Shares** converts a held stake back to cash at the current price, always returning
+the shares to `EXTERNAL_MARKET` specifically — never pro-rata to other players, and capped
+by whatever you actually hold.
+
+**Simultaneous purchases against the same target** (two players buying into the same
+company the same turn) resolve in strict server-arrival order (FIFO) — the first purchase's
+dilution is already reflected in the cap table before the second is computed, so the two
+can never double-count or silently overwrite each other.
+
+**Majority-ownership takeover** is a second elimination path, entirely independent of
+bankruptcy: the instant any player crosses 50% ownership of another company, that
+company's own player is eliminated — exactly like bankruptcy, including the same case-
+waterfall payout to plaintiffs holding open cases against them. The acquirer additionally
+inherits the eliminated company's cash, assets, and intangible assets (not debt, not active
+decisions, not legal cases). Stock can fall to exactly $0 with no floor if a company's legal
+exposure meets or exceeds its equity — a deliberately allowed "buy a distressed rival for
+free" scenario.
+
+**The cap table itself is visible in the client, not just its consequences.** Both the
+STOCK VALUE drill-down (your own dashboard) and a rival's Full Filing report show an
+OWNERSHIP (CAP TABLE) panel — a stacked ownership bar plus a row per current shareholder
+(name, % owned, share count, $ value), largest stake first — so the majority-ownership
+threshold above isn't something you only find out about after it's already happened. See
+CLAUDE.md's *"OWNERSHIP (CAP TABLE)"* section for how a `shareOwnership` key resolves to a
+display name (self-key vs. a real playerId vs. `EXTERNAL_MARKET`) and how that differs
+between viewing your own company and a rival's.
+
+**Takeover risk also feeds the Threat Level gauge itself**, not just the cap table panel —
+see the Global Risk Gauge deviation note above and CLAUDE.md's *"Risk Gauge takeover
+term"* section.
 
 ### Lawsuits — deliberate filing, not automatic
 
-> **Deviation from FORMULAS.md by explicit product decision:** the spec's literal design
-> (§6/§13) has *every* decision with `legalRisks` automatically generate a case against
+> **Deviation from the original design spec by explicit product decision:** the spec's
+> literal design has *every* decision with `legalRisks` automatically generate a case against
 > the decision-maker from *every other player* the instant it's deployed. That's been
 > replaced with deliberate filing — a case only exists if a player actively chooses to
 > sue over it. If you want to restore the spec-literal automatic behavior, see
@@ -850,7 +984,7 @@ gamble on a ground you merely suspect is true, not just one you've confirmed. Fi
 target actually has that decision active: if so, it prices the case using
 `getScheduleValue` against the legal risk's `probability` schedule at the target
 decision's `elapsedYears` — the longer a risky decision has been live, the higher the
-probability tier, exactly like a normal impact schedule (FORMULAS §6, §9). If not — a wrong
+probability tier, exactly like a normal impact schedule. If not — a wrong
 guess — the case is still created (never silently dropped), just with `baseProbability`
 forced to `0`: a real, visible, but hopeless case. `fileLawsuit` still rejects a filing
 outright (no case, fee already spent) only if the decision or ground name doesn't exist in
@@ -898,12 +1032,12 @@ same "real but hopeless" shape a wrong guess gets), just with `baseProbability` 
 `0`. The same cutoff applies to the "suggested ground" estimate `pickBestGround` computes
 for Dig Deeper's tier-3 reveal and the "SUE NOW" shortcut, so a suggestion never quotes
 winnable-looking odds for a decision a real filing would immediately zero out for being too
-old. This is independent of the decision's own maturity (FORMULAS §9 — maturity is about
+old. This is independent of the decision's own maturity (maturity is about
 when an impact schedule locks in, not legal liability): a long-matured decision can still
 be well within the limitations window, and a still-maturing one could in principle be past
 it, if `statuteOfLimitationsYears` were ever set below a decision's own maturity time.
 
-`target.*` impact fields (FORMULAS §0 — the 9 fields like `target.cash`, `target.outrage`
+`target.*` impact fields (the 9 fields like `target.cash`, `target.outrage`
 that route a decision's effect to the chosen target rather than the decision-maker, used
 by Buy Shares/Sell Shares and the offensive-sabotage decisions) route to the chosen
 opponent every turn the decision stays active, applied in `resolveTurn`'s Step 2 right
@@ -911,9 +1045,9 @@ alongside the decision's own self-effects (`calcEngine.extractTargetImpacts`/
 `applyTargetImpacts`, `DecisionEngine.getTargetImpacts`, `GameLoop.buildIncomingAttacks`)
 — see *Attack Awareness & Dig Deeper* below for how a targeted player finds out.
 
-A filed case starts at `status: 'negotiating'` — a richer addition than FORMULAS.md,
-which doesn't model a negotiation phase at all (§6 just resolves a case via a probability
-draw "this turn"). Getting a case out of `'negotiating'` works one of three ways:
+A filed case starts at `status: 'negotiating'` — a richer addition than the original
+design spec, which never modeled a negotiation phase at all (a case just resolves via a
+probability draw "this turn"). Getting a case out of `'negotiating'` works one of three ways:
 
 - **Settle it live.** The **defendant always moves first** — they either make an opening
   offer or go straight to court. Once an offer's on the table, only the side who *didn't*
@@ -955,6 +1089,75 @@ The lawsuit card shows a live hint for whichever of these applies — a countdow
 trial automatically in N more turn(s)") when nothing's been offered yet, or a warning that
 a pending offer will be treated as accepted once one has.
 
+**Winning a case voids the sued decision — a further addition beyond spec.** A "win" here
+means the defendant ends up paying: a trial verdict of `'won'` for the plaintiff, or any
+settlement where the defendant pays out (an accepted offer, or an unanswered offer
+auto-settling at a turn boundary). A trial verdict of `'lost'` (the defendant wins) never
+triggers this. The moment either of those happens, `GameLoop.voidSuedDecisionInstance`:
+
+- Cancels the sued decision instance's **forthcoming** effects — nothing it did in earlier
+  turns is reverted (that cash/KPI movement already happened and stays), but from this turn
+  forward its impact schedule is never applied again, even a permanent `'default'` one that
+  would otherwise keep re-applying forever.
+- Forces it `isMatured: true` immediately, which is what actually frees the decision back up
+  for redeployment — `DecisionEngine.canDeploy`'s existing "the previous instance must have
+  matured" rule already allows a new deploy once that's true, no separate "un-suspend" step
+  needed.
+- Flags it `voidedByLawsuit: true` (`ActiveDecisionInstance`/`LegalCaseData.
+  defendantDecisionInstanceId`), shown client-side in "Active Decisions" as a gray
+  **VOIDED — SUED** badge in place of the normal ✓ MATURED one.
+
+This only ever targets the *specific* decision instance the case was actually filed against
+— recorded once, at filing time, as `LegalCaseData.defendantDecisionInstanceId` (undefined
+for a wrong guess or a time-barred ground, the same cases where `baseProbability` is forced
+to 0 — there's no genuine instance to point at). Matching by id rather than by decision name
+matters once a decision can be redeployed after being voided: a defendant could have both a
+long-dead voided instance and a live new one active at once, and a fresh lawsuit must always
+be priced and later voided against whichever instance is actually still live, never a stale
+one sitting earlier in the array. `voidSuedDecisionInstance` is called from every place a
+verdict/settlement is actually decided — the trial-resolution loop (Step 8b/9), the stale-
+offer auto-settle branch (Step 8b), and the out-of-band `acceptOffer` action — never from
+`makeOffer`/`goToCourt`, which don't resolve anything themselves.
+
+**A decision with a permanent effect blocks redeploying itself only for as long as it's
+still actually delivering that effect — the same window as the statute of limitations.**
+`DecisionEngine.hasPermanentEffect(def)` flags a decision whenever any of its own
+(non-`target.*`, non-`competitor*`) impact fields carries a non-zero `'default'` schedule
+value — meaning that field's effect would otherwise re-apply every turn forever once the
+schedule's explicit years run out, not just a one-time bump. Rather than lock such a
+decision out of redeployment permanently, its permanent effect (and a permanent `target.*`
+effect, e.g. Bot Attack's ongoing `target.outrage`) **expires** once the instance has been
+active `gameSettings.statuteOfLimitationsYears` turns (10 by default, admin-editable, the
+same value that governs how long a decision stays suable) — `advanceAndApply`/
+`collectTargetImpacts` simply stop re-applying its schedule from that turn on, forcing it
+`isMatured: true` if it wasn't already, which is what frees it back up for redeployment
+(`canDeploy`'s existing "the previous instance must have matured" rule covers the rest).
+Without this, the ability to redeploy after a voided lawsuit would double as a way to keep
+re-rolling a decision that grants an indefinitely-repeating KPI boost until one attempt
+slips through unsued — tying the expiry to the same statute closes that loophole while still
+letting the effect run its natural course, rather than shutting it off arbitrarily early or
+letting it stack forever. A decision voided by a lost lawsuit is unaffected by this — it's
+already free to redeploy immediately, expiry or not (see above). Decisions without a
+permanent effect are unaffected too: they can still be redeployed as soon as they mature,
+exactly as before this feature.
+
+**Only one lawsuit can ever be filed against a specific decision instance — first come,
+first served.** The moment a genuine (non-wrong-guess, non-time-barred) case is filed
+against a decision instance, that instance is permanently claimed: no further lawsuit —
+from anyone, on any ground, in this turn or any future one — can ever target it again,
+regardless of how the first case eventually resolves (settled, won, or lost). If two
+players try to sue the same instance in the same turn, whichever plaintiff's filing is
+processed first wins the claim; the other gets the same "real but hopeless" 0%-probability
+shape a wrong guess or a time-barred ground already gets, rather than being silently
+dropped. This is scoped to the specific *instance*, not the decision name — once that
+instance is later voided (see above) or expires and the player redeploys the same decision,
+the fresh instance is a clean slate and can be sued once, independently. The claim is
+recorded directly on the decision instance itself (`everSued`), not derived from scanning
+past cases — a resolved case is only kept in a player's persisted `legalCases` for one
+extra turn past its own resolution (long enough for the client to show the verdict once),
+then drops out entirely, so a flag stamped on the instance itself is what makes the
+"can't be sued again" rule outlive the case's own visibility.
+
 ### Attack Awareness & Dig Deeper
 
 Offensive decisions (Bot Attack, Social Astroturf, and the rest of the `target.*`-bearing
@@ -973,12 +1176,17 @@ through the normal turn-resolution cycle (see CLAUDE.md's *"Four exceptions to
 'everything happens in resolveTurn'"*). Investigation unlocks progressively, tracked per
 attack instance in `Company.engineState.investigations`:
 
-1. **Who** — the attacker's id and name
+1. **Who** — the attacker's id and name, plus a one-sentence AI-narrated "annual report"
+   flavor blurb about the attacking decision (the same generation `game:getAnnualReport`
+   uses for a rival's Full Filing, with the same `competitorsView` fallback) — deliberately
+   vague corporate PR-speak, so it doesn't leak anything tier 2 doesn't already reveal more
+   precisely. See CLAUDE.md's *"An incoming attack's tier-1 hint reuses the same AI-narrated
+   annual-report blurb"* for why this has to be computed in `GameEngine`, not `GameLoop`.
 2. **What** — the decision name, description, and a human-readable effect summary (e.g.
    *"-20% Capacity Utilization"*), via `decisionEngine.summarizeTargetImpacts`
 3. **Suggested lawsuit + estimated odds** — the strongest `legalRisks` ground against that
    decision, picked by `decisionEngine.pickBestGround` using the *same* adjusted-probability
-   formula as real trial resolution (FORMULAS §6) evaluated against the attacker's current
+   formula as real trial resolution evaluated against the attacker's current
    scrutiny/legal exposure — an estimate; the real probability is still recomputed fresh at
    trial time. A **SUE NOW** button at this tier pre-fills `SueModal` with the right target
    and ground (still requires the player's own QUEUE LAWSUIT confirmation).
@@ -1024,18 +1232,6 @@ game later has more than 2 active players again, the normal 3-tier ladder applie
 usual — this is re-evaluated from the current active-player count on every call, not
 locked in once a game goes heads-up. This applies identically to indirect effects — with
 only one other player in the game, an indirect decision's deployer isn't ambiguous either.
-
-**Heads-up (2-active-player) games skip tier 1 for free.** With only one other player
-still standing, "who attacked me" was never actually ambiguous — paying to learn it is a
-wasted dig, not real investigation. `GameLoop.effectiveInvestigationLevel` bumps the
-persisted investigation level up by one tier whenever exactly 2 players are active, so the
-attacker's identity is visible immediately with zero digs, the first paid dig jumps
-straight to tier 2 (what the decision does), and the second paid dig reaches tier 3
-(suggested ground + odds) — only 2 paid digs total instead of 3. The persisted level
-itself still just counts up by 1 per dig; only what a given level reveals shifts. If the
-game later has more than 2 active players again, the normal 3-tier ladder applies as
-usual — this is re-evaluated from the current active-player count on every call, not
-locked in once a game goes heads-up.
 
 Once you've acted on the hint — suing the attacker over exactly the suggested ground,
 with a "correct" case (win probability above 0%) — the hint card disappears, instead of
@@ -1217,7 +1413,7 @@ It has two parts:
   builder isn't worth it over textarea + real validation. Unlike the rooms table, these
   are fetched once on login (and again right after a successful save), not polled — so
   an in-progress edit can never be silently overwritten by a background refresh.
-- **Formulas editing** — the 23 pure-math formulas from FORMULAS.md §2-§7 (see
+- **Formulas editing** — the 23 pure-math formulas (see
   *Formulas* below), each shown as its description plus a single-line text input for
   the expression (not a JSON textarea — these are one-line math expressions, not nested
   objects). A parse or unknown-variable error from the server is surfaced inline on the
@@ -1262,15 +1458,17 @@ deployed.
 
 ### Formulas (database-backed)
 
-`FORMULAS.md` §2-§7 — the 23 pure, scalar, named-input formulas that drive competitiveness
-and market share, volume, P&L, balance sheet, legal-risk probability, and the risk gauge
-(`competitiveness`, `revenue`, `netProfit`, `riskGauge`, etc.) — are rows in Postgres
-(`Formula`: `key`/`expression`/`description`), editable live from `/admin`'s Formulas tab,
-the same live-reload-no-restart story as decisions/config above. Everything else in
-FORMULAS.md — the per-turn execution order, the depreciation ledger, decision
-maturity/exclusion locking, the bankruptcy waterfall, simultaneous-purchase FIFO
-tie-breaking — is control flow and multi-player ordering, not tunable math, and stays as
-TypeScript permanently; it was never a candidate for this.
+The 23 pure, scalar, named-input formulas that drive competitiveness and market share,
+volume, P&L, balance sheet, legal-risk probability, and the risk gauge (`competitiveness`,
+`revenue`, `netProfit`, `riskGauge`, etc.) are rows in Postgres (`Formula`:
+`key`/`expression`/`description`), seeded from `server/src/engine/defaultFormulas.ts` and
+editable live from `/admin`'s Formulas tab, the same live-reload-no-restart story as
+decisions/config above. Everything else in the turn-resolution math — the per-turn
+execution order, the depreciation ledger, decision maturity/exclusion locking, the
+bankruptcy/merger waterfall, simultaneous-purchase FIFO tie-breaking — is control flow and
+multi-player ordering, not tunable math, and stays as TypeScript permanently (see
+`gameLoop.ts`'s `resolveTurn`, whose numbered `// ── Step N ──` comments are the current,
+accurate execution order); it was never a candidate for this.
 
 Expressions are parsed and evaluated by `formulaEngine.ts`, a small hand-rolled
 recursive-descent parser/evaluator — **deliberately not `eval`/`new Function`/`vm`**,
@@ -1300,7 +1498,7 @@ A player is eliminated the instant their cash goes below $0 on any turn — stri
 `cash < 0`, no debt-based rule. When a player falls, their still-unresolved lawsuits
 (as both plaintiff and defendant) lapse; cases against them are paid out from a pool of
 that turn's positive income-side cash flow, oldest filing first, until the pool runs out
-(FORMULAS §16). The game continues, looping GAME_PHASE rounds, until only one player
+(oldest-filing-first, same rule for both elimination reasons). The game continues, looping GAME_PHASE rounds, until only one player
 remains — there is no fixed round limit and no score-based win condition. The eliminated
 player themselves sees the "lost" takeover described in *Leave Game* above, regardless of
 whether they left voluntarily or actually ran out of cash. Everyone else still in the game
@@ -1367,6 +1565,37 @@ All three detection functions are pure and unit-tested independently of any live
 cycle (`GamePhase.utils.test.ts`), and the effect that drives them is guarded against
 React 18 StrictMode's dev-only double-invocation via a `useRef` — see CLAUDE.md for why
 that guard exists and what broke before it did.
+
+### Game Timeline — a Civilization-style game-over replay, and a live spectator view for eliminated players
+
+`GameTimelineView` (`client/src/pages/GameTimelineView.tsx`) is one shared screen used two
+ways: a **live-updating spectator view** for a player who's been eliminated (bankrupt,
+forfeited, or acquired) but chooses to keep watching, and the **Game Over screen itself**
+(`GameOver.tsx`, now just a thin wrapper) for everyone — winner and spectators alike — once
+the game actually ends. It shows a switchable KPI race chart (Cash/Equity/Revenue/Stock
+Value/Threat Level, one line per player), play/pause/speed/scrub controls, a cumulative
+"happenings" log (every decision deployed and every lawsuit filed/resolved, for every
+player, clickable to jump the scrub position to that round), and a ranked standings list
+for whichever metric is currently selected — scrubbing to the final round *is* the
+final-standings view, there's no separate table.
+
+After acknowledging an elimination (`LostOverlay`'s new **"Watch the rest of the game"**
+button, alongside the original **"Leave"**), a player lands on the live view instead of a
+dead end — their socket was never disconnected on elimination in the first place, so it's
+been receiving every turn's broadcast the whole time regardless. The live view auto-follows
+the newest round as further turns resolve, unless the viewer has manually scrubbed
+backward. The instant the game actually ends, every socket still in the room — survivors
+and spectators together — gets the same phase-change broadcast and lands on the identical
+finished-game replay.
+
+Two small backend additions make this possible: a durable `LegalCaseHistory` table
+(a resolved lawsuit only survives one extra turn in a player's live engine state, so a
+separate log is needed to show "every lawsuit filed/resolved" across a whole game) and a
+`Player.eliminatedRound` column (so "when was X eliminated" is reconstructable from
+persisted data, not just a live broadcast a spectator happened to see). Eliminated players
+are also now exempt from the disconnect grace-period cleanup that would otherwise delete
+their data if they simply closed their tab — see CLAUDE.md's *"Game Timeline"* section for
+the full architecture, including the stale-room-cleanup fix that had to come with it.
 
 ---
 
@@ -1610,7 +1839,7 @@ docker-compose up -d --build
 | DELETE | `/api/admin/decisions/:name` | Delete a decision; 409 (`reason: 'in_use'`) if it's currently deployed by an active player anywhere, 404 if unknown. Requires `x-admin-token`. |
 | GET | `/api/admin/config` | The `GameConfig` (`gameSettings`/`playerStartingValues`/`adminVariables`), from the DB. Requires `x-admin-token`. |
 | PUT | `/api/admin/config` | Replace the game config. Body validated by `gameConfigSchema`. Requires `x-admin-token`. |
-| GET | `/api/admin/formulas` | All 23 pure-math formulas (FORMULAS.md §2-§7), from the DB. Requires `x-admin-token`. See *Formulas* above. |
+| GET | `/api/admin/formulas` | All 23 pure-math formulas, from the DB. Requires `x-admin-token`. See *Formulas* above. |
 | PUT | `/api/admin/formulas/:key` | Update one formula's expression/description. Body validated by `formulaUpdateSchema` — real syntax parse plus a per-key variable whitelist; 400 on either failure, 404 if the key is unknown. No create/delete — the key set is fixed. Requires `x-admin-token`. |
 
 ### WebSocket API

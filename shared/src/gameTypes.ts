@@ -17,8 +17,15 @@ export interface DecisionDefinition {
   variableAmount?: boolean;
   requiresTarget?: boolean;
   legalRiskConditions?: Record<string, unknown>;
-  /** Required whenever `impacts.cash` is set (FORMULAS §5) — buckets this decision's direct cash impact into the cash flow statement. */
+  /** Required whenever `impacts.cash` is set — buckets this decision's direct cash impact into the cash flow statement. */
   cashFlowCategory?: 'operating' | 'investing' | 'financing';
+  /** Marks this decision as a real share-ownership trade (Buy Shares / Sell Shares) rather
+   * than a generic schedule-driven decision — read generically by the engine (never a
+   * hardcoded decision-name check, see CLAUDE.md) to route it through the dedicated
+   * share-transaction step instead of the normal `impacts` application. A decision with
+   * this set should have empty `impacts` — its effect is computed dynamically from the
+   * player-chosen `amount`/target, not a fixed schedule. */
+  shareTransactionType?: 'buy' | 'sell';
 }
 
 export interface ImpactEntry {
@@ -59,8 +66,8 @@ export interface GameSettings {
    * action the instant it's paid for. */
   lawsuitFilingCost: number;
   /** Turns a case can sit at status 'negotiating' before it's automatically forced to
-   * 'awaiting_trial' (and resolves the turn after that). FORMULAS.md doesn't model a
-   * negotiation phase — this closes a real gap where, absent the (separately tracked,
+   * 'awaiting_trial' (and resolves the turn after that). The base turn math has no
+   * concept of a negotiation phase — this closes a real gap where, absent the (separately tracked,
    * not-yet-built) offer/settlement UI, a case between two solvent players had no path
    * out of 'negotiating' at all and would sit unresolved forever. */
   negotiationPeriodTurns: number;
@@ -71,10 +78,18 @@ export interface GameSettings {
    * probability of winning is forced to 0, both at actual filing (`LegalEngine.fileLawsuit`)
    * and in the "suggested ground" estimate `pickBestGround` surfaces via Dig Deeper/SUE
    * NOW — so the suggestion a player sees never quotes odds a real filing wouldn't honor.
-   * Independent of a decision's own `isMatured` (FORMULAS §9 maturity, which is about
-   * when an impact schedule locks in, not legal liability) — a decision can be long
+   * Independent of a decision's own `isMatured` (maturity is about when an impact
+   * schedule locks in, not legal liability) — a decision can be long
    * matured and still well within the limitations window, or vice versa. */
   statuteOfLimitationsYears: number;
+  /** Lawsuit-odds coloring thresholds for `GamePhase.tsx`'s `semaphoreLevel` (green below
+   * this, yellow below `semaphoreYellowMax`, red otherwise) — live here (not
+   * `AdminVariables.legalProcess`) specifically because `GameSettings` is the one config
+   * bag actually sent to the client via `game:deck`; `AdminVariables` never is. Previously
+   * sat unused in `AdminVariables.legalProcess` while the client hardcoded its own copy of
+   * these same two numbers — moved here so an admin edit actually reaches the client. */
+  semaphoreGreenMax: number;
+  semaphoreYellowMax: number;
 }
 
 export interface PlayerStartingValues {
@@ -128,17 +143,23 @@ export interface CompetitivenessConfig {
 }
 
 export interface LegalProcessConfig {
-  semaphoreGreenMax: number;
-  semaphoreYellowMax: number;
   scrutinyLegalRiskMultiplier: number;
   legalExposureRatioCap: number;
-  buySharesLegalRiskThresholdPercent: number;
 }
 
 export interface RiskGaugeConfig {
   riskWeightLegalExposure_w1: number;
   riskWeightScrutiny_w2: number;
   riskWeightOutrage_w3: number;
+  /** Weight for majority-ownership takeover risk (see calcEngine.ts's
+   * `calculateOwnershipRisk`) — a deliberate addition beyond the Risk Gauge's original
+   * 3-term design, since majority-ownership takeover is a fully independent
+   * way to lose the game the original gauge never reflected. */
+  riskWeightOwnership_w4: number;
+  /** Weight for legal-solvency risk (see calcEngine.ts's `calculateSolvencyRisk`) —
+   * open lawsuits' probability-weighted stakes against a linear one-turn-ahead cash
+   * projection, distinct from w1's current-cash legal exposure ratio. */
+  riskWeightSolvency_w5: number;
 }
 
 export interface OwnershipConfig {
@@ -220,6 +241,9 @@ export interface PlayerVariables {
 export interface SubmittedDecisionEntry {
   name: string;
   targetId?: string;
+  /** Dollar amount for a `shareTransactionType` decision (Buy Shares' investment, Sell
+   * Shares' sale) — chosen client-side, meaningless for any other decision. */
+  amount?: number;
 }
 
 /**
@@ -250,6 +274,23 @@ export interface ActiveDecisionInstance {
   maturityYears: number;
   elapsedYears: number;
   isMatured: boolean;
+  /** True once a lawsuit resolved against this specific instance (trial verdict 'won' for
+   * the plaintiff, or a settlement where the defendant paid out) — its forthcoming effects
+   * are cancelled (whatever was already applied in earlier turns stays), it's forced to
+   * `isMatured: true` immediately, and it no longer counts as a "successful" completion for
+   * the permanent-effect redeploy lock below. See CLAUDE.md's lawsuit-voids-decision section. */
+  voidedByLawsuit: boolean;
+  /** For a Buy Shares instance only — the fraction of the target company actually
+   * acquired in this single transaction, stamped once at execution time. Gates
+   * `legalRiskConditions.minPercentAcquiredInSingleTransaction` (a purchase too small to
+   * cross the configured threshold carries no real legal risk — see CLAUDE.md). */
+  acquisitionFraction?: number;
+  /** The player this decision's `target.*` impacts route to, if any — set at deployment
+   * for a decision like Bot Attack that was aimed at a chosen opponent, `undefined` for
+   * one with no target concept at all. Lets the "Active Decisions" box show/sort by who a
+   * player's own decision targeted, the same way a still-queued `SubmittedDecisionEntry`
+   * already can via its own `targetId`. */
+  targetId?: string;
 }
 
 /** A legal case in the system */
@@ -262,6 +303,12 @@ export interface LegalCaseData {
   decisionName: string;
   groundName: string;
   description: string;
+  /** The specific defendant decision instance this case is about, if the target actually
+   * had a genuine (non-time-barred) matching instance deployed at filing time — undefined
+   * for a wrong guess or a time-barred ground, same cases where `baseProbability` is forced
+   * to 0. Lets a verdict/settlement void exactly the sued instance rather than guessing by
+   * name, which would be ambiguous once a decision can be redeployed after being voided. */
+  defendantDecisionInstanceId?: string;
   baseProbability: number;
   adjustedProbability?: number;
   /** True if, at the moment of filing, the plaintiff had fully "Dig Deeper"-investigated
@@ -289,9 +336,9 @@ export interface LegalCaseData {
   offers: Array<{ by: 'plaintiff' | 'defendant'; amount: number }>;
   /** How many turns this case has spent at status 'negotiating' — see `GameSettings.negotiationPeriodTurns`. */
   turnsNegotiating: number;
-  /** 'won'/'lost' = decided at trial; 'settled'/'cancelled' = resolved via bankruptcy waterfall (FORMULAS §16). */
+  /** 'won'/'lost' = decided at trial; 'settled'/'cancelled' = resolved via bankruptcy/merger waterfall. */
   verdict?: 'won' | 'lost' | 'settled' | 'cancelled';
-  /** Filing time — used to order bankruptcy waterfall payouts oldest-first (FORMULAS §14, §16). */
+  /** Filing time — used to order bankruptcy/merger waterfall payouts oldest-first. */
   createdAt: Date;
   resolvedAt?: Date;
 }
@@ -323,6 +370,15 @@ export interface IncomingAttackInfo {
   /** Revealed at investigationLevel >= 1 — who is behind it. */
   attackerId?: string;
   attackerName?: string;
+  /** AI-narrated (or, if the LLM is unavailable, static `competitorsView` fallback)
+   * "annual report" flavor text for the attacking decision — set only while
+   * investigationLevel === 1 (attacker known, but not yet the decision itself). Reuses
+   * the exact same generation `game:getAnnualReport` uses for a rival's Full Filing —
+   * deliberately vague, non-mechanical corporate PR-speak, so showing it a tier early
+   * doesn't leak anything level 2's real `decisionName`/`decisionDescription`/
+   * `effectSummary` don't already reveal more precisely. Omitted (not just empty) when
+   * the attacking decision has no `competitorsView` entries to draw a fallback from. */
+  annualReportBlurb?: string;
   /** Revealed at investigationLevel >= 2 — what they're doing to you. */
   decisionName?: string;
   decisionDescription?: string;
@@ -417,4 +473,70 @@ export interface KpiHistoryResponse {
   predicted: KpiSnapshotPoint[];
   /** Set if the prediction simulation shows this player going bankrupt within the predicted window — `predicted` then has fewer than 3 points, stopping at the last turn that still had a solvent outcome. Never set for a rival lookup (no prediction is run). */
   bankruptAtRound?: number;
+}
+
+// ============================================================
+// Game Timeline — the Civilization-style game-over replay / live spectator view. Unlike
+// `KpiHistoryResponse` (per-target, fetched per open graph), this returns the WHOLE
+// room's history at once: every player (active or eliminated), every decision ever
+// deployed, and every lawsuit ever filed/resolved. Used both as the finished-game replay
+// (Game Over screen, everyone) and a live-updating spectator view (an eliminated player
+// who chose to keep watching) — see CLAUDE.md's game-timeline section.
+// ============================================================
+
+/** One player's identity/elimination info for the timeline — not their KPI data itself, see `kpiHistory` below. */
+export interface TimelinePlayerInfo {
+  playerId: string;
+  playerName: string;
+  bankrupt: boolean;
+  /** Round this player was eliminated in (bankruptcy, merger/takeover, or forfeit) — undefined while still active. */
+  eliminatedRound?: number;
+}
+
+/** One decision deployment, for the timeline's "happenings" log — derived directly from a
+ * player's persisted `Company.engineState.activeDecisions` (append-only, never pruned, so
+ * this is fully recoverable at any point without a separate history table — see CLAUDE.md). */
+export interface TimelineDecisionEvent {
+  instanceId: string;
+  playerId: string;
+  decisionName: string;
+  deployedYear: number;
+  targetId?: string;
+  voidedByLawsuit: boolean;
+}
+
+/** One lawsuit's full lifecycle, for the timeline's "happenings" log — sourced from the
+ * new durable `LegalCaseHistory` table (the live `LegalCaseData` inside
+ * `engineState.legalCases` only survives one extra turn past its own resolution, so it
+ * can't answer "every lawsuit filed/resolved across the whole game" on its own). */
+export interface TimelineLawsuitEvent {
+  id: string;
+  plaintiffId: string;
+  plaintiffName: string;
+  defendantId: string;
+  defendantName: string;
+  decisionName: string;
+  groundName: string;
+  description: string;
+  stakes: number;
+  filedRound: number;
+  resolvedRound?: number;
+  verdict?: 'won' | 'lost' | 'settled' | 'cancelled';
+}
+
+/** Response for `game:gameTimelineResult` — sent only to the requesting socket, the
+ * whole room's history at once. Unlike every other on-demand request, this is valid in
+ * both GAME_PHASE (live spectating) and AFTERMATH (finished replay). */
+export interface GameTimelineResponse {
+  roomId: string;
+  currentRound: number;
+  gameOver: boolean;
+  /** The actual win condition — always source a "winner" display from this, never from
+   * "whoever ranks first on whichever KPI metric the chart currently has selected,"
+   * which can legitimately disagree (e.g. highest Equity vs. the real winner). */
+  winnerId?: string;
+  players: TimelinePlayerInfo[];
+  kpiHistory: Record<string, KpiSnapshotPoint[]>;
+  decisions: TimelineDecisionEvent[];
+  lawsuits: TimelineLawsuitEvent[];
 }

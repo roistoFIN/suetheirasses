@@ -1,5 +1,5 @@
 /**
- * Legal Engine — manages lawsuits filed by players against rivals per FORMULAS.md §6.
+ * Legal Engine — manages lawsuits filed by players against rivals.
  *
  * Lawsuits are never generated automatically just because a decision carries legal
  * risk — a player must deliberately file suit against a target over a specific ground,
@@ -7,13 +7,17 @@
  * `gameSettings.maxLawsuitsPerPlayerPerTurn` filings per turn).
  */
 
-import type { DecisionDefinition, AdminVariables, LegalCaseData } from '@suetheirasses/shared';
+import type { DecisionDefinition, AdminVariables, LegalCaseData, PlayerVariables } from '@suetheirasses/shared';
 import { getScheduleValue } from './calcEngine.js';
+import { meetsLegalRiskConditions } from './decisionEngine.js';
 
 /** Minimal shape of an active decision instance needed to validate/price a lawsuit. */
 export interface TargetableDecisionInstance {
+  id: string;
   decisionName: string;
   elapsedYears: number;
+  /** For a Buy Shares instance only — see `meetsLegalRiskConditions`. */
+  acquisitionFraction?: number;
 }
 
 export class LegalEngine {
@@ -44,12 +48,12 @@ export class LegalEngine {
    *
    * When the target genuinely did deploy the cited decision, probability scales with how
    * long it's been active, using the same year-keyed schedule convention as decision
-   * impacts (FORMULAS §6, §9) — up to `statuteOfLimitationsYears` (`GameSettings.
+   * impacts — up to `statuteOfLimitationsYears` (`GameSettings.
    * statuteOfLimitationsYears`, default 10): once the target's cited instance has been
    * active at least that long, the ground is time-barred and treated exactly like a
    * wrong guess — a real case still gets created, `baseProbability` just forced to 0.
-   * This is deliberately independent of the decision's own `isMatured` (FORMULAS §9
-   * maturity governs when an impact schedule locks in, not legal liability) — a
+   * This is deliberately independent of the decision's own `isMatured` (maturity
+   * governs when an impact schedule locks in, not legal liability) — a
    * long-matured decision can still be well within the limitations window, and vice
    * versa. Defaulted to `Infinity` (never time-barred) so existing callers/tests that
    * don't pass it keep the pre-feature behavior.
@@ -59,6 +63,21 @@ export class LegalEngine {
    * the target's active decisions) and just stamped onto the resulting case here — see
    * CLAUDE.md's case-probability-chip section for why this is persisted rather than
    * recomputed client-side.
+   *
+   * `stakes` (the dollar amount that actually changes hands if this case resolves against
+   * the defendant) is priced off `risk.impact` two different ways depending on its `type`
+   * — `absolute` grounds (58 of 83 in the real library, all `target: 'cash'`) use the
+   * schedule value directly, already a dollar figure. `relative` grounds (the other 25,
+   * `target: 'equity'` or `'revenue'`) instead store a *fraction* (e.g. `-0.45`) meant to
+   * be scaled against the defendant's own current value of that field — `targetVars` is
+   * what supplies that value. Reading `risk.impact.schedule[...]` directly as dollars for
+   * a relative ground (the bug this comment replaced) silently produced a stakes of
+   * `0.45` — real money, just off by a factor of the defendant's entire equity/revenue —
+   * which rounds to display as "$0" everywhere stakes are shown (the settlement offer
+   * bracket, the trial-outcome "You paid/received" line). `target` is read generically
+   * off `PlayerVariables`, never hardcoded to `'equity'`/`'revenue'` specifically, so an
+   * admin adding a new relative-type ground against a different field works without a
+   * code change.
    */
   fileLawsuit(
     plaintiffId: string,
@@ -66,6 +85,7 @@ export class LegalEngine {
     decisionName: string,
     groundName: string,
     targetActiveDecisions: TargetableDecisionInstance[],
+    targetVars: PlayerVariables,
     roomId: string,
     plaintiffFullyInvestigated: boolean,
     statuteOfLimitationsYears = Infinity,
@@ -78,8 +98,17 @@ export class LegalEngine {
 
     const targetInstance = targetActiveDecisions.find(d => d.decisionName === decisionName);
     const timeBarred = !!targetInstance && targetInstance.elapsedYears >= statuteOfLimitationsYears;
-    const probability = targetInstance && !timeBarred ? getScheduleValue(risk.probability, targetInstance.elapsedYears) : 0;
-    const stakes = Math.abs(risk.impact.schedule['default'] ?? risk.impact.schedule[1] ?? 0);
+    // A transaction too small to cross a decision's own legalRiskConditions (e.g. Buy
+    // Shares' minPercentAcquiredInSingleTransaction) never had real legal risk to begin
+    // with — same "real but hopeless" 0%-probability shape as a wrong guess/time-barred
+    // ground, not a separate rejection (see meetsLegalRiskConditions/CLAUDE.md).
+    const conditionsMet = !targetInstance || meetsLegalRiskConditions(def, targetInstance);
+    const probability = targetInstance && !timeBarred && conditionsMet ? getScheduleValue(risk.probability, targetInstance.elapsedYears) : 0;
+    const scheduleValue = risk.impact.schedule['default'] ?? risk.impact.schedule[1] ?? 0;
+    const targetFieldValue = (targetVars as unknown as Record<string, unknown>)[risk.impact.target];
+    const stakes = risk.impact.type === 'relative'
+      ? Math.abs((typeof targetFieldValue === 'number' ? targetFieldValue : 0) * scheduleValue)
+      : Math.abs(scheduleValue);
 
     return {
       id: crypto.randomUUID(),
@@ -89,6 +118,10 @@ export class LegalEngine {
       decisionName,
       groundName: risk.name,
       description: risk.description,
+      // Only recorded for a genuine, still-actionable ground — a wrong guess or a
+      // time-barred instance (baseProbability already forced to 0 either way) never
+      // identifies a real instance to void later, even if the case somehow later settles.
+      defendantDecisionInstanceId: targetInstance && !timeBarred ? targetInstance.id : undefined,
       baseProbability: probability,
       adjustedProbability: undefined,
       plaintiffFullyInvestigated,
@@ -105,7 +138,6 @@ export class LegalEngine {
 
   /**
    * Calculate adjusted probability at trial time based on defendant's scrutiny and legal exposure.
-   * Per FORMULAS §6:
    * adjustedProbability_case = baseProbability_legalRisk
    *                            * (1 + scrutinyLegalRiskMultiplier * scrutiny_defendant / 100
    *                                 + legalExposureRatio_defendant)

@@ -24,6 +24,7 @@ model Room {
   inviteOnly        Boolean      @default(false)
 
   players           Player[]
+  legalCaseHistory  LegalCaseHistory[]
 
   @@index([status])
   @@index([createdAt])
@@ -31,17 +32,22 @@ model Room {
 }
 
 model Player {
-  id           String     @id @default(cuid())
-  name         String
-  roomId       String
-  room         Room       @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  isHost       Boolean    @default(false)
-  bankrupt     Boolean    @default(false)
-  socketId     String?
-  createdAt    DateTime   @default(now())
-  companyId    String?    @unique
-  company      Company?
-  kpiSnapshots KpiSnapshot[]
+  id              String     @id @default(cuid())
+  name            String
+  roomId          String
+  room            Room       @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  isHost          Boolean    @default(false)
+  bankrupt        Boolean    @default(false)
+  // Round this player was eliminated in (natural bankruptcy, merger/takeover, or
+  // voluntary forfeit) — null while still active. Nothing else durably records
+  // "when" a player went bankrupt; needed to reconstruct elimination timing for the
+  // game-timeline replay/spectator feature without relying on live broadcasts alone.
+  eliminatedRound Int?
+  socketId        String?
+  createdAt       DateTime   @default(now())
+  companyId       String?    @unique
+  company         Company?
+  kpiSnapshots    KpiSnapshot[]
 
   @@index([roomId])
   @@index([roomId, bankrupt])
@@ -160,4 +166,38 @@ model Formula {
   updatedAt   DateTime @updatedAt
 
   @@map("formulas")
+}
+
+// Durable lawsuit lifecycle log for the game-timeline replay/spectator feature — the
+// live `LegalCaseData` inside Company.engineState.legalCases only survives one extra
+// turn past its own resolution (see gameLoop.ts's Step 7 pruning / CLAUDE.md), so it
+// can't answer "every lawsuit filed/resolved across the whole game" on its own. One
+// row per case (id == LegalCaseData.id, supplied by the caller, never generated here):
+// created the turn it's filed, updated once when it resolves. Deliberately has NO FK
+// to Player — only to Room — since a Player/Company row can be deleted later (a
+// disconnected player's grace-period expiry) while this row must keep meaning
+// something; plaintiff/defendant names are denormalized at write time instead of
+// joined live, same "resolve once, persist, never re-join" principle
+// BankruptedPlayer.playerName already follows.
+model LegalCaseHistory {
+  id            String   @id
+  roomId        String
+  room          Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  plaintiffId   String
+  plaintiffName String
+  defendantId   String
+  defendantName String
+  decisionName  String
+  groundName    String
+  description   String
+  stakes        Decimal  @db.Decimal(15, 2)
+  filedRound    Int
+  resolvedRound Int?
+  // 'won' | 'lost' | 'settled' | 'cancelled' — mirrors LegalCaseData.verdict
+  verdict       String?
+  createdAt     DateTime @default(now())
+
+  @@index([roomId])
+  @@index([roomId, filedRound])
+  @@map("legal_case_history")
 }

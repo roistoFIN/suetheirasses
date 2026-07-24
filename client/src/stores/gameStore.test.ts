@@ -287,6 +287,46 @@ describe('gameStore', () => {
     });
   });
 
+  describe('selfElimination / hasAcknowledgedElimination', () => {
+    it('should start with no elimination and unacknowledged', () => {
+      expect(useGameStore.getState().selfElimination).toBeNull();
+      expect(useGameStore.getState().hasAcknowledgedElimination).toBe(false);
+    });
+
+    it('setSelfEliminationReason sets the reason and acquirerName', () => {
+      useGameStore.getState().setSelfEliminationReason('merged', 'Bob');
+
+      expect(useGameStore.getState().selfElimination).toEqual({ reason: 'merged', acquirerName: 'Bob' });
+    });
+
+    it('acknowledgeElimination flips hasAcknowledgedElimination — this is what swaps the "lost" takeover for the live spectator view', () => {
+      useGameStore.getState().setSelfEliminationReason('bankrupt');
+      useGameStore.getState().acknowledgeElimination();
+
+      expect(useGameStore.getState().hasAcknowledgedElimination).toBe(true);
+    });
+
+    it('setSelfEliminationReason resets hasAcknowledgedElimination — defends against a stale true skipping the watch-or-leave choice if it ever fires twice', () => {
+      useGameStore.getState().setSelfEliminationReason('bankrupt');
+      useGameStore.getState().acknowledgeElimination();
+      expect(useGameStore.getState().hasAcknowledgedElimination).toBe(true);
+
+      useGameStore.getState().setSelfEliminationReason('forfeit');
+
+      expect(useGameStore.getState().hasAcknowledgedElimination).toBe(false);
+    });
+
+    it('resetSession clears both selfElimination and hasAcknowledgedElimination', () => {
+      useGameStore.getState().setSelfEliminationReason('bankrupt');
+      useGameStore.getState().acknowledgeElimination();
+
+      useGameStore.getState().resetSession();
+
+      expect(useGameStore.getState().selfElimination).toBeNull();
+      expect(useGameStore.getState().hasAcknowledgedElimination).toBe(false);
+    });
+  });
+
   describe('updatePhase', () => {
     it('should update phase and round from phase changed response', () => {
       const phaseData: PhaseChangedResponse = {

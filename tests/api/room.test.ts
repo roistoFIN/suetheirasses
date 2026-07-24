@@ -550,7 +550,7 @@ describe('Room REST API', () => {
       },
     });
 
-    // Mirrors what GameLoop.resolveTurn() writes back to Company each turn (FORMULAS.md):
+    // Mirrors what GameLoop.resolveTurn() writes back to Company each turn:
     // per-player financial/production variables in `variables`, and active decisions /
     // depreciation ledger / legal cases in `engineState`.
     const variables = { cash: 95000, assets: 1000000, price: 700, outrage: 5 };
@@ -575,5 +575,72 @@ describe('Room REST API', () => {
 
     await prisma.player.delete({ where: { id: playerId } });
     await prisma.room.delete({ where: { id: roomId } });
+  });
+
+  it('should persist Player.eliminatedRound alongside bankrupt, for the game-timeline replay/spectator feature', async () => {
+    const prisma = getPrisma();
+    const roomId = `room-${Date.now()}-17`;
+    const playerId = `player-${roomId}`;
+
+    await prisma.room.create({
+      data: { id: roomId, status: RoomStatus.GAME_PHASE, maxPlayers: 4, currentPhaseRound: 6 },
+    });
+    await prisma.player.create({
+      data: { id: playerId, name: 'EliminatedPlayer', roomId, companyId: `company-${playerId}`, socketId: `socket-${playerId}`, company: { create: { cash: -5000 } } },
+    });
+
+    expect((await prisma.player.findUnique({ where: { id: playerId } }))?.eliminatedRound).toBeNull();
+
+    await prisma.player.update({ where: { id: playerId }, data: { bankrupt: true, eliminatedRound: 6 } });
+
+    const player = await prisma.player.findUnique({ where: { id: playerId } });
+    expect(player?.bankrupt).toBe(true);
+    expect(player?.eliminatedRound).toBe(6);
+
+    await prisma.player.delete({ where: { id: playerId } });
+    await prisma.room.delete({ where: { id: roomId } });
+  });
+
+  it('should persist a LegalCaseHistory row across its full filed-to-resolved lifecycle, and cascade-delete it with its room', async () => {
+    const prisma = getPrisma();
+    const roomId = `room-${Date.now()}-18`;
+    const caseId = `case-${roomId}`;
+
+    await prisma.room.create({
+      data: { id: roomId, status: RoomStatus.GAME_PHASE, maxPlayers: 4, currentPhaseRound: 3 },
+    });
+
+    await prisma.legalCaseHistory.create({
+      data: {
+        id: caseId,
+        roomId,
+        plaintiffId: 'plaintiff-1',
+        plaintiffName: 'Alice',
+        defendantId: 'defendant-1',
+        defendantName: 'Bob',
+        decisionName: 'Water Pumping',
+        groundName: 'Environmental Violation',
+        description: 'Sue for environmental damage',
+        stakes: 15000,
+        filedRound: 3,
+      },
+    });
+
+    const filed = await prisma.legalCaseHistory.findUnique({ where: { id: caseId } });
+    expect(filed?.resolvedRound).toBeNull();
+    expect(filed?.verdict).toBeNull();
+    expect(Number(filed?.stakes)).toBe(15000);
+
+    await prisma.legalCaseHistory.update({ where: { id: caseId }, data: { resolvedRound: 5, verdict: 'won' } });
+    const resolved = await prisma.legalCaseHistory.findUnique({ where: { id: caseId } });
+    expect(resolved?.resolvedRound).toBe(5);
+    expect(resolved?.verdict).toBe('won');
+
+    // Deleting the room cascades to its LegalCaseHistory rows (onDelete: Cascade) —
+    // this table deliberately has no FK to Player, only to Room, so a player's row
+    // being deleted independently (e.g. the disconnect-cleanup grace period expiring)
+    // never takes the lawsuit history down with it.
+    await prisma.room.delete({ where: { id: roomId } });
+    expect(await prisma.legalCaseHistory.findUnique({ where: { id: caseId } })).toBeNull();
   });
 });

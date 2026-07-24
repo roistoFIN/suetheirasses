@@ -1,5 +1,5 @@
 /**
- * Game Loop Orchestrator — manages the full turn resolution cycle per FORMULAS.md.
+ * Game Loop Orchestrator — manages the full turn resolution cycle.
  *
  * Each GAME_PHASE turn follows this sequence for ALL players simultaneously:
  *
@@ -7,15 +7,21 @@
  *   Players submit strategic + operational decisions via socket events.
  *
  * Phase B — Turn Resolution (pure computation, when timer expires or all submit):
- *   1. Advance active decision instances by one year (FORMULAS §9)
- *   2. Apply depreciation ledger updates (FORMULAS §1)
- *   3. Calculate competitiveness & market share across all players (FORMULAS §2)
- *   4. Calculate volume per player with supply cap (FORMULAS §3)
- *   5. Calculate P&L per player (FORMULAS §4)
- *   6. Update balance sheet per player (FORMULAS §5)
- *   7. Evaluate legal risks from new decisions → create cases (FORMULAS §6)
+ *   1. Advance active decision instances by one year
+ *   2. Apply depreciation ledger updates
+ *   3. Calculate competitiveness & market share across all players
+ *   4. Calculate volume per player with supply cap
+ *   5. Calculate P&L per player
+ *   6. Update balance sheet per player
+ *   7. Evaluate legal risks from new decisions → create cases
  *   8. Lock open cases for trial / resolve awaiting trials
- *   9. Calculate risk gauge per player (FORMULAS §7)
+ *   9. Calculate risk gauge per player
+ *
+ * (This summary predates two later additions the numbered `// ── Step N ──` comments in
+ * `resolveTurn` itself describe in full: a "Step 1b" between steps 1 and 2 that executes
+ * Buy/Sell Shares trades, and a majority-ownership takeover elimination path alongside
+ * the bankruptcy check — see CLAUDE.md's share-ownership section. The step comments
+ * inline below are the accurate, current source of truth.)
  *
  * GameLoop is a pure computation engine — it never touches Prisma or Socket.IO. It takes
  * each player's current DB row (company variables + engine state) as plain input and
@@ -36,6 +42,7 @@ import type {
   SubmittedDecisions,
   IncomingAttackInfo,
   KpiSnapshotPoint,
+  PlayerDerivedStats,
 } from '@suetheirasses/shared';
 import {
   applyDepreciation,
@@ -48,8 +55,11 @@ import {
   calculateAdjustedProbability,
   calculateLegalExposureRatio,
   applyTargetImpacts,
+  renormalizeShareOwnership,
+  SELF_OWNERSHIP_KEY,
+  EXTERNAL_MARKET_KEY,
 } from './calcEngine.js';
-import { DecisionEngine, MAX_INVESTIGATION_LEVEL, summarizeTargetImpacts, summarizeOwnImpacts, pickBestGround } from './decisionEngine.js';
+import { DecisionEngine, MAX_INVESTIGATION_LEVEL, summarizeTargetImpacts, summarizeOwnImpacts, pickBestGround, meetsLegalRiskConditions } from './decisionEngine.js';
 import type { DeployedDecision, TargetImpactResult } from './decisionEngine.js';
 import { LegalEngine } from './legalEngine.js';
 import { buildFormulaSet, type FormulaSet } from './formulaEngine.js';
@@ -97,6 +107,13 @@ export interface PersistedDecisionInstance {
   isMatured: boolean;
   /** The player this decision's `target.*` impacts route to — set when deployed against an opponent. */
   targetId?: string;
+  /** True once a lost lawsuit cancelled this instance's forthcoming effects — see `DecisionEngine.hasPermanentEffect`/`canDeploy` and CLAUDE.md. */
+  voidedByLawsuit: boolean;
+  /** True the instant ANY lawsuit is ever filed against this specific instance — first
+   * come, first served; see `DeployedDecision.everSued`/CLAUDE.md. */
+  everSued: boolean;
+  /** For a Buy Shares instance only — see `DeployedDecision.acquisitionFraction`/CLAUDE.md. */
+  acquisitionFraction?: number;
 }
 
 /** The `Company` row fields the caller must write back to the DB for one still-active player after a turn resolves. */
@@ -117,12 +134,32 @@ export interface CompanyPersistUpdate {
 export interface BankruptedPlayer {
   playerId: string;
   playerName: string;
-  /** This player's actual (negative) cash balance at the moment of elimination — the caller must
-   * persist this to their Company row too, since a bankrupted player is excluded from
-   * `companyUpdates` (their engine state is done being touched) and would otherwise keep
-   * whatever positive `cash` the DB had from their last still-active turn forever, including
-   * on the Game Over / final-standings screen. */
+  /** This player's actual (negative, for a bankruptcy) cash balance at the moment of
+   * elimination — the caller must persist this to their Company row too, since an
+   * eliminated player is excluded from `companyUpdates` (their engine state is done being
+   * touched) and would otherwise keep whatever positive `cash` the DB had from their last
+   * still-active turn forever, including on the Game Over / final-standings screen. For a
+   * merger elimination this is NOT negative — the acquirer's takeover doesn't require the
+   * target to be insolvent, just majority-owned. */
   finalCash: number;
+  /** This player's full variables/derived/riskGauge at the moment of elimination — the
+   * same shape a still-active player's `PlayerTurnResult` carries, captured here since
+   * an eliminated player is excluded from `outcome.result.players` entirely (nothing
+   * else would ever compute or persist it). The caller writes this as one final
+   * `KpiSnapshot` row, so the KPI history graphs (and the game-timeline replay) don't
+   * lose exactly the round a player went bankrupt/was acquired in. */
+  finalVariables: PlayerVariables;
+  finalDerived: PlayerDerivedStats;
+  finalRiskGauge: number;
+  /** Why this player left the game — bankruptcy (cash < 0) or a majority-ownership
+   * takeover. Both reuse the identical case-waterfall payout logic ("the same rule
+   * applies to both bankruptcy and merger") — see CLAUDE.md's share-ownership section.
+   * Defaults to `'bankruptcy'` for any caller that doesn't care about the distinction. */
+  reason: 'bankruptcy' | 'merger';
+  /** Set only for `reason: 'merger'` — the player who crossed the >50% ownership
+   * threshold and inherited the eliminated company's cash/assets/intangibleAssets. */
+  acquirerId?: string;
+  acquirerName?: string;
 }
 
 /** Everything resolveTurn computed: the `turn:resolved` broadcast payload plus the side effects the caller must apply. */
@@ -215,6 +252,24 @@ export interface ActiveDecisionSummary {
   elapsedYears: number;
 }
 
+/**
+ * A deployed Buy/Sell Shares instance queued for execution in Step 1b — collected by
+ * `processNewDecisions` for exactly the entries it actually deployed
+ * (so a filing dropped by a level-limit/`canDeploy` check is never queued), grouped by
+ * `targetId` and sorted by `submittedAt` before being applied sequentially. See
+ * CLAUDE.md's share-ownership section for why `submittedAt` can't just be "now" at the
+ * point of collection — it has to be the entry's own first-seen timestamp from
+ * `GameLoop`'s submission-timestamp tracking.
+ */
+interface ShareTransactionRequest {
+  buyerId: string;
+  instanceId: string;
+  targetId: string;
+  amount: number;
+  submittedAt: number;
+  type: 'buy' | 'sell';
+}
+
 // ============================================================
 // Internal types — not exported, used only within this module
 // ============================================================
@@ -233,7 +288,7 @@ interface PlayerTurnContext {
   vars: PlayerVariables;
   submittedDecisions: SubmittedDecisions | null;
   engineState: CompanyEngineState;
-  /** cash_i(edellinen vuoro) — cash as loaded at turn start, before any of this turn's effects (FORMULAS §16 waterfall pool). */
+  /** cash_i(edellinen vuoro) — cash as loaded at turn start, before any of this turn's effects (feeds the bankruptcy/merger waterfall pool, see distributeCaseWaterfall). */
   prevCash: number;
   /** Absolute deltas from newly deployed decisions on this turn (applied in processNewDecisions). */
   newDecisionAbsDeltas?: { revenueDelta: number; financeCostDelta: number; taxCostDelta: number; receivablesDelta: number; cashDelta: number };
@@ -244,14 +299,27 @@ export class GameLoop {
   private legalEngine = new LegalEngine();
   private config: GameConfig;
   private adminVars: AdminVariables;
-  // The pure, scalar, named-input formulas from FORMULAS.md §2-§7 — DB-backed
-  // (Formula table), loaded via loadFormulas() same as decisions/config. Empty
+  // The pure, scalar, named-input formulas (competitiveness, market share, P&L, balance
+  // sheet, legal-risk probability, risk gauge) — DB-backed (Formula table, seeded from
+  // defaultFormulas.ts), loaded via loadFormulas() same as decisions/config. Empty
   // until GameEngine.loadGameData() populates it at startup (before the server
   // accepts connections), so this is never read before it's real.
   private formulas: FormulaSet = new Map();
 
   // Per-room turn state (decisions submitted during Phase A)
   private submissions = new Map<string, Map<string, SubmittedDecisions>>();
+
+  // Per-room, per-player, per-entry FIRST-SEEN timestamp — for FIFO ordering of
+  // simultaneous same-target Buy Shares purchases. NOT simply "the time of
+  // the last submitDecisions call": the client always resends a player's ENTIRE pending
+  // state on every toggle (`game:submitDecisions` is full-replacement, see CLAUDE.md), so
+  // naively stamping "now" per call would make a Buy Shares entry's timestamp reflect
+  // whatever the player touched LAST (even something unrelated), not when Buy Shares was
+  // actually added. Instead, each submitted entry gets a stable key
+  // (`${bucket}:${name}:${targetId ?? ''}`) and only keys not already present for that
+  // player this turn are stamped with a fresh `Date.now()` — a key that survives across
+  // resubmits keeps its original timestamp.
+  private submissionTimestamps = new Map<string, Map<string, Map<string, number>>>();
 
   constructor(config: GameConfig) {
     this.config = config;
@@ -278,10 +346,10 @@ export class GameLoop {
     this.legalEngine.setDefinitions(definitions);
   }
 
-  /** Compile and load the named formulas from FORMULAS.md §2-§7 — from the DB via
-   * GameEngine.loadGameData(). Safe to call again any time (GameEngine.updateFormula
-   * does so after every admin edit) — replaces the whole set outright, taking effect
-   * on the next turn resolved. */
+  /** Compile and load the named formulas (see the `Formula` DB table / defaultFormulas.ts
+   * for the current set) — from the DB via GameEngine.loadGameData(). Safe to call again
+   * any time (GameEngine.updateFormula does so after every admin edit) — replaces the
+   * whole set outright, taking effect on the next turn resolved. */
   loadFormulas(rows: Array<{ key: string; expression: string }>): void {
     this.formulas = buildFormulaSet(rows);
   }
@@ -293,6 +361,7 @@ export class GameLoop {
   submitDecisions(roomId: string, playerId: string, decisions: SubmittedDecisions): boolean {
     if (!this.submissions.has(roomId)) this.submissions.set(roomId, new Map());
     this.submissions.get(roomId)!.set(playerId, decisions);
+    this.stampEntryTimestamps(roomId, playerId, decisions);
     return true;
   }
 
@@ -302,6 +371,41 @@ export class GameLoop {
 
   clearSubmissions(roomId: string): void {
     this.submissions.delete(roomId);
+    this.submissionTimestamps.delete(roomId);
+  }
+
+  /** Stable per-entry key for FIFO timestamp tracking — see `submissionTimestamps`'s
+   * doc comment for why this can't just be "the whole payload" or "the latest call". */
+  private entryKey(bucket: 'strategic' | 'operational', entry: { name: string; targetId?: string }): string {
+    return `${bucket}:${entry.name}:${entry.targetId ?? ''}`;
+  }
+
+  /** Assigns a fresh `Date.now()` to any submitted entry key not already tracked for this
+   * player this turn, leaving every previously-seen key's timestamp untouched — see
+   * `submissionTimestamps`'s doc comment. */
+  private stampEntryTimestamps(roomId: string, playerId: string, decisions: SubmittedDecisions): void {
+    if (!this.submissionTimestamps.has(roomId)) this.submissionTimestamps.set(roomId, new Map());
+    const roomMap = this.submissionTimestamps.get(roomId)!;
+    if (!roomMap.has(playerId)) roomMap.set(playerId, new Map());
+    const playerMap = roomMap.get(playerId)!;
+
+    const now = Date.now();
+    for (const entry of decisions.strategic) {
+      const key = this.entryKey('strategic', entry);
+      if (!playerMap.has(key)) playerMap.set(key, now);
+    }
+    for (const entry of decisions.operational) {
+      const key = this.entryKey('operational', entry);
+      if (!playerMap.has(key)) playerMap.set(key, now);
+    }
+  }
+
+  /** First-seen timestamp for one submitted entry, or `Date.now()` as a safe fallback if
+   * somehow untracked (e.g. a call site that mutates `submittedDecisions` outside the
+   * normal `submitDecisions` path) — never `undefined`, so FIFO sorting always has a
+   * real number to compare. */
+  private entryTimestamp(roomId: string, playerId: string, bucket: 'strategic' | 'operational', entry: { name: string; targetId?: string }): number {
+    return this.submissionTimestamps.get(roomId)?.get(playerId)?.get(this.entryKey(bucket, entry)) ?? Date.now();
   }
 
   // ============================================================
@@ -359,13 +463,38 @@ export class GameLoop {
       preTurnActiveCount.set(pid, ctx.engineState.activeDecisions.length);
     }
 
+    const shareTransactionQueue: ShareTransactionRequest[] = [];
     for (const [, ctx] of ctxs) {
       if (!ctx.submittedDecisions) continue;
-      this.processNewDecisions(ctx, round);
+      shareTransactionQueue.push(...this.processNewDecisions(roomId, ctx, round));
+    }
+
+    // ── Step 1b — Buy/Sell Shares execution (design addition — not part of the
+    // original numbered execution order since Buy/Sell Shares are dynamically-priced
+    // trades, not schedule-driven impacts) ──────────────────────────────────────
+    // Priced off each target's stockValue AS IT STOOD AT THE START OF THIS TURN (last
+    // turn's balance-sheet close) — Step 7 hasn't recomputed it yet this turn, and
+    // deliberately isn't waited for (avoids a circular dependency on this turn's not-
+    // yet-computed balance sheet; see CLAUDE.md). Grouped by target and sorted by each
+    // entry's own first-seen submission timestamp (FIFO ordering) — the first
+    // purchase against a given target updates its cap table before the next one in the
+    // same group is computed, so overlapping/conflicting purchases resolve in arrival
+    // order rather than double-counting or splitting pro-rata between simultaneous
+    // buyers.
+    const byTarget = new Map<string, ShareTransactionRequest[]>();
+    for (const request of shareTransactionQueue) {
+      if (!byTarget.has(request.targetId)) byTarget.set(request.targetId, []);
+      byTarget.get(request.targetId)!.push(request);
+    }
+    for (const requests of byTarget.values()) {
+      requests.sort((a, b) => a.submittedAt - b.submittedAt);
+      for (const request of requests) {
+        this.applyShareTransaction(request, ctxs);
+      }
     }
 
     // ── Step 2 — Advance pre-existing active decisions by one year ──────
-    // Extract absolute schedule deltas directly from impact application (FORMULAS §4-§5)
+    // Extract absolute schedule deltas directly from impact application
     const absDeltasMap = new Map<string, { revenueDelta: number; financeCostDelta: number; taxCostDelta: number; receivablesDelta: number; cashDelta: number }>();
     const varsList: PlayerVariables[] = [];
     const targetImpactQueue: TargetImpactResult[] = [];
@@ -380,6 +509,7 @@ export class GameLoop {
         ctx.vars,
         preExisting,
         round,
+        this.config.gameSettings.statuteOfLimitationsYears,
       );
       ctx.vars = result.updatedVars;
       ctx.engineState.activeDecisions = [...result.updatedActiveDecisions, ...justDeployed];
@@ -399,10 +529,10 @@ export class GameLoop {
         cashDelta: result.absDeltas.cashDelta + newDecisionAbsDeltas.cashDelta,
       });
 
-      // Collect this player's outgoing target.* effects (FORMULAS §0/A1) — applied after
+      // Collect this player's outgoing target.* effects — applied after
       // every player has advanced, so it doesn't matter which player's turn is processed
       // first in this loop.
-      targetImpactQueue.push(...this.decisionEngine.collectTargetImpacts(ctx.engineState.activeDecisions));
+      targetImpactQueue.push(...this.decisionEngine.collectTargetImpacts(ctx.engineState.activeDecisions, this.config.gameSettings.statuteOfLimitationsYears));
 
       varsList.push(result.updatedVars);
     }
@@ -419,7 +549,7 @@ export class GameLoop {
       varsList[i] = ctxs.get(playerIds[i])!.vars;
     }
 
-    // ── Step 3 — Depreciation ledger (FORMULAS §1) ────────────
+    // ── Step 3 — Depreciation ledger ───────────────────────────
     const depreciationMap = new Map<string, number>();
     for (const [pid, ctx] of ctxs) {
       const depResult = applyDepreciation(ctx.vars, ctx.engineState.depreciationLedger, round);
@@ -428,7 +558,7 @@ export class GameLoop {
       depreciationMap.set(pid, depResult.totalDepreciation);
     }
 
-    // ── Step 4 — Competitiveness & market share (FORMULAS §2) ─
+    // ── Step 4 — Competitiveness & market share ────────────────
     const marketShares = calculateCompetitivenessAndMarketShare(playerIds, varsList, this.adminVars, this.formulas);
     let si = 0;
     for (const pid of playerIds) {
@@ -439,13 +569,13 @@ export class GameLoop {
       si++;
     }
 
-    // ── Step 5 — Volume with supply cap (FORMULAS §3) ─────────
+    // ── Step 5 — Volume with supply cap ─────────────────────────
     const totalVol = this.config.gameSettings.totalMarketVolumeTonnesPerYear;
     for (const [, ctx] of ctxs) {
       ctx.vars.volume = calculateVolume(ctx.vars, ctx.vars.marketShare || 0, totalVol, this.formulas);
     }
 
-    // ── Step 6 — P&L (FORMULAS §4) ────────────────────────────
+    // ── Step 6 — P&L ─────────────────────────────────────────────
     const plMap = new Map<string, ReturnType<typeof calculatePL>>();
     for (const [pid, ctx] of ctxs) {
       const dep = depreciationMap.get(pid) ?? 0;
@@ -457,7 +587,7 @@ export class GameLoop {
       }));
     }
 
-    // ── Step 7 — Balance sheet (FORMULAS §5) ──────────────────
+    // ── Step 7 — Balance sheet ───────────────────────────────────
     // First, load existing legal cases from engineState (before calculating legal exposure).
     // Every case gets persisted into BOTH the plaintiff's and the defendant's own
     // engineState.legalCases at the end of the turn it's active in (Step 12) — each side
@@ -505,13 +635,13 @@ export class GameLoop {
     const negotiatingBeforeFiling = allCases.filter(c => c.status === 'negotiating');
 
     // Tracks cash actually RECEIVED this turn via case transfers per plaintiff — the
-    // "case-siirrot: saatu" line of the operating cash flow (FORMULAS §5), feeding the
+    // "case-siirrot: saatu" line of the operating cash flow, feeding the
     // §16 bankruptcy waterfall pool. Declared here (rather than down at Step 9, where it
     // used to live) since a stale-offer auto-settlement in Step 8b is just as real a
     // same-turn cash receipt as a trial payout — both write into this same map.
     const legalReceivedThisTurn = new Map<string, number>();
 
-    // ── Step 8 — Deliberate lawsuit filings (FORMULAS §6) ─────────────────────
+    // ── Step 8 — Deliberate lawsuit filings ─────────────────────────────────────
     // Lawsuits are never automatic — a player must choose to sue a specific target
     // over a specific ground drawn from that target's actually-deployed decisions,
     // up to maxLawsuitsPerPlayerPerTurn filings per turn.
@@ -521,10 +651,30 @@ export class GameLoop {
       for (const filing of ctx.submittedDecisions.lawsuits.slice(0, maxLawsuits)) {
         const targetCtx = ctxs.get(filing.targetId);
         if (!targetCtx) continue;
-        const targetActiveDecisions = targetCtx.engineState.activeDecisions.map(d => ({
-          decisionName: d.definition.decision,
-          elapsedYears: d.elapsedYears,
-        }));
+        // Voided instances are excluded — a decision already shut down by a lost lawsuit
+        // is no longer a live ground to sue over again; `.find()`-by-name below must land
+        // on a genuinely live instance (if the player redeployed since), never a stale
+        // voided one sitting earlier in the array. Already-sued instances (`everSued`) are
+        // excluded the same way — first come, first served: once ANY lawsuit has ever been
+        // filed against a specific instance, no further one can target it, regardless of how
+        // that first case resolves (see CLAUDE.md).
+        const targetActiveDecisions = targetCtx.engineState.activeDecisions
+          .filter(d => !d.voidedByLawsuit && !d.everSued)
+          .map(d => ({
+            id: d.id,
+            decisionName: d.definition.decision,
+            elapsedYears: d.elapsedYears,
+            acquisitionFraction: d.acquisitionFraction,
+          }));
+
+        // `targetCtx.vars` doesn't carry this turn's `revenue` — unlike `equity` (written
+        // back in Step 7 above), `revenue` is only ever materialized into the local `plMap`
+        // for the turn's broadcast result, never round-tripped onto `ctx.vars` (see
+        // CLAUDE.md's stakes-calculation note). A relative-type legal-risk ground targeting
+        // `revenue` (17 of the 25 in the real library) needs the real figure, not
+        // `undefined`/a stale Step-1 delta, so it's patched in here for fileLawsuit's stakes
+        // calc — a targeted override, not a general "persist revenue onto vars" change.
+        const targetVarsForFiling = { ...targetCtx.vars, revenue: plMap.get(filing.targetId)?.revenue ?? targetCtx.vars.revenue };
 
         // Does the plaintiff already know these odds from fully "Dig Deeper"-investigating
         // the underlying attack, and are they suing over its exact suggested ground? Mirrors
@@ -536,9 +686,10 @@ export class GameLoop {
         // decisions and there's no targeting relationship to further disambiguate by.
         let plaintiffFullyInvestigated = false;
         const attackInstance = targetCtx.engineState.activeDecisions.find((d) => {
+          if (d.voidedByLawsuit) return false;
           if (d.definition.decision !== filing.decisionName) return false;
           const targetImpacts = this.decisionEngine.getTargetImpacts(d.definition.impacts);
-          return this.isIndirectEffect(d.definition, targetImpacts) || d.targetId === ctx.playerId;
+          return this.isIndirectEffect(d.definition, targetImpacts, d.targetId) || d.targetId === ctx.playerId;
         });
         if (attackInstance) {
           const rawLevel = ctx.engineState.investigations[attackInstance.id] ?? 0;
@@ -555,18 +706,31 @@ export class GameLoop {
           filing.decisionName,
           filing.groundName,
           targetActiveDecisions,
+          targetVarsForFiling,
           roomId,
           plaintiffFullyInvestigated,
           this.config.gameSettings.statuteOfLimitationsYears,
         );
-        if (newCase) allCases.push(newCase);
+        if (newCase) {
+          allCases.push(newCase);
+          // Claim the instance the instant a genuine (non-wrong-guess, non-time-barred)
+          // case is filed against it — `defendantDecisionInstanceId` is only ever set for
+          // exactly that case (see LegalEngine.fileLawsuit), so this fires precisely once
+          // per instance, first come first served. Any later filing this same turn (or any
+          // future turn) re-reads `targetCtx.engineState.activeDecisions` fresh and will no
+          // longer find this instance in the unclaimed `targetActiveDecisions` list above.
+          if (newCase.defendantDecisionInstanceId) {
+            const claimedInstance = targetCtx.engineState.activeDecisions.find(d => d.id === newCase.defendantDecisionInstanceId);
+            if (claimedInstance) claimedInstance.everSued = true;
+          }
+        }
       }
     }
 
     // ── Step 8b — Negotiation timeout / stale-offer auto-settle (design addition,
-    // not in FORMULAS.md) ──────────────────────────────────────────────────────
-    // FORMULAS.md doesn't model a negotiation phase at all — a case is just "resolved
-    // this turn" via a probability draw. The 'negotiating' status and its offer/accept
+    // beyond the base turn math) ───────────────────────────────────────────────
+    // The base turn math has no concept of a negotiation phase at all — a case is just
+    // "resolved this turn" via a probability draw. The 'negotiating' status and its offer/accept
     // flow (`makeOffer`/`acceptOffer`/`goToCourt` below — instant, out-of-band actions,
     // not part of this turn cycle) are a richer addition than spec. Two distinct things
     // can leave a case dangling at a turn boundary, and each gets a different fallback:
@@ -609,6 +773,7 @@ export class GameLoop {
             case_.plaintiffId,
             (legalReceivedThisTurn.get(case_.plaintiffId) ?? 0) + lastOffer.amount,
           );
+          this.voidSuedDecisionInstance(defCtx.engineState, case_);
         }
         case_.status = 'resolved';
         case_.verdict = 'settled';
@@ -618,7 +783,7 @@ export class GameLoop {
       }
     }
 
-    // Resolve awaiting trials from previous turns (FORMULAS §6 with legal exposure ratio)
+    // Resolve awaiting trials from previous turns (adjustedProbability, using legal exposure ratio)
     const casesResolvedThisTurn: LegalCaseData[] = [];
     for (const trial of allCases) {
       if (trial.status !== 'awaiting_trial') continue;
@@ -642,10 +807,11 @@ export class GameLoop {
       trial.verdict = won ? 'won' : 'lost';
       trial.status = 'resolved';
       trial.resolvedAt = new Date();
+      if (won) this.voidSuedDecisionInstance(defCtx.engineState, trial);
       casesResolvedThisTurn.push(trial);
     }
 
-    // ── Step 9 — Process resolved cases & apply cash settlements (FORMULAS §5, §16) ──
+    // ── Step 9 — Process resolved cases & apply cash settlements ───────────────────
     // Apply verdict cash flows: loser pays stakes to winner. `legalReceivedThisTurn`
     // (declared up at Step 8b, which can also write into it) tracks amounts actually
     // RECEIVED this turn per player.
@@ -668,7 +834,7 @@ export class GameLoop {
       }
     }
 
-    // ── Step 10 — Check for bankruptcies & mergers (FORMULAS §12, §16) ──────
+    // ── Step 10 — Check for bankruptcies & mergers ───────────────────────────
     const playersStillActive: string[] = [];
     const playersToBankrupt: string[] = [];
 
@@ -682,77 +848,130 @@ export class GameLoop {
       playersStillActive.push(pid);
     }
 
-    // ── Step 10b — Bankruptcy case distribution (FORMULAS §16) ─────────────
-    // When a player falls, ALL their still-unresolved cases lapse — both as
-    // defendant and as plaintiff. Cases against them are paid from:
-    //   jaettava_summa = cash_i (previous turn)
-    //                   + this turn's POSITIVE income-side cash-flow lines
-    //                     (revenue, other income, depreciation add-back,
-    //                      positive decision cash impacts, legal cash received)
-    //   — expense-side lines (opex, staff, COGS, finance cost, tax, capex
-    //     spend) never reduce this pool (FORMULAS §16).
-    // Paid to plaintiffs in filing order (oldest `createdAt` first), each in
-    // full until the pool runs out; the rest get nothing.
-    const bankruptedPlayers: BankruptedPlayer[] = [];
-    for (const pid of playersToBankrupt) {
+    // Majority-ownership takeover — a second elimination path,
+    // entirely independent of bankruptcy. Any player (never the reserved `"self"`/
+    // `EXTERNAL_MARKET"` sentinel keys) holding more than `takeoverThresholdPercent`
+    // (50% by default, admin-editable) of another player's shareOwnership eliminates
+    // that player, exactly as if they'd gone bankrupt. This used to hardcode `0.5`
+    // directly — `admin.ownership.takeoverThresholdPercent` existed in config/seed/
+    // validation the whole time but was never actually read anywhere, the same class
+    // of dead-config bug already fixed once for `legalRiskConditions.
+    // minPercentAcquiredInSingleTransaction` (see CLAUDE.md). Wired in now so an
+    // admin-edited threshold and `calcEngine.ts`'s `calculateOwnershipRisk` (the Risk
+    // Gauge's takeover-risk term, which reads this same config value) can never drift
+    // apart from the actual elimination trigger.
+    // Precedence: a prospective acquirer who is themselves going bankrupt THIS SAME
+    // turn can't complete a takeover — they're leaving the game too, so their pending
+    // majority stake simply doesn't trigger anything this turn (it gets swept back to
+    // EXTERNAL_MARKET below, same as any other eliminated player's cross-holdings, so
+    // it can never resurface as a stale claim on a later turn either).
+    const takeoverThresholdPercent = this.adminVars.ownership.takeoverThresholdPercent;
+    const playersToMerge: Array<{ pid: string; acquirerId: string; acquirerName: string }> = [];
+    for (const pid of playerIds) {
+      if (playersToBankrupt.includes(pid)) continue;
+      const ownership = ctxs.get(pid)!.vars.shareOwnership ?? {};
+      const acquirerEntry = Object.entries(ownership).find(
+        ([key, fraction]) => key !== SELF_OWNERSHIP_KEY && key !== EXTERNAL_MARKET_KEY && fraction > takeoverThresholdPercent,
+      );
+      if (!acquirerEntry) continue;
+      const [acquirerId] = acquirerEntry;
+      if (playersToBankrupt.includes(acquirerId)) continue;
+      const acquirerCtx = ctxs.get(acquirerId);
+      if (!acquirerCtx) continue;
+      playersToMerge.push({ pid, acquirerId, acquirerName: acquirerCtx.playerName });
+      const idx = playersStillActive.indexOf(pid);
+      if (idx !== -1) playersStillActive.splice(idx, 1);
+    }
+
+    // ── Step 10b — Case waterfall distribution for every elimination this turn
+    // ("the same rule applies to both bankruptcy and merger", so both
+    // reuse the exact same `distributeCaseWaterfall` — see its doc comment) ─────────
+    //
+    // buildFinalSnapshot mirrors Step 11/13's own per-active-player computation
+    // (calculateRiskGauge / the derived-stats shape), just also run for an eliminated
+    // player before their engine state is discarded — see BankruptedPlayer's doc comment
+    // for why this has to be captured here rather than left to the normal
+    // riskMap/results loops, which only ever run over `playersStillActive`.
+    const buildFinalSnapshot = (pid: string): { finalVariables: PlayerVariables; finalDerived: PlayerDerivedStats; finalRiskGauge: number } => {
       const ctx = ctxs.get(pid)!;
       const pl = plMap.get(pid)!;
       const dep = depreciationMap.get(pid) ?? 0;
-      const deltas = absDeltasMap.get(pid) ?? { revenueDelta: 0, financeCostDelta: 0, taxCostDelta: 0, receivablesDelta: 0, cashDelta: 0 };
-      const legalReceived = legalReceivedThisTurn.get(pid) ?? 0;
-
-      const pool = Math.max(0,
-        ctx.prevCash
-        + Math.max(0, pl.revenue)
-        + Math.max(0, ctx.vars.otherIncome || 0)
-        + dep
-        + Math.max(0, deltas.cashDelta)
-        + legalReceived,
-      );
-
-      // Find all unresolved cases where this player was the defendant, sorted
-      // oldest-first by filing order (FORMULAS §14/§16)
-      const casesAgainstDefunct = allCases
+      const openCases = allCases
         .filter(c => c.defendantId === pid && c.status !== 'resolved')
-        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+        .map(c => ({ probability: c.adjustedProbability ?? c.baseProbability, stakes: c.stakes }));
+      return {
+        finalVariables: this.stripInternal(ctx.vars),
+        finalDerived: {
+          equity: ctx.vars.equity || 0,
+          revenue: pl.revenue,
+          volume: ctx.vars.volume || 0,
+          receivables: ctx.vars.receivables || 0,
+          financeCost: pl.financeCost,
+          taxCost: pl.taxCost,
+          depreciation: dep,
+          stockValue: ctx.vars.stockValue || 0,
+          marketShare: ctx.vars.marketShare || 0,
+          competitiveness: ctx.vars.competitiveness || 0,
+        },
+        finalRiskGauge: calculateRiskGauge(ctx.vars, openCases, this.adminVars, this.formulas, ctx.prevCash),
+      };
+    };
 
-      // Distribute pool to plaintiffs in filing order
-      let remaining = pool;
-      for (const case_ of casesAgainstDefunct) {
-        if (remaining <= 0) break;
-        const payment = Math.min(case_.stakes, remaining);
-        const pltCtx = ctxs.get(case_.plaintiffId);
-        if (pltCtx) {
-          pltCtx.vars.cash += payment;
-        }
-        case_.status = 'resolved';
-        case_.verdict = 'settled';
-        case_.resolvedAt = new Date();
-        remaining -= payment;
-      }
-
-      // All remaining unresolved cases touching the fallen player lapse without
-      // payment — as defendant (pool exhausted) AND as plaintiff (FORMULAS §16).
-      for (const case_ of allCases) {
-        if (case_.status === 'resolved') continue;
-        if (case_.defendantId === pid || case_.plaintiffId === pid) {
-          case_.status = 'resolved';
-          case_.verdict = 'cancelled';
-          case_.resolvedAt = new Date();
-        }
-      }
-
-      bankruptedPlayers.push({ playerId: pid, playerName: ctx.playerName, finalCash: ctx.vars.cash });
+    const bankruptedPlayers: BankruptedPlayer[] = [];
+    for (const pid of playersToBankrupt) {
+      const ctx = ctxs.get(pid)!;
+      const finalCash = this.distributeCaseWaterfall(pid, ctxs, allCases, plMap, depreciationMap, absDeltasMap, legalReceivedThisTurn);
+      bankruptedPlayers.push({ playerId: pid, playerName: ctx.playerName, finalCash, ...buildFinalSnapshot(pid), reason: 'bankruptcy' });
+    }
+    for (const { pid, acquirerId, acquirerName } of playersToMerge) {
+      const ctx = ctxs.get(pid)!;
+      const acquirerCtx = ctxs.get(acquirerId)!;
+      const finalCash = this.distributeCaseWaterfall(pid, ctxs, allCases, plMap, depreciationMap, absDeltasMap, legalReceivedThisTurn);
+      const snapshot = buildFinalSnapshot(pid);
+      // Acquirer inherits the eliminated company's cash/assets/intangibleAssets — a
+      // confirmed product decision beyond what the base spec describes (which only
+      // ever specifies elimination, not a transfer of value); deliberately NOT debt, NOT
+      // active decisions/production variables, and NOT legal cases (those already lapsed
+      // via the same waterfall call above).
+      acquirerCtx.vars.cash += finalCash;
+      acquirerCtx.vars.assets = (acquirerCtx.vars.assets || 0) + (ctx.vars.assets || 0);
+      acquirerCtx.vars.intangibleAssets = (acquirerCtx.vars.intangibleAssets || 0) + (ctx.vars.intangibleAssets || 0);
+      bankruptedPlayers.push({ playerId: pid, playerName: ctx.playerName, finalCash, ...snapshot, reason: 'merger', acquirerId, acquirerName });
     }
 
-    // ── Step 11 — Risk gauge (FORMULAS §7) ────────────────────
+    // Sweep every eliminated player's cross-holdings out of every OTHER company's cap
+    // table, reassigned to EXTERNAL_MARKET — otherwise a departed player's stake would
+    // sit forever in another player's shareOwnership map, permanently un-payable and
+    // un-reclaimable (scaled down by future dilution but never actually resolved).
+    const eliminatedIds = new Set<string>([...playersToBankrupt, ...playersToMerge.map(m => m.pid)]);
+    if (eliminatedIds.size > 0) {
+      for (const [, ctx] of ctxs) {
+        const ownership = ctx.vars.shareOwnership;
+        if (!ownership) continue;
+        let changed = false;
+        const cleaned = { ...ownership };
+        for (const key of Object.keys(cleaned)) {
+          if (!eliminatedIds.has(key)) continue;
+          cleaned[EXTERNAL_MARKET_KEY] = (cleaned[EXTERNAL_MARKET_KEY] ?? 0) + cleaned[key];
+          delete cleaned[key];
+          changed = true;
+        }
+        if (changed) ctx.vars.shareOwnership = renormalizeShareOwnership(cleaned);
+      }
+    }
+
+    // ── Step 11 — Risk gauge ─────────────────────────────────────
     const riskMap = new Map<string, number>();
     for (const pid of playersStillActive) {
       const ctx = ctxs.get(pid)!;
       const openCases = allCases
         .filter(c => c.defendantId === pid && c.status !== 'resolved')
         .map(c => ({ probability: c.adjustedProbability ?? c.baseProbability, stakes: c.stakes }));
-      riskMap.set(pid, calculateRiskGauge(ctx.vars, openCases, this.adminVars, this.formulas));
+      // ctx.prevCash — cash at the start of THIS turn, before this turn's own P&L/
+      // balance-sheet movement — feeds the solvency-risk term's one-turn-ahead cash
+      // projection (predictNextTurnCashLinear). Same field the bankruptcy waterfall
+      // pool below already reuses for an unrelated purpose.
+      riskMap.set(pid, calculateRiskGauge(ctx.vars, openCases, this.adminVars, this.formulas, ctx.prevCash));
     }
 
     // ── Step 12 — Collect Company persistence updates (all engine state in JSONB) ──
@@ -772,6 +991,9 @@ export class GameLoop {
             elapsedYears: d.elapsedYears,
             isMatured: d.isMatured,
             targetId: d.targetId,
+            voidedByLawsuit: d.voidedByLawsuit,
+            everSued: d.everSued,
+            acquisitionFraction: d.acquisitionFraction,
           })),
           depreciationLedger: ctx.engineState.depreciationLedger,
           legalCases: allCases.filter(c => c.plaintiffId === pid || c.defendantId === pid),
@@ -809,6 +1031,8 @@ export class GameLoop {
           maturityYears: calcMaturity(d.definition.impacts),
           elapsedYears: d.elapsedYears,
           isMatured: d.isMatured,
+          voidedByLawsuit: d.voidedByLawsuit,
+          targetId: d.targetId,
         })),
         legalCases: allCases.filter(c => c.plaintiffId === pid || c.defendantId === pid),
         riskGauge: riskMap.get(pid) ?? 0,
@@ -838,7 +1062,8 @@ export class GameLoop {
    * game, so players land straight in the game room showing their real starting numbers
    * instead of a blank "waiting" screen for the full first `turnDurationSeconds` window.
    * No decisions have been submitted yet, so this reuses the same formula pipeline as
-   * resolveTurn (FORMULAS §2-§5) with zero decision impacts, zero legal cases, and zero
+   * resolveTurn (competitiveness/market-share/volume/P&L/balance-sheet steps) with zero
+   * decision impacts, zero legal cases, and zero
    * depreciation — nothing to persist, nothing that could produce a bankruptcy or
    * game-over. The real round-1 resolution still happens normally when the timer
    * expires. Like resolveTurn, this is pure: the caller is responsible for broadcasting
@@ -863,14 +1088,14 @@ export class GameLoop {
       playerIds.push(p.id);
     }
 
-    // FORMULAS §2 — competitiveness & market share (zero-sum across all players)
+    // Competitiveness & market share (zero-sum across all players)
     const varsList = playerIds.map(pid => varsByPlayer.get(pid)!);
     const marketShares = calculateCompetitivenessAndMarketShare(playerIds, varsList, this.adminVars, this.formulas);
     for (const pid of playerIds) {
       varsByPlayer.get(pid)!.marketShare = marketShares.get(pid) || 0;
     }
 
-    // FORMULAS §3 — volume with supply cap
+    // Volume with supply cap
     const totalVol = this.config.gameSettings.totalMarketVolumeTonnesPerYear;
     for (const pid of playerIds) {
       const vars = varsByPlayer.get(pid)!;
@@ -880,9 +1105,9 @@ export class GameLoop {
     const results: PlayerTurnResult[] = [];
     for (const pid of playerIds) {
       const vars = varsByPlayer.get(pid)!;
-      // FORMULAS §4 — P&L (no decisions yet, so no absolute schedule deltas)
+      // P&L (no decisions yet, so no absolute schedule deltas)
       const pl = calculatePL(vars, vars.volume || 0, 0, this.adminVars, this.formulas);
-      // FORMULAS §5 — balance sheet (no legal exposure yet — no cases exist on turn 1)
+      // Balance sheet (no legal exposure yet — no cases exist on turn 1)
       const bs = updateBalanceSheet(vars, pl.netProfit, 0, pl.revenue, 0, this.adminVars, this.formulas);
       vars.cash = bs.cash;
       vars.reserves = bs.reserves;
@@ -955,10 +1180,11 @@ export class GameLoop {
       if (pid === playerId) continue;
       const inst = state.engineState.activeDecisions.find(d => d.id === attackId);
       if (!inst) continue;
+      if (inst.voidedByLawsuit) continue;
       const targetImpacts = this.decisionEngine.getTargetImpacts(inst.definition.impacts);
-      const isIndirect = this.isIndirectEffect(inst.definition, targetImpacts);
+      const isIndirect = this.isIndirectEffect(inst.definition, targetImpacts, inst.targetId);
       if (!isIndirect && inst.targetId !== playerId) continue;
-      if (!isIndirect && targetImpacts.size === 0) continue;
+      if (!isIndirect && targetImpacts.size === 0 && inst.definition.shareTransactionType !== 'buy') continue;
       attacker = { id: pid, name: state.name, decision: inst, isIndirect };
       break;
     }
@@ -998,6 +1224,9 @@ export class GameLoop {
           elapsedYears: d.elapsedYears,
           isMatured: d.isMatured,
           targetId: d.targetId,
+          voidedByLawsuit: d.voidedByLawsuit,
+          everSued: d.everSued,
+          acquisitionFraction: d.acquisitionFraction,
         })),
         depreciationLedger: me.engineState.depreciationLedger,
         legalCases: me.engineState.legalCases,
@@ -1111,6 +1340,7 @@ export class GameLoop {
     const updatedCase: LegalCaseData = { ...case_, status: 'resolved', verdict: 'settled', resolvedAt: new Date() };
     const newPlaintiffCash = plaintiff.vars.cash + lastOffer.amount;
     const newDefendantCash = defendant.vars.cash - lastOffer.amount;
+    this.voidSuedDecisionInstance(defendant.engineState, updatedCase);
 
     return {
       success: true,
@@ -1318,6 +1548,9 @@ export class GameLoop {
         elapsedYears: d.elapsedYears,
         isMatured: d.isMatured,
         targetId: d.targetId,
+        voidedByLawsuit: d.voidedByLawsuit ?? false,
+        everSued: d.everSued ?? false,
+        acquisitionFraction: d.acquisitionFraction,
       })),
       depreciationLedger: (raw.depreciationLedger ?? []) as DepreciationEntry[],
       legalCases: (raw.legalCases ?? []) as LegalCaseData[],
@@ -1425,11 +1658,186 @@ export class GameLoop {
         elapsedYears: d.elapsedYears,
         isMatured: d.isMatured,
         targetId: d.targetId,
+        voidedByLawsuit: d.voidedByLawsuit,
+        everSued: d.everSued,
+        acquisitionFraction: d.acquisitionFraction,
       })),
       depreciationLedger: engineState.depreciationLedger,
       legalCases: engineState.legalCases.map(c => (c.id === updatedCase.id ? updatedCase : c)),
       investigations: engineState.investigations,
     };
+  }
+
+  /**
+   * A lawsuit "win" (trial verdict 'won' for the plaintiff, or any settlement where the
+   * defendant paid out — see CLAUDE.md) cancels the sued decision instance's forthcoming
+   * effects: forces it `isMatured: true` immediately (so it frees up for redeployment via
+   * `canDeploy`'s existing "previous instance matured" check) and flags `voidedByLawsuit`
+   * (so `advanceAndApply`/`collectTargetImpacts` stop applying its schedule ever again, and
+   * so it doesn't count as a "successful" completion for `hasPermanentEffect`'s redeploy
+   * lock). No-ops if the case never resolved to a genuine instance (a wrong guess or a
+   * time-barred ground — `defendantDecisionInstanceId` is undefined) or if that instance
+   * was already voided by an earlier case. Deliberately does NOT touch a decision's
+   * already-applied history — whatever it did in earlier turns stays.
+   */
+  private voidSuedDecisionInstance(defendantEngineState: CompanyEngineState, case_: LegalCaseData): void {
+    if (!case_.defendantDecisionInstanceId) return;
+    const inst = defendantEngineState.activeDecisions.find(d => d.id === case_.defendantDecisionInstanceId);
+    if (!inst || inst.voidedByLawsuit) return;
+    inst.isMatured = true;
+    inst.voidedByLawsuit = true;
+  }
+
+  /**
+   * Executes one Buy or Sell Shares transaction (Step 1b) — a
+   * pairwise mutation between the acting player and the target company, same "touches
+   * two players atomically" shape as a lawsuit filing, not a generic schedule-driven
+   * impact. No-ops safely if either party is missing from `ctxs` (e.g. a stale target)
+   * or the target has no shares outstanding at all.
+   *
+   * **Buy**: `sharesBought = min(amount, buyer's cash) / target's stockValue` (last
+   * turn's closing price — see the Step 1b comment above) — if that price is exactly 0,
+   * treat the purchase as acquiring the ENTIRE company regardless of amount paid
+   * (a sufficiently distressed company can be bought/taken over for free, by design).
+   * `fractionBought` (capped at 1) is stamped onto the buyer's own deployed instance as
+   * `acquisitionFraction` (gates `legalRiskConditions`, see `meetsLegalRiskConditions`).
+   * Every existing shareOwnership key on the target scales down by `(1 - fractionBought)`
+   * — pro-rata dilution "from all current owners, including EXTERNAL_MARKET" per
+   * while the buyer's own key (their real playerId, or `SELF_OWNERSHIP_KEY`
+   * if the buyer *is* the target's own founder — self-buyback falls out of
+   * this exact same formula with no special case needed) gets the full `fractionBought`
+   * credited on top. The buyer's cash decreases by the full `amount`; every OTHER diluted
+   * key that maps to a real player (never `EXTERNAL_MARKET`, which absorbs its own
+   * diluted portion with no counterparty; never the buyer's own key, which would just be
+   * paying themselves) receives their pro-rata share of that `amount` in cash — a
+   * confirmed product decision, not a strictly spec-mandated detail.
+   *
+   * **Sell**: shares always return to `EXTERNAL_MARKET` specifically, never pro-rata to
+   * other players ("shares can only be sold to the external market, never directly to
+   * another player"). Capped at whatever the seller actually holds.
+   */
+  private applyShareTransaction(request: ShareTransactionRequest, ctxs: Map<string, PlayerTurnContext>): void {
+    const buyerCtx = ctxs.get(request.buyerId);
+    const targetCtx = ctxs.get(request.targetId);
+    if (!buyerCtx || !targetCtx) return;
+
+    const totalShares = targetCtx.vars.totalSharesOutstanding || 0;
+    if (totalShares <= 0) return;
+    const price = targetCtx.vars.stockValue ?? 0;
+    const actorKey = request.buyerId === request.targetId ? SELF_OWNERSHIP_KEY : request.buyerId;
+    const ownership: Record<string, number> = { ...(targetCtx.vars.shareOwnership ?? {}) };
+
+    if (request.type === 'buy') {
+      const spend = Math.min(request.amount, buyerCtx.vars.cash);
+      if (spend <= 0) return;
+      const sharesBought = price > 0 ? spend / price : totalShares;
+      const fractionBought = Math.min(1, sharesBought / totalShares);
+      if (fractionBought <= 0) return;
+
+      const instance = buyerCtx.engineState.activeDecisions.find(d => d.id === request.instanceId);
+      if (instance) instance.acquisitionFraction = fractionBought;
+
+      for (const [key, fraction] of Object.entries(ownership)) {
+        if (key === actorKey) continue; // netted into the buyer's own credit below — never pays itself
+        ownership[key] = fraction * (1 - fractionBought);
+        if (key === EXTERNAL_MARKET_KEY) continue; // absorbs its own dilution, no counterparty
+        const ownerCtx = key === SELF_OWNERSHIP_KEY ? targetCtx : ctxs.get(key);
+        if (ownerCtx) ownerCtx.vars.cash += fraction * fractionBought * spend;
+      }
+      ownership[actorKey] = (ownership[actorKey] ?? 0) * (1 - fractionBought) + fractionBought;
+
+      buyerCtx.vars.cash -= spend;
+      targetCtx.vars.shareOwnership = renormalizeShareOwnership(ownership);
+    } else {
+      const currentFraction = ownership[actorKey] ?? 0;
+      if (currentFraction <= 0) return;
+      const holdingValue = currentFraction * totalShares * price;
+      const proceeds = Math.min(request.amount, holdingValue);
+      if (proceeds <= 0) return;
+      const fractionSold = price > 0 ? Math.min(currentFraction, proceeds / price / totalShares) : currentFraction;
+
+      ownership[actorKey] = currentFraction - fractionSold;
+      ownership[EXTERNAL_MARKET_KEY] = (ownership[EXTERNAL_MARKET_KEY] ?? 0) + fractionSold;
+      targetCtx.vars.shareOwnership = renormalizeShareOwnership(ownership);
+      buyerCtx.vars.cash += proceeds;
+    }
+  }
+
+  /**
+   * The end-of-turn elimination payout — shared by BOTH bankruptcy and
+   * merger elimination ("the same rule applies to both"), so this is the one place the
+   * waterfall math lives rather than duplicated per elimination reason. When a player
+   * falls (for either reason), ALL their still-unresolved cases lapse — both as
+   * defendant and as plaintiff. Cases against them are paid from:
+   *   jaettava_summa = cash_i (previous turn)
+   *                   + this turn's POSITIVE income-side cash-flow lines
+   *                     (revenue, other income, depreciation add-back,
+   *                      positive decision cash impacts, legal cash received)
+   *   — expense-side lines (opex, staff, COGS, finance cost, tax, capex
+   *     spend) never reduce this pool.
+   * Paid to plaintiffs in filing order (oldest `createdAt` first), each in full until
+   * the pool runs out; the rest get nothing. Returns the player's actual final cash
+   * (untouched by the pool math above, which is a separate, more optimistic figure used
+   * only to size the payout) — the caller persists this as `BankruptedPlayer.finalCash`
+   * and, for a merger, credits it to the acquirer.
+   */
+  private distributeCaseWaterfall(
+    pid: string,
+    ctxs: Map<string, PlayerTurnContext>,
+    allCases: LegalCaseData[],
+    plMap: Map<string, ReturnType<typeof calculatePL>>,
+    depreciationMap: Map<string, number>,
+    absDeltasMap: Map<string, { revenueDelta: number; financeCostDelta: number; taxCostDelta: number; receivablesDelta: number; cashDelta: number }>,
+    legalReceivedThisTurn: Map<string, number>,
+  ): number {
+    const ctx = ctxs.get(pid)!;
+    const pl = plMap.get(pid)!;
+    const dep = depreciationMap.get(pid) ?? 0;
+    const deltas = absDeltasMap.get(pid) ?? { revenueDelta: 0, financeCostDelta: 0, taxCostDelta: 0, receivablesDelta: 0, cashDelta: 0 };
+    const legalReceived = legalReceivedThisTurn.get(pid) ?? 0;
+
+    const pool = Math.max(0,
+      ctx.prevCash
+      + Math.max(0, pl.revenue)
+      + Math.max(0, ctx.vars.otherIncome || 0)
+      + dep
+      + Math.max(0, deltas.cashDelta)
+      + legalReceived,
+    );
+
+    // Find all unresolved cases where this player was the defendant, sorted
+    // oldest-first by filing order
+    const casesAgainstDefunct = allCases
+      .filter(c => c.defendantId === pid && c.status !== 'resolved')
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+
+    // Distribute pool to plaintiffs in filing order
+    let remaining = pool;
+    for (const case_ of casesAgainstDefunct) {
+      if (remaining <= 0) break;
+      const payment = Math.min(case_.stakes, remaining);
+      const pltCtx = ctxs.get(case_.plaintiffId);
+      if (pltCtx) {
+        pltCtx.vars.cash += payment;
+      }
+      case_.status = 'resolved';
+      case_.verdict = 'settled';
+      case_.resolvedAt = new Date();
+      remaining -= payment;
+    }
+
+    // All remaining unresolved cases touching the fallen player lapse without
+    // payment — as defendant (pool exhausted) AND as plaintiff.
+    for (const case_ of allCases) {
+      if (case_.status === 'resolved') continue;
+      if (case_.defendantId === pid || case_.plaintiffId === pid) {
+        case_.status = 'resolved';
+        case_.verdict = 'cancelled';
+        case_.resolvedAt = new Date();
+      }
+    }
+
+    return ctx.vars.cash;
   }
 
   /**
@@ -1441,15 +1849,22 @@ export class GameLoop {
    */
   /**
    * True for a decision with no `target.*` impacts at all (no single player it's routed
-   * to) that still carries `legalRisks` — New Factory's nuisance suit, Water Pumping's
-   * environmental suit, Night Dumping, etc. These broadcast an incoming-attack-style hint
-   * to EVERY other active player (see buildIncomingAttacks), not just one target, since
-   * there's no target to route it to. A decision with neither `target.*` impacts nor any
-   * `legalRisks` (e.g. Sell Shares) is neither direct nor indirect — nothing to reveal or
-   * sue over, so it never generates a hint at all.
+   * to) AND no explicit `targetId` either, that still carries `legalRisks` — New Factory's
+   * nuisance suit, Water Pumping's environmental suit, Night Dumping, etc. These broadcast
+   * an incoming-attack-style hint to EVERY other active player (see buildIncomingAttacks),
+   * not just one target, since there's no target to route it to. A decision with neither
+   * `target.*` impacts nor any `legalRisks` (e.g. Sell Shares) is neither direct nor
+   * indirect — nothing to reveal or sue over, so it never generates a hint at all.
+   *
+   * `targetId` matters because Buy Shares has NO `target.*` impacts at
+   * all (its real effect is computed dynamically in Step 1b, not via the generic impacts
+   * schedule) but DOES have a real, explicit target — without checking `targetId` too, it
+   * would misclassify as indirect (broadcast to everyone) despite being aimed at one
+   * specific player, letting anyone dig into or sue over a purchase they weren't the
+   * target of. Sell Shares is unaffected either way (its `legalRisks` is empty).
    */
-  private isIndirectEffect(def: DecisionDefinition, targetImpacts: Map<string, unknown>): boolean {
-    return targetImpacts.size === 0 && !!def.legalRisks && def.legalRisks.length > 0;
+  private isIndirectEffect(def: DecisionDefinition, targetImpacts: Map<string, unknown>, targetId?: string): boolean {
+    return targetImpacts.size === 0 && targetId === undefined && !!def.legalRisks && def.legalRisks.length > 0;
   }
 
   private buildIncomingAttacks(pid: string, ctxs: Map<string, PlayerTurnContext>, attackerCtxIds: string[]): IncomingAttackInfo[] {
@@ -1459,13 +1874,20 @@ export class GameLoop {
       if (attackerId === pid) continue;
       const attackerCtx = ctxs.get(attackerId)!;
       for (const d of attackerCtx.engineState.activeDecisions) {
+        if (d.voidedByLawsuit) continue;
         const targetImpacts = this.decisionEngine.getTargetImpacts(d.definition.impacts);
-        const isIndirect = this.isIndirectEffect(d.definition, targetImpacts);
+        const isIndirect = this.isIndirectEffect(d.definition, targetImpacts, d.targetId);
         // Direct: only the specific player it targets sees it. Indirect: every other
         // active player sees it (there's no single target) — see isIndirectEffect's doc
-        // comment for why decisions with neither trait are skipped entirely.
+        // comment for why decisions with neither trait are skipped entirely. Buy Shares
+        // is a third case: a real direct attack (targetId set) with no target.* impacts
+        // at all (its effect is a dynamic share transaction, not a routed schedule field)
+        // — excluded from the "must have target.* impacts" check below, unlike every
+        // other direct decision. Sell Shares isn't an attack on anyone (and has no
+        // legalRisks to reveal regardless), so it's deliberately NOT given the same
+        // exemption here.
         if (!isIndirect && d.targetId !== pid) continue;
-        if (!isIndirect && targetImpacts.size === 0) continue;
+        if (!isIndirect && targetImpacts.size === 0 && d.definition.shareTransactionType !== 'buy') continue;
         const rawLevel = myInvestigations[d.id] ?? 0;
         const level = this.effectiveInvestigationLevel(rawLevel, attackerCtxIds.length);
         attacks.push(this.revealAttack(attackerId, attackerCtx.playerName, d, level, attackerCtx.vars, isIndirect));
@@ -1505,12 +1927,17 @@ export class GameLoop {
     if (level >= 2) {
       info.decisionName = decision.definition.decision;
       info.decisionDescription = decision.definition.description;
-      info.effectSummary = isIndirect
-        ? summarizeOwnImpacts(decision.definition.impacts, decision.elapsedYears)
-        : summarizeTargetImpacts(decision.definition.impacts, decision.elapsedYears);
+      // Buy Shares has no target.* impacts to summarize generically (its effect is a
+      // dynamic share transaction, not a routed schedule field) — describe the one
+      // number that actually matters instead: how much of the target it acquired.
+      info.effectSummary = decision.definition.shareTransactionType === 'buy'
+        ? `Acquired ${Math.round((decision.acquisitionFraction ?? 0) * 100)}% ownership stake`
+        : isIndirect
+          ? summarizeOwnImpacts(decision.definition.impacts, decision.elapsedYears)
+          : summarizeTargetImpacts(decision.definition.impacts, decision.elapsedYears);
     }
     if (level >= 3) {
-      const best = pickBestGround(decision.definition, decision.elapsedYears, attackerVars, this.adminVars, this.formulas, this.config.gameSettings.statuteOfLimitationsYears);
+      const best = pickBestGround(decision.definition, decision.elapsedYears, attackerVars, this.adminVars, this.formulas, this.config.gameSettings.statuteOfLimitationsYears, decision.everSued, meetsLegalRiskConditions(decision.definition, decision));
       if (best) {
         info.suggestedGroundName = best.name;
         info.suggestedGroundDescription = best.description;
@@ -1520,56 +1947,61 @@ export class GameLoop {
     return info;
   }
 
-  private processNewDecisions(ctx: PlayerTurnContext, year: number): void {
+  /** Returns any Buy/Sell Shares entries this call actually deployed (queued for Step 1b
+   * — see `ShareTransactionRequest`'s doc comment for why this can't just re-scan raw
+   * submissions: some entries get dropped by `canDeploy`/level-limit checks below, and
+   * only the ones that actually deployed should ever execute a real trade). */
+  private processNewDecisions(roomId: string, ctx: PlayerTurnContext, year: number): ShareTransactionRequest[] {
     const sub = ctx.submittedDecisions!;
     const maxStrat = this.config.gameSettings.maxStrategicDecisionsPerTurn;
     const maxOp = this.config.gameSettings.maxOperationalDecisionsPerTurn;
 
     // Track absolute deltas from newly deployed decisions on the same turn
     const newDecisionAbsDeltas: Array<{ revenueDelta: number; financeCostDelta: number; taxCostDelta: number; receivablesDelta: number; cashDelta: number }> = [];
+    const shareTransactions: ShareTransactionRequest[] = [];
 
-    for (const { name, targetId } of sub.strategic.slice(0, maxStrat)) {
-      const def = this.decisionEngine.getDef(name);
-      if (!def) continue;
-      const ok = this.decisionEngine.canDeploy(
-        ctx.engineState.activeDecisions,
-        name,
-        'Strategic',
-        maxStrat,
-        maxOp,
-      );
-      if (!ok.allowed) continue;
-      const inst = this.decisionEngine.deploy(ctx.playerId, def, year, targetId);
-      ctx.engineState.activeDecisions.push(inst);
-      const result = this.decisionEngine.applyImpactsForYear(ctx.vars, name, def.impacts, 0, year);
-      ctx.vars = result.updatedVars;
-      // Merge newly created depreciation entries into the ledger
-      for (const entry of result.newDepreciationEntries) {
-        ctx.engineState.depreciationLedger.push(entry);
-      }
-      // Capture absolute schedule deltas from the deployment
-      newDecisionAbsDeltas.push(result.absDeltas);
-    }
+    for (const bucket of ['strategic', 'operational'] as const) {
+      const maxForBucket = bucket === 'strategic' ? maxStrat : maxOp;
+      // This slice is the ONLY thing enforcing "at most maxForBucket decisions of this
+      // level per turn" — canDeploy itself no longer takes a level/max-count and never
+      // recomputes one from ctx.engineState.activeDecisions (a player's entire historical
+      // active-decisions list, which only grows) — see CLAUDE.md's "canDeploy's
+      // level-limit check counted a player's entire lifetime of active decisions" section.
+      for (const entry of sub[bucket].slice(0, maxForBucket)) {
+        const { name, targetId, amount } = entry;
+        const def = this.decisionEngine.getDef(name);
+        if (!def) continue;
+        const ok = this.decisionEngine.canDeploy(
+          ctx.engineState.activeDecisions,
+          name,
+          this.config.gameSettings.statuteOfLimitationsYears,
+        );
+        if (!ok.allowed) continue;
+        const inst = this.decisionEngine.deploy(ctx.playerId, def, year, targetId);
+        ctx.engineState.activeDecisions.push(inst);
+        const result = this.decisionEngine.applyImpactsForYear(ctx.vars, def.impacts, 0, year);
+        ctx.vars = result.updatedVars;
+        // Merge newly created depreciation entries into the ledger
+        for (const entry of result.newDepreciationEntries) {
+          ctx.engineState.depreciationLedger.push(entry);
+        }
+        // Capture absolute schedule deltas from the deployment
+        newDecisionAbsDeltas.push(result.absDeltas);
 
-    for (const { name, targetId } of sub.operational.slice(0, maxOp)) {
-      const def = this.decisionEngine.getDef(name);
-      if (!def) continue;
-      const ok = this.decisionEngine.canDeploy(
-        ctx.engineState.activeDecisions,
-        name,
-        'Operational',
-        maxStrat,
-        maxOp,
-      );
-      if (!ok.allowed) continue;
-      const inst = this.decisionEngine.deploy(ctx.playerId, def, year, targetId);
-      ctx.engineState.activeDecisions.push(inst);
-      const result = this.decisionEngine.applyImpactsForYear(ctx.vars, name, def.impacts, 0, year);
-      ctx.vars = result.updatedVars;
-      for (const entry of result.newDepreciationEntries) {
-        ctx.engineState.depreciationLedger.push(entry);
+        // Buy/Sell Shares carry no fixed impacts schedule at all —
+        // their real effect is computed dynamically in Step 1b from the player-chosen
+        // amount/target, not applied generically like every other decision above.
+        if (def.shareTransactionType && targetId && amount !== undefined) {
+          shareTransactions.push({
+            buyerId: ctx.playerId,
+            instanceId: inst.id,
+            targetId,
+            amount,
+            submittedAt: this.entryTimestamp(roomId, ctx.playerId, bucket, entry),
+            type: def.shareTransactionType,
+          });
+        }
       }
-      newDecisionAbsDeltas.push(result.absDeltas);
     }
 
     // Store merged deltas on context and apply to vars so they're available in absDeltasMap later.
@@ -1585,6 +2017,8 @@ export class GameLoop {
     } else {
       ctx.newDecisionAbsDeltas = { revenueDelta: 0, financeCostDelta: 0, taxCostDelta: 0, receivablesDelta: 0, cashDelta: 0 };
     }
+
+    return shareTransactions;
   }
 
   private readVariables(json: any): PlayerVariables {
@@ -1615,7 +2049,12 @@ export class GameLoop {
       processLoss: s.processLoss,
       installedCapacity: s.installedCapacity,
       totalSharesOutstanding: s.totalSharesOutstanding,
-      shareOwnership: s.shareOwnership,
+      // A fresh object per player, never the shared `config.playerStartingValues`
+      // reference — every player starting their first turn would otherwise silently
+      // alias the SAME shareOwnership object, so mutating one player's cap table (once
+      // Buy/Sell Shares actually writes to it) would corrupt every other still-unstarted
+      // player's "starting" snapshot too.
+      shareOwnership: { ...s.shareOwnership },
       outrage: s.outrage,
       scrutiny: s.scrutiny,
       breakdowns: s.breakdowns,

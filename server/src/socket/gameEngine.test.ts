@@ -190,6 +190,33 @@ const createMockPrisma = () => {
     }),
   };
 
+  // In-memory-backed, stateful mock (same shape as mockDecision/mockFormula above) so
+  // tests can both seed rows and assert on the resulting state — used by
+  // GameEngine.persistLegalCaseHistory/recordLegalCaseHistory's tests.
+  const legalCaseHistoryRows = new Map<string, Record<string, unknown>>();
+  const mockLegalCaseHistory = {
+    _rows: legalCaseHistoryRows,
+    upsert: vi.fn().mockImplementation(({ where, create }: any) => {
+      if (!legalCaseHistoryRows.has(where.id)) {
+        legalCaseHistoryRows.set(where.id, { ...create });
+      }
+      return Promise.resolve(legalCaseHistoryRows.get(where.id));
+    }),
+    updateMany: vi.fn().mockImplementation(({ where, data }: any) => {
+      const row = legalCaseHistoryRows.get(where.id);
+      if (!row || (where.resolvedRound === null && row.resolvedRound !== null)) {
+        return Promise.resolve({ count: 0 });
+      }
+      Object.assign(row, data);
+      return Promise.resolve({ count: 1 });
+    }),
+    findMany: vi.fn().mockImplementation(({ where }: any = {}) => {
+      return Promise.resolve(
+        Array.from(legalCaseHistoryRows.values()).filter((r: any) => (where?.roomId ? r.roomId === where.roomId : true)),
+      );
+    }),
+  };
+
   const mockPrisma: Partial<PrismaClient> = {
     room: mockRoom,
     player: mockPlayer,
@@ -204,6 +231,7 @@ const createMockPrisma = () => {
       upsert: vi.fn().mockResolvedValue({}),
       findMany: vi.fn().mockResolvedValue([]),
     } as any,
+    legalCaseHistory: mockLegalCaseHistory as any,
     $transaction: vi.fn().mockImplementation(async (fn: (tx: Partial<PrismaClient>) => Promise<unknown>) => {
       return fn(mockPrisma as Partial<PrismaClient>);
     }),
@@ -862,6 +890,56 @@ describe('GameEngine', () => {
 
       localEngine.stop();
     });
+
+    it('never finalizes removal for an eliminated (bankrupt) player while another player is still around — their data (and a game-timeline replay) must survive them closing their tab', async () => {
+      vi.useFakeTimers();
+      const localIo = createMockIo();
+      const localPrisma = createMockPrisma();
+      const localEngine = new GameEngine(localIo, localPrisma);
+
+      const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await localEngine.createRoom(creator);
+      await localEngine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+
+      const bob = Array.from(roomState.players.values()).find((p) => p.name === 'Bob')!;
+      bob.bankrupt = true; // eliminated — mirrors resolveGameTurn's/forfeitGame's in-memory sync
+
+      await localEngine.markPlayerDisconnected('socket-2');
+      // Well past the grace period, repeatedly, across several heartbeat ticks.
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+
+      expect(localPrisma.player.delete).not.toHaveBeenCalled();
+      // Alice is still connected, so the room itself isn't stale either — Bob can
+      // still room:rejoin to keep spectating whenever he likes.
+      expect(localEngine.getRoom(roomState.room.id)).toBeDefined();
+
+      localEngine.stop();
+    });
+
+    it('still cleans up the whole room (and, via cascade, its exempted eliminated players) once every remaining player has disconnected past the stale threshold', async () => {
+      vi.useFakeTimers();
+      const localIo = createMockIo();
+      const localPrisma = createMockPrisma();
+      const localEngine = new GameEngine(localIo, localPrisma);
+
+      const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await localEngine.createRoom(creator);
+      const alice = Array.from(roomState.players.values())[0];
+      alice.bankrupt = true; // the sole remaining player, eliminated, and about to disconnect too
+
+      await localEngine.markPlayerDisconnected('socket-1');
+      // Individual removal is exempted (bankrupt), but the room itself is a different
+      // signal ("no player in the room still has a live socket") — once nobody at all
+      // is left connected, the room (and everything cascading from it) is fair to
+      // reclaim, same as any other genuinely abandoned room.
+      await vi.advanceTimersByTimeAsync(70_000);
+
+      expect(localPrisma.player.delete).not.toHaveBeenCalled();
+      expect(localEngine.getRoom(roomState.room.id)).toBeUndefined();
+      expect(localPrisma.room.delete).toHaveBeenCalledWith({ where: { id: roomState.room.id } });
+
+      localEngine.stop();
+    });
   });
 
   describe('rejoinRoom', () => {
@@ -1370,6 +1448,133 @@ describe('GameEngine', () => {
       expect(consoleErrorSpy).toHaveBeenCalled();
       consoleErrorSpy.mockRestore();
     });
+
+    it('carries the annual-report blurb into the turn:resolved broadcast for an attack still sitting at investigationLevel 1 (not just right after the dig that reached it)', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      roomState.room.status = RoomStatus.GAME_PHASE;
+      roomState.room.currentPhaseRound = 1;
+
+      (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockImplementation(({ where }: any) =>
+        Promise.resolve(
+          where?.roomId === roomState.room.id
+            ? [
+                {
+                  id: 'player-1',
+                  name: 'Alice',
+                  roomId: roomState.room.id,
+                  bankrupt: false,
+                  companyId: 'company-player-1',
+                  company: {
+                    id: 'company-player-1', playerId: 'player-1', cash: 100000, debt: 0, assets: [],
+                    variables: {},
+                    // Already dug once on a prior turn — this turn's own resolution (no
+                    // new dig involved) must still carry the blurb through.
+                    engineState: { investigations: { 'inst-1': 1 } },
+                  },
+                },
+                {
+                  id: 'player-2',
+                  name: 'Bob',
+                  roomId: roomState.room.id,
+                  bankrupt: false,
+                  companyId: 'company-player-2',
+                  company: {
+                    id: 'company-player-2', playerId: 'player-2', cash: 100000, debt: 0, assets: [],
+                    variables: {},
+                    engineState: {
+                      activeDecisions: [
+                        { id: 'inst-1', definitionName: 'Bot Attack', deployedYear: 1, elapsedYears: 1, isMatured: true, targetId: 'player-1' },
+                      ],
+                    },
+                  },
+                },
+                {
+                  id: 'player-3',
+                  name: 'Carol',
+                  roomId: roomState.room.id,
+                  bankrupt: false,
+                  companyId: 'company-player-3',
+                  company: { id: 'company-player-3', playerId: 'player-3', cash: 100000, debt: 0, assets: [], variables: {}, engineState: {} },
+                },
+              ]
+            : [],
+        ),
+      );
+
+      await engine.resolveGameTurn(roomState.room.id);
+
+      const turnResolvedCall = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls.find(
+        (call: [string, ...unknown[]]) => call[0] === ServerEvents.TURN_RESOLVED,
+      );
+      const alice = (turnResolvedCall![1] as any).players.find((p: any) => p.playerId === 'player-1');
+      const attack = alice.incomingAttacks.find((a: any) => a.attackId === 'inst-1');
+      expect(attack.investigationLevel).toBe(1);
+      expect(attack.decisionName).toBeUndefined();
+      expect(attack.annualReportBlurb).toBe('blurb: Bot Attack');
+    });
+
+    it('persists eliminatedRound (DB write + in-memory sync) and a final KpiSnapshot for a player who naturally goes bankrupt this turn', async () => {
+      // Full, valid PlayerVariables — capacityUtilization/installedCapacity: 0
+      // suppresses volume/revenue entirely (this file's own established "bankruptcy-
+      // determinism" pattern, see CLAUDE.md), so a deeply negative starting cash stays
+      // negative regardless of this turn's ordinary P&L movement.
+      const bankruptVars = {
+        cash: -50000, assets: 10000, intangibleAssets: 0, debt: 0, reserves: 0,
+        operatingExpenses: 5000, staffCost: 5000, materialCostPerTon: 100, otherIncome: 0,
+        price: 500, capacityUtilization: 0, processingLevel: 0.5, energyIntensity: 0.5,
+        moistureContent: 0.3, nutrientConsistency: 0.5, supplySecurity: 0.5,
+        logisticsCostPerTon: 50, processLoss: 0.05, installedCapacity: 0,
+        totalSharesOutstanding: 1000, shareOwnership: { self: 1 },
+        outrage: 0, scrutiny: 0, breakdowns: 0, contaminationRisk: 0, odorComplaints: 0,
+        tokenLiability: 0, carbonFootprint: 0, stockVolume: 0, demand: 0,
+      };
+      const solventVars = { ...bankruptVars, cash: 500000 };
+
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+      roomState.room.status = RoomStatus.GAME_PHASE;
+      roomState.room.currentPhaseRound = 4;
+
+      // Real, engine-generated ids — must match roomState.players' actual keys, or the
+      // in-memory roster sync this test checks would silently no-op against a mismatch.
+      const aliceRoomEntry = Array.from(roomState.players.values()).find((p) => p.name === 'Alice')!;
+      const bobRoomEntry = Array.from(roomState.players.values()).find((p) => p.name === 'Bob')!;
+
+      (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockImplementation(({ where }: any) =>
+        Promise.resolve(
+          where?.roomId === roomState.room.id
+            ? [
+                { id: aliceRoomEntry.id, name: 'Alice', roomId: roomState.room.id, bankrupt: false, companyId: 'company-alice', company: { id: 'company-alice', playerId: aliceRoomEntry.id, cash: -50000, debt: 0, assets: [], variables: bankruptVars, engineState: {} } },
+                { id: bobRoomEntry.id, name: 'Bob', roomId: roomState.room.id, bankrupt: false, companyId: 'company-bob', company: { id: 'company-bob', playerId: bobRoomEntry.id, cash: 500000, debt: 0, assets: [], variables: solventVars, engineState: {} } },
+              ]
+            : [],
+        ),
+      );
+
+      await engine.resolveGameTurn(roomState.room.id);
+
+      // DB write
+      expect(mockPrisma.player.update).toHaveBeenCalledWith({
+        where: { id: aliceRoomEntry.id },
+        data: { bankrupt: true, eliminatedRound: 4 },
+      });
+      // In-memory roster sync — the pre-existing gap this feature needed fixed, since
+      // the disconnect-cleanup exemption depends on this flag being accurate.
+      expect(aliceRoomEntry.bankrupt).toBe(true);
+      expect(aliceRoomEntry.eliminatedRound).toBe(4);
+
+      // Final KpiSnapshot — persistKpiSnapshots excludes eliminated players entirely, so
+      // this has to be a separate upsert call using BankruptedPlayer's own captured
+      // finalVariables/finalDerived/finalRiskGauge.
+      const kpiUpsertCalls = (mockPrisma.kpiSnapshot.upsert as ReturnType<typeof vi.fn>).mock.calls;
+      const aliceFinalSnapshot = kpiUpsertCalls.find((call: any) => call[0].where.playerId_round.playerId === aliceRoomEntry.id);
+      expect(aliceFinalSnapshot).toBeDefined();
+      expect(aliceFinalSnapshot![0].where.playerId_round.round).toBe(4);
+      expect(aliceFinalSnapshot![0].create.variables.cash).toBeLessThan(0);
+      expect(typeof aliceFinalSnapshot![0].create.riskGauge).toBe('number');
+    });
   });
 
   describe('toggleReady', () => {
@@ -1487,6 +1692,32 @@ describe('GameEngine', () => {
 
       expect(result).toEqual({ success: true, triggerImmediateResolution: true });
       expect(roomState.readyPlayerIds.has(aliceId)).toBe(false);
+    });
+
+    it('persists eliminatedRound (DB write + in-memory sync) for the forfeiting player', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Carol', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-3' });
+      const aliceId = Array.from(roomState.players.values()).find((p) => p.name === 'Alice')!.id;
+      const bobId = Array.from(roomState.players.values()).find((p) => p.name === 'Bob')!.id;
+      const carolId = Array.from(roomState.players.values()).find((p) => p.name === 'Carol')!.id;
+      roomState.room.status = RoomStatus.GAME_PHASE;
+      roomState.room.currentPhaseRound = 4;
+
+      // Two players remain active after Alice forfeits — avoids the "only one left"
+      // game-over branch (buildGameOverPayload), which isn't what this test is about.
+      (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockImplementation(({ where }: any) =>
+        Promise.resolve(where?.roomId === roomState.room.id && where?.bankrupt === false ? [{ id: bobId }, { id: carolId }] : []),
+      );
+
+      await engine.forfeitGame(roomState.room.id, aliceId);
+
+      expect(mockPrisma.player.update).toHaveBeenCalledWith({
+        where: { id: aliceId },
+        data: { bankrupt: true, eliminatedRound: 4 },
+      });
+      expect(roomState.players.get(aliceId)!.eliminatedRound).toBe(4);
     });
 
     it('should not signal immediate resolution while a remaining active player still isn\'t ready', async () => {
@@ -1664,6 +1895,38 @@ describe('GameEngine', () => {
       expect(newCashValues).toEqual([60000, 90000]);
     });
 
+    it('acceptOffer also records the resolution in LegalCaseHistory — the one out-of-band case action that can resolve a case outside resolveTurn', async () => {
+      const { roomState, aliceId, bobId } = await makeTwoPartyCaseRoom();
+      roomState.room.currentPhaseRound = 7;
+      (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockImplementation(({ where }: any) =>
+        Promise.resolve(
+          where?.roomId === roomState.room.id
+            ? [
+                { id: aliceId, name: 'Alice', roomId: roomState.room.id, bankrupt: false, company: { variables: { cash: 100000 }, engineState: { legalCases: [{ id: 'case-1', roomId: roomState.room.id, plaintiffId: bobId, defendantId: aliceId, decisionName: 'Water Pumping', groundName: 'Environmental Violation', description: 'x', baseProbability: 0.12, stakes: 20000, status: 'negotiating', offers: [{ by: 'defendant', amount: 10000 }], turnsNegotiating: 0, createdAt: new Date() }] } } },
+                { id: bobId, name: 'Bob', roomId: roomState.room.id, bankrupt: false, company: { variables: { cash: 50000 }, engineState: { legalCases: [{ id: 'case-1', roomId: roomState.room.id, plaintiffId: bobId, defendantId: aliceId, decisionName: 'Water Pumping', groundName: 'Environmental Violation', description: 'x', baseProbability: 0.12, stakes: 20000, status: 'negotiating', offers: [{ by: 'defendant', amount: 10000 }], turnsNegotiating: 0, createdAt: new Date() }] } } },
+              ]
+            : [],
+        ),
+      );
+
+      // Pre-seed the LegalCaseHistory row exactly as persistLegalCaseHistory would have
+      // when the case was originally filed (a prior turn) — acceptOffer's defensive
+      // `create` branch is not expected to run in practice since filing always happens
+      // via resolveTurn first.
+      (mockPrisma.legalCaseHistory as any)._rows.set('case-1', {
+        id: 'case-1', roomId: roomState.room.id, plaintiffId: bobId, plaintiffName: 'Bob', defendantId: aliceId, defendantName: 'Alice',
+        decisionName: 'Water Pumping', groundName: 'Environmental Violation', description: 'x', stakes: 20000, filedRound: 3, resolvedRound: null, verdict: null,
+      });
+
+      await engine.acceptOffer(roomState.room.id, bobId, 'case-1');
+
+      const row = (mockPrisma.legalCaseHistory as any)._rows.get('case-1');
+      expect(row.resolvedRound).toBe(7);
+      expect(row.verdict).toBe('settled');
+      // The original filedRound is untouched by the resolution write.
+      expect(row.filedRound).toBe(3);
+    });
+
     it('goToCourt marks the case awaiting_trial and moves no cash', async () => {
       const { roomState, aliceId } = await makeTwoPartyCaseRoom();
 
@@ -1742,6 +2005,132 @@ describe('GameEngine', () => {
       const response = await engine.getKpiHistory('nonexistent-room', 'player-1', true);
 
       expect(response).toBeNull();
+    });
+  });
+
+  describe('persistLegalCaseHistory (via resolveGameTurn)', () => {
+    it('records a lawsuit filed and resolved (stale-offer auto-settle) within the same real turn', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+      roomState.room.status = RoomStatus.GAME_PHASE;
+      roomState.room.currentPhaseRound = 5;
+      const [aliceId, bobId] = Array.from(roomState.players.keys());
+
+      // A pending, unanswered offer from a prior turn — Step 8b's "leave an offer
+      // hanging" rule treats this as accepted the moment a new turn boundary hits,
+      // regardless of turnsNegotiating, settling the case this same turn.
+      const case_ = {
+        id: 'case-history-1', roomId: roomState.room.id, plaintiffId: bobId, defendantId: aliceId,
+        decisionName: 'Water Pumping', groundName: 'Environmental Violation', description: 'Sue for environmental damage',
+        baseProbability: 0.12, stakes: 15000, status: 'negotiating' as const,
+        offers: [{ by: 'defendant' as const, amount: 8000 }], turnsNegotiating: 1, createdAt: new Date(),
+      };
+
+      (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockImplementation(({ where }: any) =>
+        Promise.resolve(
+          where?.roomId === roomState.room.id
+            ? [
+                { id: aliceId, name: 'Alice', roomId: roomState.room.id, bankrupt: false, companyId: 'c-alice', company: { id: 'c-alice', playerId: aliceId, cash: 100000, debt: 0, assets: [], variables: {}, engineState: { legalCases: [case_] } } },
+                { id: bobId, name: 'Bob', roomId: roomState.room.id, bankrupt: false, companyId: 'c-bob', company: { id: 'c-bob', playerId: bobId, cash: 50000, debt: 0, assets: [], variables: {}, engineState: { legalCases: [case_] } } },
+              ]
+            : [],
+        ),
+      );
+
+      await engine.resolveGameTurn(roomState.room.id);
+
+      const row = (mockPrisma.legalCaseHistory as any)._rows.get('case-history-1');
+      expect(row).toBeDefined();
+      expect(row.plaintiffId).toBe(bobId);
+      expect(row.plaintiffName).toBe('Bob');
+      expect(row.defendantId).toBe(aliceId);
+      expect(row.defendantName).toBe('Alice');
+      expect(row.filedRound).toBe(5);
+      expect(row.resolvedRound).toBe(5);
+      expect(row.verdict).toBe('settled');
+    });
+
+    it('does not write any history row for a turn with no legal cases at all', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      roomState.room.status = RoomStatus.GAME_PHASE;
+
+      await engine.resolveGameTurn(roomState.room.id);
+
+      expect(mockPrisma.legalCaseHistory!.upsert).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getGameTimeline', () => {
+    it('returns null for a room that does not exist', async () => {
+      const response = await engine.getGameTimeline('nonexistent-room');
+      expect(response).toBeNull();
+    });
+
+    it('includes every player regardless of bankrupt status, grouped KPI history, decisions derived from engineState, and lawsuits from LegalCaseHistory', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+      roomState.room.status = RoomStatus.GAME_PHASE;
+      roomState.room.currentPhaseRound = 6;
+      const [aliceId, bobId] = Array.from(roomState.players.keys());
+
+      (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockImplementation(({ where }: any) =>
+        Promise.resolve(
+          where?.roomId === roomState.room.id
+            ? [
+                {
+                  id: aliceId, name: 'Alice', roomId: roomState.room.id, bankrupt: false, eliminatedRound: null,
+                  company: { engineState: { activeDecisions: [{ id: 'inst-1', definitionName: 'New Factory', deployedYear: 2, elapsedYears: 4, isMatured: true, voidedByLawsuit: false }] } },
+                },
+                {
+                  id: bobId, name: 'Bob', roomId: roomState.room.id, bankrupt: true, eliminatedRound: 4,
+                  company: { engineState: { activeDecisions: [] } },
+                },
+              ]
+            : [],
+        ),
+      );
+      (mockPrisma.kpiSnapshot!.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { playerId: aliceId, round: 1, variables: {}, derived: {}, riskGauge: 5 },
+        { playerId: aliceId, round: 2, variables: {}, derived: {}, riskGauge: 6 },
+        { playerId: bobId, round: 1, variables: {}, derived: {}, riskGauge: 2 },
+      ]);
+      (mockPrisma.legalCaseHistory as any)._rows.set('case-tl-1', {
+        id: 'case-tl-1', roomId: roomState.room.id, plaintiffId: aliceId, plaintiffName: 'Alice', defendantId: bobId, defendantName: 'Bob',
+        decisionName: 'Water Pumping', groundName: 'Environmental Violation', description: 'x', stakes: 12000, filedRound: 3, resolvedRound: 4, verdict: 'won',
+      });
+
+      const response = await engine.getGameTimeline(roomState.room.id);
+
+      expect(response).not.toBeNull();
+      expect(response!.currentRound).toBe(6);
+      expect(response!.players).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ playerId: aliceId, playerName: 'Alice', bankrupt: false, eliminatedRound: undefined }),
+          expect.objectContaining({ playerId: bobId, playerName: 'Bob', bankrupt: true, eliminatedRound: 4 }),
+        ]),
+      );
+      expect(response!.kpiHistory[aliceId]).toHaveLength(2);
+      expect(response!.kpiHistory[bobId]).toHaveLength(1);
+      expect(response!.decisions).toEqual([
+        { instanceId: 'inst-1', playerId: aliceId, decisionName: 'New Factory', deployedYear: 2, targetId: undefined, voidedByLawsuit: false },
+      ]);
+      expect(response!.lawsuits).toEqual([
+        expect.objectContaining({ id: 'case-tl-1', plaintiffName: 'Alice', defendantName: 'Bob', filedRound: 3, resolvedRound: 4, verdict: 'won' }),
+      ]);
+    });
+
+    it('is reachable during AFTERMATH, not just GAME_PHASE — the finished-game replay depends on this', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      roomState.room.status = RoomStatus.AFTERMATH;
+
+      const response = await engine.getGameTimeline(roomState.room.id);
+
+      expect(response).not.toBeNull();
+      expect(response!.gameOver).toBe(true);
     });
   });
 
@@ -2069,6 +2458,88 @@ describe('GameEngine', () => {
       const entries = await engine.getAnnualReport('room-1', 'player-2');
 
       expect(entries).toEqual([]);
+    });
+  });
+
+  describe('digDeeper — incoming-attack annual report blurb', () => {
+    // Three active players (not two) — a heads-up (2-player) game would make
+    // effectiveInvestigationLevel skip straight past level 1 to level 2 (see
+    // CLAUDE.md's "Dig Deeper's investigation ladder skips the free tier" section),
+    // which would never exercise the level-1-exactly case this feature targets.
+    const threeActivePlayers = () => [
+      {
+        id: 'player-1',
+        name: 'Alice',
+        company: { variables: {}, engineState: {} },
+      },
+      {
+        id: 'player-2',
+        name: 'Bob',
+        company: {
+          variables: {},
+          engineState: {
+            activeDecisions: [
+              { id: 'inst-1', definitionName: 'Bot Attack', deployedYear: 1, elapsedYears: 1, isMatured: true, targetId: 'player-1' },
+            ],
+          },
+        },
+      },
+      { id: 'player-3', name: 'Carol', company: { variables: {}, engineState: {} } },
+    ];
+
+    it('attaches the annual-report blurb the moment a dig lands exactly on investigationLevel 1 (attacker known, decision not yet revealed)', async () => {
+      (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockResolvedValue(threeActivePlayers());
+
+      const outcome = await engine.digDeeper('room-1', 'player-1', 'inst-1');
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.attack.investigationLevel).toBe(1);
+      expect(outcome.attack.attackerId).toBe('player-2');
+      // Level 1 doesn't reveal the decision name itself — the blurb is deliberately
+      // the only hint at this tier.
+      expect(outcome.attack.decisionName).toBeUndefined();
+      expect(outcome.attack.annualReportBlurb).toBe('blurb: Bot Attack');
+      expect(generateAnnualReportBlurb).toHaveBeenCalledWith({
+        decisionName: 'Bot Attack',
+        description: "Launch a coordinated cyberattack against a competitor's digital infrastructure to disrupt their logistics and operations.",
+        elapsedYears: 1,
+        fallback: 'Proactive digital capacity-loading evaluations of external logistical networks.',
+      });
+    });
+
+    it('does not attach a blurb once investigation goes past level 1 (the real decision is already revealed instead)', async () => {
+      const players = threeActivePlayers();
+      // player-1 already dug once — this next dig lands on level 2.
+      (players[0].company.engineState as any).investigations = { 'inst-1': 1 };
+      (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockResolvedValue(players);
+
+      const outcome = await engine.digDeeper('room-1', 'player-1', 'inst-1');
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.attack.investigationLevel).toBe(2);
+      expect(outcome.attack.decisionName).toBe('Bot Attack');
+      expect(outcome.attack.annualReportBlurb).toBeUndefined();
+      expect(generateAnnualReportBlurb).not.toHaveBeenCalled();
+    });
+
+    it('omits the blurb for a decision with no competitorsView to draw a fallback from, mirroring getAnnualReport\'s own filter', async () => {
+      // Every decision in the real seeded library happens to have competitorsView, so
+      // this state is reached here via a live /admin-style edit removing it, not a
+      // decision that ships without one.
+      const botAttack = engine.getDecisionsSnapshot().find((d) => d.decision === 'Bot Attack')!;
+      await engine.upsertDecision({ ...botAttack, competitorsView: [] }, false);
+
+      (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockResolvedValue(threeActivePlayers());
+
+      const outcome = await engine.digDeeper('room-1', 'player-1', 'inst-1');
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.attack.investigationLevel).toBe(1);
+      expect(outcome.attack.annualReportBlurb).toBeUndefined();
+      expect(generateAnnualReportBlurb).not.toHaveBeenCalled();
     });
   });
 

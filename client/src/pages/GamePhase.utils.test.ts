@@ -60,7 +60,7 @@ function getGroundsAgainst(decisions: MinimalDecisionDefForGrounds[]): DerivedGr
   return grounds;
 }
 
-// ── Decision Deck deployability (mirrors DecisionEngine.canDeploy, FORMULAS §9-§10) ──
+// ── Decision Deck deployability (mirrors DecisionEngine.canDeploy) ──────────────────
 
 interface MinimalDecisionDef {
   decision: string;
@@ -101,7 +101,7 @@ function getDeployability(
   return { blocked: false };
 }
 
-// ── Target-opponent requirement (FORMULAS §0 — any target.* impact field routes to a
+// ── Target-opponent requirement (any target.* impact field routes to a
 // chosen opponent, not just decisions flagged requiresTarget in game_engine.json) ──
 
 interface MinimalDecisionDefForTarget {
@@ -111,6 +111,101 @@ interface MinimalDecisionDefForTarget {
 
 function decisionNeedsTarget(def: MinimalDecisionDefForTarget): boolean {
   return def.requiresTarget === true || Object.keys(def.impacts).some((field) => field.startsWith('target.'));
+}
+
+// ── Decision Deck "SORT BY KPI" (own-effect fields only, deployment-year value) ──
+
+function formatFieldLabel(field: string): string {
+  const isTarget = field.startsWith('target.');
+  const clean = isTarget ? field.slice('target.'.length) : field;
+  const spaced = clean.replace(/([A-Z])/g, ' $1').trim();
+  const label = spaced.charAt(0).toUpperCase() + spaced.slice(1);
+  return isTarget ? `Target's ${label.charAt(0).toLowerCase()}${label.slice(1)}` : label;
+}
+
+interface MinimalImpactEntry {
+  schedule: Record<number | string, number>;
+}
+
+interface MinimalDecisionDefForSort {
+  impacts: Record<string, MinimalImpactEntry>;
+}
+
+function getSortableKpiFields(decisions: MinimalDecisionDefForSort[]): string[] {
+  const fields = new Set<string>();
+  for (const def of decisions) {
+    for (const field of Object.keys(def.impacts)) {
+      if (field.startsWith('target.') || field.startsWith('competitor')) continue;
+      fields.add(field);
+    }
+  }
+  return Array.from(fields).sort((a, b) => formatFieldLabel(a).localeCompare(formatFieldLabel(b)));
+}
+
+function getDecisionSortValue(def: MinimalDecisionDefForSort, field: string): number {
+  const impact = def.impacts[field];
+  if (!impact) return 0;
+  return impact.schedule[1] ?? impact.schedule['default'] ?? 0;
+}
+
+// ── "Active Decisions" box filter/sort ───────────────────────────────────
+
+interface MinimalDecisionDefForPermanence {
+  impacts: Record<string, MinimalImpactEntry>;
+}
+
+function hasPermanentEffect(def: MinimalDecisionDefForPermanence): boolean {
+  for (const [field, impact] of Object.entries(def.impacts)) {
+    if (field.startsWith('target.') || field.startsWith('competitor')) continue;
+    if ((impact.schedule['default'] ?? 0) !== 0) return true;
+  }
+  return false;
+}
+
+type ActiveDecisionStatus = 'voided' | 'expired' | 'matured' | 'maturing';
+
+function getActiveDecisionStatus(
+  decision: { isMatured: boolean; voidedByLawsuit: boolean; elapsedYears: number },
+  def: MinimalDecisionDefForPermanence | undefined,
+  statuteOfLimitationsYears?: number,
+): ActiveDecisionStatus {
+  if (decision.voidedByLawsuit) return 'voided';
+  if (def && hasPermanentEffect(def) && statuteOfLimitationsYears !== undefined && decision.elapsedYears >= statuteOfLimitationsYears) return 'expired';
+  return decision.isMatured ? 'matured' : 'maturing';
+}
+
+type DecisionBoxItem =
+  | { kind: 'queued'; name: string; targetName?: string }
+  | { kind: 'active'; name: string; targetName?: string; status: ActiveDecisionStatus; deployedYear: number };
+
+type DecisionBoxFilterStatus = 'All' | 'Queued' | 'Maturing' | 'Matured' | 'Voided — Sued' | 'Expired';
+
+const ACTIVE_DECISION_STATUS_LABELS: Record<ActiveDecisionStatus, DecisionBoxFilterStatus> = {
+  voided: 'Voided — Sued',
+  expired: 'Expired',
+  matured: 'Matured',
+  maturing: 'Maturing',
+};
+
+function decisionBoxItemStatus(item: DecisionBoxItem): DecisionBoxFilterStatus {
+  return item.kind === 'queued' ? 'Queued' : ACTIVE_DECISION_STATUS_LABELS[item.status];
+}
+
+function getDecisionBoxTurn(item: DecisionBoxItem, round: number): number {
+  return item.kind === 'queued' ? round : item.deployedYear + 1;
+}
+
+function sortDecisionBoxItems(items: DecisionBoxItem[], field: 'turn' | 'target' | 'name', direction: 'asc' | 'desc', round: number): DecisionBoxItem[] {
+  const sorted = [...items];
+  sorted.sort((a, b) => {
+    const diff = field === 'turn'
+      ? getDecisionBoxTurn(a, round) - getDecisionBoxTurn(b, round)
+      : field === 'target'
+        ? (a.targetName ?? '').localeCompare(b.targetName ?? '')
+        : a.name.localeCompare(b.name);
+    return direction === 'desc' ? -diff : diff;
+  });
+  return sorted;
 }
 
 /** Calculate adjusted probability for a defendant case */
@@ -254,13 +349,14 @@ function detectNewlySettledCases<T extends MinimalLegalCaseForVerdict>(
   return results;
 }
 
-// ── Incoming attack hint disappears once sued over with a non-zero-probability ground ──
+// ── Incoming attack hint disappears once a real case exists against this exact attacking
+// decision instance — matched by instance id (defendantDecisionInstanceId), not by
+// requiring the ground sued over to be the suggested one ──
 
 interface MinimalIncomingAttack {
+  attackId?: string;
   attackerId?: string;
   decisionName?: string;
-  suggestedGroundName?: string;
-  successProbability?: number;
 }
 
 interface MinimalPendingLawsuit {
@@ -272,7 +368,7 @@ interface MinimalPendingLawsuit {
 interface MinimalLegalCaseForAttack {
   defendantId: string;
   decisionName: string;
-  groundName: string;
+  defendantDecisionInstanceId?: string;
 }
 
 function isAttackAlreadySuedOver(
@@ -280,14 +376,138 @@ function isAttackAlreadySuedOver(
   pendingLawsuits: MinimalPendingLawsuit[],
   myLegalCases: MinimalLegalCaseForAttack[],
 ): boolean {
-  if (!attack.attackerId || !attack.decisionName || !attack.suggestedGroundName) return false;
-  if (!((attack.successProbability ?? 0) > 0)) return false;
-  const matches = (targetId: string, decisionName: string, groundName: string) =>
-    targetId === attack.attackerId && decisionName === attack.decisionName && groundName === attack.suggestedGroundName;
+  if (!attack.attackerId || !attack.decisionName) return false;
   return (
-    pendingLawsuits.some((l) => matches(l.targetId, l.decisionName, l.groundName)) ||
-    myLegalCases.some((c) => matches(c.defendantId, c.decisionName, c.groundName))
+    pendingLawsuits.some((l) => l.targetId === attack.attackerId && l.decisionName === attack.decisionName) ||
+    myLegalCases.some((c) => c.defendantId === attack.attackerId && c.decisionName === attack.decisionName && c.defendantDecisionInstanceId === attack.attackId)
   );
+}
+
+// ── Cap table (OWNERSHIP panel behind STOCK VALUE) — every current shareholder of a
+// company, largest stake first, with a resolved display name ──
+
+const SELF_OWNERSHIP_KEY = 'self';
+const EXTERNAL_MARKET_KEY = 'EXTERNAL_MARKET';
+
+interface MinimalPlayerForCapTable {
+  playerId: string;
+  playerName: string;
+  variables: { totalSharesOutstanding?: number; shareOwnership?: Record<string, number> };
+  derived: { stockValue?: number };
+}
+
+interface CapTableRow {
+  key: string;
+  name: string;
+  fraction: number;
+  shares: number;
+  value: number;
+  color: string;
+}
+
+const OTHER_HOLDER_COLORS = ['#2563eb', '#7c3aed', '#0d9488', '#c2410c'];
+
+function buildCapTable(target: MinimalPlayerForCapTable, viewerId: string, allPlayers: MinimalPlayerForCapTable[]): CapTableRow[] {
+  const totalShares = target.variables.totalSharesOutstanding ?? 0;
+  const stockValue = target.derived.stockValue ?? 0;
+  const ownership = target.variables.shareOwnership ?? {};
+  let otherColorIdx = 0;
+
+  return Object.entries(ownership)
+    .filter(([, fraction]) => fraction > 0.0005)
+    .sort(([, a], [, b]) => b - a)
+    .map(([key, fraction]) => {
+      let name: string;
+      let color: string;
+      if (key === SELF_OWNERSHIP_KEY) {
+        const isViewer = target.playerId === viewerId;
+        name = isViewer ? 'You' : target.playerName;
+        color = isViewer ? '#dc2626' : '#9ca3af';
+      } else if (key === EXTERNAL_MARKET_KEY) {
+        name = 'Public Market';
+        color = '#d1d5db';
+      } else if (key === viewerId) {
+        name = 'You';
+        color = '#dc2626';
+      } else {
+        name = allPlayers.find((p) => p.playerId === key)?.playerName ?? 'Former Shareholder';
+        color = OTHER_HOLDER_COLORS[otherColorIdx++ % OTHER_HOLDER_COLORS.length];
+      }
+      return { key, name, fraction, shares: fraction * totalShares, value: fraction * totalShares * stockValue, color };
+    });
+}
+
+// ── Threat Level / Risk Gauge breakdown (ThreatView) — mirrors calcEngine.ts's
+// calculateRiskGauge/calculateOwnershipRisk/calculateSolvencyRisk. The w4/ownershipRisk
+// and w5/solvencyRisk terms are deliberate additions beyond the Risk Gauge's original
+// 3-term design — majority-ownership takeover and going bankrupt from open lawsuits are
+// both fully independent ways to lose the game the original gauge never reflected ──
+
+const THREAT_W1 = 0.32, THREAT_W2 = 0.16, THREAT_W3 = 0.16, THREAT_W4 = 0.16, THREAT_W5 = 0.2;
+const THREAT_LEGAL_EXPOSURE_RATIO_CAP = 0.8;
+const THREAT_TAKEOVER_THRESHOLD_PERCENT = 0.5;
+const THREAT_SOLVENCY_CASH_FLOOR = 1;
+
+interface MinimalVarsForThreat {
+  legalExposureRatio?: number;
+  scrutiny: number;
+  outrage: number;
+  shareOwnership?: Record<string, number>;
+  cash: number;
+}
+
+interface MinimalCaseForThreat {
+  defendantId: string;
+  status: 'negotiating' | 'awaiting_trial' | 'resolved';
+  adjustedProbability?: number;
+  baseProbability: number;
+  stakes: number;
+}
+
+interface MinimalPlayerForThreat {
+  playerId: string;
+  variables: MinimalVarsForThreat;
+  legalCases: MinimalCaseForThreat[];
+}
+
+function computeOwnershipRisk(shareOwnership: Record<string, number> | undefined): number {
+  if (!shareOwnership) return 0;
+  let maxExternalStake = 0;
+  for (const [key, fraction] of Object.entries(shareOwnership)) {
+    if (key === SELF_OWNERSHIP_KEY || key === EXTERNAL_MARKET_KEY) continue;
+    if (fraction > maxExternalStake) maxExternalStake = fraction;
+  }
+  return Math.min(1, maxExternalStake / THREAT_TAKEOVER_THRESHOLD_PERCENT);
+}
+
+function predictNextTurnCashLinear(cashAfterThisTurn: number, cashBeforeThisTurn: number): number {
+  return cashAfterThisTurn + (cashAfterThisTurn - cashBeforeThisTurn);
+}
+
+function computeSolvencyRisk(legalExposure: number, predictedNextCash: number): number {
+  if (legalExposure <= 0) return 0;
+  return Math.min(1, legalExposure / Math.max(predictedNextCash, THREAT_SOLVENCY_CASH_FLOOR));
+}
+
+function computeOpenLegalExposure(myPlayerId: string, legalCases: MinimalCaseForThreat[]): number {
+  return legalCases
+    .filter((c) => c.defendantId === myPlayerId && c.status !== 'resolved')
+    .reduce((sum, c) => sum + (c.adjustedProbability ?? c.baseProbability) * c.stakes, 0);
+}
+
+function computeThreatTerms(data: MinimalPlayerForThreat, prevCash: number) {
+  const v = data.variables;
+  const ler = v.legalExposureRatio ?? 0;
+  const legalTerm = THREAT_W1 * (ler / THREAT_LEGAL_EXPOSURE_RATIO_CAP) * 100;
+  const scrutinyTerm = THREAT_W2 * Math.max(0, Math.min(1, v.scrutiny / 100)) * 100;
+  const outrageTerm = THREAT_W3 * Math.min(1, Math.abs(v.outrage) / 100) * 100;
+  const ownershipRisk = computeOwnershipRisk(v.shareOwnership);
+  const ownershipTerm = THREAT_W4 * ownershipRisk * 100;
+  const legalExposure = computeOpenLegalExposure(data.playerId, data.legalCases);
+  const predictedNextCash = predictNextTurnCashLinear(v.cash, prevCash);
+  const solvencyRisk = computeSolvencyRisk(legalExposure, predictedNextCash);
+  const solvencyTerm = THREAT_W5 * solvencyRisk * 100;
+  return { ler, legalTerm, scrutinyTerm, outrageTerm, ownershipRisk, ownershipTerm, predictedNextCash, solvencyRisk, solvencyTerm };
 }
 
 describe('GamePhase utilities', () => {
@@ -572,7 +792,7 @@ describe('GamePhase utilities', () => {
       expect(result.reason).toContain('Exclusive Deal');
     });
 
-    it('should not block a mutually-exclusive decision once the blocking one has matured (FORMULAS §10)', () => {
+    it('should not block a mutually-exclusive decision once the blocking one has matured', () => {
       const active: MinimalActiveDecision[] = [
         { decisionName: 'Competitor Lock-in', isMatured: true, maturityYears: 1, elapsedYears: 1 },
       ];
@@ -664,6 +884,173 @@ describe('GamePhase utilities', () => {
       expect(grounds.map((g) => g.groundName)).toEqual(
         expect.arrayContaining(['Environmental Violation', 'Securities Violation']),
       );
+    });
+  });
+
+  describe('getSortableKpiFields', () => {
+    it('should return an empty list when nothing in the library has any impacts', () => {
+      expect(getSortableKpiFields([{ impacts: {} }])).toEqual([]);
+    });
+
+    it('should collect own-effect fields across the whole library, deduplicated', () => {
+      const decisions: MinimalDecisionDefForSort[] = [
+        { impacts: { cash: { schedule: { 1: -1000 } } } },
+        { impacts: { outrage: { schedule: { default: 5 } } } },
+        { impacts: { cash: { schedule: { default: 200 } } } }, // same field as another decision
+      ];
+      expect(getSortableKpiFields(decisions)).toEqual(['cash', 'outrage']);
+    });
+
+    it('should exclude target.* and competitor-prefixed fields', () => {
+      const decisions: MinimalDecisionDefForSort[] = [
+        { impacts: { 'target.outrage': { schedule: { default: 10 } }, competitorAwareness: { schedule: { default: 1 } }, cash: { schedule: { 1: -500 } } } },
+      ];
+      expect(getSortableKpiFields(decisions)).toEqual(['cash']);
+    });
+
+    it('should return raw field names sorted by their human-readable label, not the raw name itself', () => {
+      // "installedCapacity" formats to "Installed Capacity", which alphabetically comes
+      // after "Cash" — this would sort the other way if sorted by raw field name instead.
+      const decisions: MinimalDecisionDefForSort[] = [
+        { impacts: { installedCapacity: { schedule: { default: 100 } }, cash: { schedule: { 1: -1 } } } },
+      ];
+      expect(getSortableKpiFields(decisions)).toEqual(['cash', 'installedCapacity']);
+    });
+  });
+
+  describe('getDecisionSortValue', () => {
+    it('should use the explicit year-1 schedule value when present', () => {
+      const def: MinimalDecisionDefForSort = { impacts: { cash: { schedule: { 1: -30000, default: -5000 } } } };
+      expect(getDecisionSortValue(def, 'cash')).toBe(-30000);
+    });
+
+    it('should fall back to the ongoing default when there is no explicit year-1 entry', () => {
+      const def: MinimalDecisionDefForSort = { impacts: { outrage: { schedule: { default: 20 } } } };
+      expect(getDecisionSortValue(def, 'outrage')).toBe(20);
+    });
+
+    it('should return 0 for a field the decision does not touch at all', () => {
+      const def: MinimalDecisionDefForSort = { impacts: { cash: { schedule: { default: -100 } } } };
+      expect(getDecisionSortValue(def, 'outrage')).toBe(0);
+    });
+
+    it('should return 0 when neither an explicit year-1 nor a default value exists', () => {
+      const def: MinimalDecisionDefForSort = { impacts: { cash: { schedule: { 2: -100 } } } };
+      expect(getDecisionSortValue(def, 'cash')).toBe(0);
+    });
+  });
+
+  describe('getActiveDecisionStatus', () => {
+    const maturing = { isMatured: false, voidedByLawsuit: false, elapsedYears: 1 };
+    const matured = { isMatured: true, voidedByLawsuit: false, elapsedYears: 3 };
+
+    it('returns "maturing" for a not-yet-matured, not-voided instance', () => {
+      expect(getActiveDecisionStatus(maturing, undefined)).toBe('maturing');
+    });
+
+    it('returns "matured" once isMatured is true', () => {
+      expect(getActiveDecisionStatus(matured, undefined)).toBe('matured');
+    });
+
+    it('returns "voided" regardless of maturity or statute of limitations', () => {
+      const voided = { isMatured: true, voidedByLawsuit: true, elapsedYears: 100 };
+      const def: MinimalDecisionDefForPermanence = { impacts: { cash: { schedule: { default: -1 } } } };
+      expect(getActiveDecisionStatus(voided, def, 5)).toBe('voided');
+    });
+
+    it('returns "expired" once a permanent-effect instance ages past the statute of limitations', () => {
+      const aged = { isMatured: true, voidedByLawsuit: false, elapsedYears: 10 };
+      const permanentDef: MinimalDecisionDefForPermanence = { impacts: { operatingExpenses: { schedule: { default: 5000 } } } };
+      expect(getActiveDecisionStatus(aged, permanentDef, 10)).toBe('expired');
+    });
+
+    it('does not return "expired" for a non-permanent decision no matter how old it is', () => {
+      const aged = { isMatured: true, voidedByLawsuit: false, elapsedYears: 10 };
+      const finiteDef: MinimalDecisionDefForPermanence = { impacts: { cash: { schedule: { 1: -1000 } } } };
+      expect(getActiveDecisionStatus(aged, finiteDef, 5)).toBe('matured');
+    });
+
+    it('does not return "expired" when elapsedYears has not yet reached the statute', () => {
+      const notYetAged = { isMatured: true, voidedByLawsuit: false, elapsedYears: 4 };
+      const permanentDef: MinimalDecisionDefForPermanence = { impacts: { operatingExpenses: { schedule: { default: 5000 } } } };
+      expect(getActiveDecisionStatus(notYetAged, permanentDef, 5)).toBe('matured');
+    });
+  });
+
+  describe('decisionBoxItemStatus', () => {
+    it('maps a queued item to "Queued" regardless of any active-decision fields', () => {
+      const item: DecisionBoxItem = { kind: 'queued', name: 'Bot Attack' };
+      expect(decisionBoxItemStatus(item)).toBe('Queued');
+    });
+
+    it('maps each active status to its filter label', () => {
+      const base = { kind: 'active' as const, name: 'Bot Attack', deployedYear: 0 };
+      expect(decisionBoxItemStatus({ ...base, status: 'voided' })).toBe('Voided — Sued');
+      expect(decisionBoxItemStatus({ ...base, status: 'expired' })).toBe('Expired');
+      expect(decisionBoxItemStatus({ ...base, status: 'matured' })).toBe('Matured');
+      expect(decisionBoxItemStatus({ ...base, status: 'maturing' })).toBe('Maturing');
+    });
+  });
+
+  describe('getDecisionBoxTurn', () => {
+    it('uses the current round for a still-queued item, since it has no deployedYear yet', () => {
+      const item: DecisionBoxItem = { kind: 'queued', name: 'Bot Attack' };
+      expect(getDecisionBoxTurn(item, 7)).toBe(7);
+    });
+
+    it('uses deployedYear + 1 for an already-active item, ignoring the current round', () => {
+      const item: DecisionBoxItem = { kind: 'active', name: 'Bot Attack', status: 'maturing', deployedYear: 2 };
+      expect(getDecisionBoxTurn(item, 99)).toBe(3);
+    });
+  });
+
+  describe('sortDecisionBoxItems', () => {
+    it('sorts by turn deployed, newest first by default (desc)', () => {
+      const items: DecisionBoxItem[] = [
+        { kind: 'active', name: 'Old One', status: 'matured', deployedYear: 0 },
+        { kind: 'active', name: 'New One', status: 'maturing', deployedYear: 3 },
+        { kind: 'queued', name: 'Just Queued' }, // treated as the current round — strictly after New One's turn 4
+      ];
+      const sorted = sortDecisionBoxItems(items, 'turn', 'desc', 5);
+      expect(sorted.map((i) => i.name)).toEqual(['Just Queued', 'New One', 'Old One']);
+    });
+
+    it('sorts by turn deployed ascending when asked', () => {
+      const items: DecisionBoxItem[] = [
+        { kind: 'active', name: 'New One', status: 'maturing', deployedYear: 4 },
+        { kind: 'active', name: 'Old One', status: 'matured', deployedYear: 0 },
+      ];
+      const sorted = sortDecisionBoxItems(items, 'turn', 'asc', 5);
+      expect(sorted.map((i) => i.name)).toEqual(['Old One', 'New One']);
+    });
+
+    it('sorts by attacked player name alphabetically, with no target sorting first', () => {
+      const items: DecisionBoxItem[] = [
+        { kind: 'active', name: 'Blind Decision', status: 'matured', deployedYear: 0 }, // no targetName
+        { kind: 'active', name: 'Attack On Carol', targetName: 'Carol', status: 'matured', deployedYear: 0 },
+        { kind: 'active', name: 'Attack On Alice', targetName: 'Alice', status: 'matured', deployedYear: 0 },
+      ];
+      const sorted = sortDecisionBoxItems(items, 'target', 'asc', 1);
+      expect(sorted.map((i) => i.name)).toEqual(['Blind Decision', 'Attack On Alice', 'Attack On Carol']);
+    });
+
+    it('sorts by decision name, A→Z ascending and Z→A descending', () => {
+      const items: DecisionBoxItem[] = [
+        { kind: 'queued', name: 'Zebra Move' },
+        { kind: 'queued', name: 'Aardvark Move' },
+      ];
+      expect(sortDecisionBoxItems(items, 'name', 'asc', 1).map((i) => i.name)).toEqual(['Aardvark Move', 'Zebra Move']);
+      expect(sortDecisionBoxItems(items, 'name', 'desc', 1).map((i) => i.name)).toEqual(['Zebra Move', 'Aardvark Move']);
+    });
+
+    it('does not mutate the input array', () => {
+      const items: DecisionBoxItem[] = [
+        { kind: 'queued', name: 'Z' },
+        { kind: 'queued', name: 'A' },
+      ];
+      const original = [...items];
+      sortDecisionBoxItems(items, 'name', 'asc', 1);
+      expect(items).toEqual(original);
     });
   });
 
@@ -848,10 +1235,9 @@ describe('GamePhase utilities', () => {
   describe('isAttackAlreadySuedOver', () => {
     const attacker = 'player-2';
     const baseAttack = (overrides: Partial<MinimalIncomingAttack> = {}): MinimalIncomingAttack => ({
+      attackId: 'bot-attack-inst-1',
       attackerId: attacker,
       decisionName: 'Bot Attack',
-      suggestedGroundName: 'CFAA Digital Sabotage Lawsuit',
-      successProbability: 0.4,
       ...overrides,
     });
 
@@ -864,9 +1250,24 @@ describe('GamePhase utilities', () => {
       expect(isAttackAlreadySuedOver(baseAttack(), pending, [])).toBe(true);
     });
 
-    it('is true once a matching real case already exists, regardless of its status', () => {
-      const cases = [{ defendantId: attacker, decisionName: 'Bot Attack', groundName: 'CFAA Digital Sabotage Lawsuit' }];
+    it('is true once a real case exists claiming this exact attacking instance, regardless of its status', () => {
+      const cases = [{ defendantId: attacker, decisionName: 'Bot Attack', defendantDecisionInstanceId: 'bot-attack-inst-1' }];
       expect(isAttackAlreadySuedOver(baseAttack(), [], cases)).toBe(true);
+    });
+
+    it('is true (regression) even when the ground sued over is NOT the suggested one — a manually-picked ground now counts, as long as it claimed the real instance', () => {
+      // This is the actual reported bug: a case existed against the real attacking
+      // instance, but over a ground other than whatever pickBestGround would have
+      // suggested, and the hint stayed stuck up forever under the old ground-name check.
+      const cases = [{ defendantId: attacker, decisionName: 'Bot Attack', defendantDecisionInstanceId: 'bot-attack-inst-1' }];
+      expect(isAttackAlreadySuedOver(baseAttack(), [], cases)).toBe(true);
+    });
+
+    it('is true (regression) even with no investigation at all — filing never required investigating the attacker first', () => {
+      const cases = [{ defendantId: attacker, decisionName: 'Bot Attack', defendantDecisionInstanceId: 'bot-attack-inst-1' }];
+      // A bare attack with only attackId/attackerId/decisionName revealed — the minimum
+      // any incoming attack ever carries, well below investigationLevel 3.
+      expect(isAttackAlreadySuedOver({ attackId: 'bot-attack-inst-1', attackerId: attacker, decisionName: 'Bot Attack' }, [], cases)).toBe(true);
     });
 
     it('is false when the queued lawsuit is against a different attacker', () => {
@@ -879,20 +1280,188 @@ describe('GamePhase utilities', () => {
       expect(isAttackAlreadySuedOver(baseAttack(), pending, [])).toBe(false);
     });
 
-    it('is false when the queued lawsuit uses a different ground than the one suggested — a manually-picked ground doesn\'t count', () => {
-      const pending = [{ targetId: attacker, decisionName: 'Bot Attack', groundName: 'Some Other Ground' }];
-      expect(isAttackAlreadySuedOver(baseAttack(), pending, [])).toBe(false);
+    it('is false when a real case exists for this attacker/decision but against a DIFFERENT instance (e.g. a redeployed one) than the one attacking now', () => {
+      const cases = [{ defendantId: attacker, decisionName: 'Bot Attack', defendantDecisionInstanceId: 'some-other-instance' }];
+      expect(isAttackAlreadySuedOver(baseAttack(), [], cases)).toBe(false);
     });
 
-    it('is false when the suggested ground\'s win probability is exactly 0% — not a "correct" lawsuit', () => {
-      const pending = [{ targetId: attacker, decisionName: 'Bot Attack', groundName: 'CFAA Digital Sabotage Lawsuit' }];
-      expect(isAttackAlreadySuedOver(baseAttack({ successProbability: 0 }), pending, [])).toBe(false);
+    it('is false when the real case is a wrong-guess/time-barred one with no claimed instance at all', () => {
+      const cases = [{ defendantId: attacker, decisionName: 'Bot Attack', defendantDecisionInstanceId: undefined }];
+      expect(isAttackAlreadySuedOver(baseAttack(), [], cases)).toBe(false);
+    });
+  });
+
+  describe('buildCapTable', () => {
+    const makePlayer = (playerId: string, playerName: string, overrides: Partial<MinimalPlayerForCapTable['variables']> = {}): MinimalPlayerForCapTable => ({
+      playerId,
+      playerName,
+      variables: { totalSharesOutstanding: 1_000_000, shareOwnership: {}, ...overrides },
+      derived: { stockValue: 2 },
     });
 
-    it('is false before investigation level 3 — no suggested ground/probability to check yet', () => {
-      const notFullyInvestigated = baseAttack({ suggestedGroundName: undefined, successProbability: undefined });
-      const pending = [{ targetId: attacker, decisionName: 'Bot Attack', groundName: 'CFAA Digital Sabotage Lawsuit' }];
-      expect(isAttackAlreadySuedOver(notFullyInvestigated, pending, [])).toBe(false);
+    it('labels the viewer\'s own company\'s self-key row "You", sorted largest-first, with correct share counts and dollar values', () => {
+      const me = makePlayer('player-1', 'Alice', { shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.6, [EXTERNAL_MARKET_KEY]: 0.4 } });
+      const rows = buildCapTable(me, 'player-1', [me]);
+      expect(rows).toEqual([
+        { key: SELF_OWNERSHIP_KEY, name: 'You', fraction: 0.6, shares: 600_000, value: 1_200_000, color: '#dc2626' },
+        { key: EXTERNAL_MARKET_KEY, name: 'Public Market', fraction: 0.4, shares: 400_000, value: 800_000, color: '#d1d5db' },
+      ]);
+    });
+
+    it('labels a rival company\'s own self-key row with the rival\'s name, not "You"', () => {
+      const rival = makePlayer('player-2', 'Bob Corp', { shareOwnership: { [SELF_OWNERSHIP_KEY]: 1.0 } });
+      const rows = buildCapTable(rival, 'player-1', [rival]);
+      expect(rows[0]).toMatchObject({ name: 'Bob Corp', color: '#9ca3af' });
+    });
+
+    it('labels the viewer\'s own real playerId as "You" when they hold a stake in someone else\'s company', () => {
+      const rival = makePlayer('player-2', 'Bob Corp', { shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.7, 'player-1': 0.3 } });
+      const rows = buildCapTable(rival, 'player-1', [rival]);
+      const myRow = rows.find((r) => r.key === 'player-1');
+      expect(myRow).toMatchObject({ name: 'You', fraction: 0.3, color: '#dc2626' });
+    });
+
+    it('resolves a third player\'s real playerId to their name via allPlayers', () => {
+      const me = makePlayer('player-1', 'Alice');
+      const rival = makePlayer('player-2', 'Bob Corp', { shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.6, 'player-3': 0.4 } });
+      const carol = makePlayer('player-3', 'Carol Inc');
+      const rows = buildCapTable(rival, 'player-1', [me, carol]);
+      const carolRow = rows.find((r) => r.key === 'player-3');
+      expect(carolRow).toMatchObject({ name: 'Carol Inc', fraction: 0.4 });
+    });
+
+    it('falls back to a generic label for a holder no longer among allPlayers (eliminated since)', () => {
+      const rival = makePlayer('player-2', 'Bob Corp', { shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.8, 'player-99': 0.2 } });
+      const rows = buildCapTable(rival, 'player-1', [rival]);
+      const orphanRow = rows.find((r) => r.key === 'player-99');
+      expect(orphanRow?.name).toBe('Former Shareholder');
+    });
+
+    it('omits a holder whose fraction has rounded down to (effectively) zero', () => {
+      const me = makePlayer('player-1', 'Alice', { shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.9999, 'player-2': 0.0001 } });
+      const rows = buildCapTable(me, 'player-1', [me]);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].key).toBe(SELF_OWNERSHIP_KEY);
+    });
+
+    it('cycles through the other-holder color set in descending-fraction order, without reusing "You"/founder/public-market colors', () => {
+      const me = makePlayer('player-1', 'Alice', {
+        shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.4, 'player-2': 0.3, 'player-3': 0.2, [EXTERNAL_MARKET_KEY]: 0.1 },
+      });
+      const bob = makePlayer('player-2', 'Bob');
+      const carol = makePlayer('player-3', 'Carol');
+      const rows = buildCapTable(me, 'player-1', [me, bob, carol]);
+      expect(rows.map((r) => [r.name, r.color])).toEqual([
+        ['You', '#dc2626'],
+        ['Bob', OTHER_HOLDER_COLORS[0]],
+        ['Carol', OTHER_HOLDER_COLORS[1]],
+        ['Public Market', '#d1d5db'],
+      ]);
+    });
+  });
+
+  describe('computeThreatTerms (Threat Level / Risk Gauge breakdown)', () => {
+    const player = (overrides: Partial<MinimalVarsForThreat> = {}, legalCases: MinimalCaseForThreat[] = []): MinimalPlayerForThreat => ({
+      playerId: 'player-1',
+      variables: { scrutiny: 0, outrage: 0, cash: 100000, ...overrides },
+      legalCases,
+    });
+
+    it('is 0 across the board with no legal exposure, scrutiny, outrage, outside shareholders, or open cases', () => {
+      const terms = computeThreatTerms(player(), 100000); // flat cash trend
+      expect(terms).toEqual({
+        ler: 0, legalTerm: 0, scrutinyTerm: 0, outrageTerm: 0,
+        ownershipRisk: 0, ownershipTerm: 0,
+        predictedNextCash: 100000, solvencyRisk: 0, solvencyTerm: 0,
+      });
+    });
+
+    it('clamps a negative scrutiny value to a 0 term, not a negative one (regression — found by random-play simulation)', () => {
+      // Unlike outrage (already non-negative via Math.abs before this function ever sees
+      // it), scrutiny has no floor of its own — a negative value used to flow straight
+      // through into a negative scrutinyTerm with no lower clamp, mirroring the same gap
+      // the real riskGauge formula had (see calcEngine.ts/CLAUDE.md).
+      const terms = computeThreatTerms(player({ scrutiny: -80 }), 100000);
+      expect(terms.scrutinyTerm).toBe(0);
+    });
+
+    it('is 0 when only self and EXTERNAL_MARKET hold shares — neither can trigger a takeover', () => {
+      const terms = computeThreatTerms(player({ shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.7, [EXTERNAL_MARKET_KEY]: 0.3 } }), 100000);
+      expect(terms.ownershipRisk).toBe(0);
+      expect(terms.ownershipTerm).toBe(0);
+    });
+
+    it('rises as the largest external holder approaches the 50% takeover threshold', () => {
+      const terms = computeThreatTerms(player({ shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.75, rival: 0.25 } }), 100000);
+      expect(terms.ownershipRisk).toBeCloseTo(0.5, 5); // 0.25 / 0.5
+      expect(terms.ownershipTerm).toBeCloseTo(THREAT_W4 * 0.5 * 100, 5); // weight 0.16 -> 8
+    });
+
+    it('caps ownership risk at 1 once a holder is at or beyond the threshold', () => {
+      const terms = computeThreatTerms(player({ shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.1, rival: 0.9 } }), 100000);
+      expect(terms.ownershipRisk).toBe(1);
+      expect(terms.ownershipTerm).toBeCloseTo(THREAT_W4 * 100, 5); // weight 0.16 -> 16
+    });
+
+    it('uses the single largest external stake, not a sum across multiple holders', () => {
+      const terms = computeThreatTerms(player({ shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.5, rivalA: 0.3, rivalB: 0.2 } }), 100000);
+      expect(terms.ownershipRisk).toBeCloseTo(0.6, 5); // rivalA alone (0.3) / 0.5, not 0.5 combined
+    });
+
+    it('projects predicted next-turn cash by extrapolating this turn\'s own trend', () => {
+      // Cash rose 100000 -> 130000 this turn -> projected to keep rising to 160000.
+      const terms = computeThreatTerms(player({ cash: 130000 }), 100000);
+      expect(terms.predictedNextCash).toBe(160000);
+    });
+
+    it('is 0 solvency risk with no open cases against me, regardless of cash trend', () => {
+      const terms = computeThreatTerms(player({ cash: 10000 }), 200000); // steep decline, but no cases
+      expect(terms.solvencyRisk).toBe(0);
+      expect(terms.solvencyTerm).toBe(0);
+    });
+
+    it('ignores an open case where I am the plaintiff, not the defendant', () => {
+      const cases: MinimalCaseForThreat[] = [{ defendantId: 'someone-else', status: 'negotiating', baseProbability: 1, stakes: 100000 }];
+      const terms = computeThreatTerms(player({}, cases), 100000);
+      expect(terms.solvencyRisk).toBe(0);
+    });
+
+    it('ignores a resolved case against me — only still-open cases count', () => {
+      const cases: MinimalCaseForThreat[] = [{ defendantId: 'player-1', status: 'resolved', baseProbability: 1, stakes: 100000 }];
+      const terms = computeThreatTerms(player({}, cases), 100000);
+      expect(terms.solvencyRisk).toBe(0);
+    });
+
+    it('rises as open, probability-weighted case exposure approaches predicted next-turn cash', () => {
+      const cases: MinimalCaseForThreat[] = [{ defendantId: 'player-1', status: 'negotiating', adjustedProbability: 0.5, baseProbability: 0.1, stakes: 100000 }];
+      // legalExposure = 0.5 * 100000 = 50000 (uses adjustedProbability over baseProbability).
+      // Flat cash trend -> predictedNextCash = 100000 -> solvencyRisk = 50000/100000 = 0.5.
+      const terms = computeThreatTerms(player({ cash: 100000 }, cases), 100000);
+      expect(terms.solvencyRisk).toBeCloseTo(0.5, 5);
+      expect(terms.solvencyTerm).toBeCloseTo(THREAT_W5 * 0.5 * 100, 5);
+    });
+
+    it('reads as MORE dangerous when the cash trend is declining, for the exact same current cash and exposure', () => {
+      const cases: MinimalCaseForThreat[] = [{ defendantId: 'player-1', status: 'negotiating', adjustedProbability: 1, baseProbability: 1, stakes: 60000 }];
+      const decliningTrend = computeThreatTerms(player({ cash: 100000 }, cases), 150000); // was 150k, now 100k
+      const risingTrend = computeThreatTerms(player({ cash: 100000 }, cases), 50000); // was 50k, now 100k
+      expect(decliningTrend.solvencyRisk).toBeGreaterThan(risingTrend.solvencyRisk);
+    });
+
+    it('caps solvency risk at 1 (not negative or >1) when predicted next-turn cash is at or below zero', () => {
+      const cases: MinimalCaseForThreat[] = [{ defendantId: 'player-1', status: 'negotiating', adjustedProbability: 1, baseProbability: 1, stakes: 40000 }];
+      const terms = computeThreatTerms(player({ cash: 0 }, cases), 200000); // sharp decline into zero
+      expect(terms.solvencyRisk).toBe(1);
+    });
+
+    it('combines all five terms at their configured weights', () => {
+      const cases: MinimalCaseForThreat[] = [{ defendantId: 'player-1', status: 'negotiating', adjustedProbability: 1, baseProbability: 1, stakes: 100000 }];
+      const terms = computeThreatTerms(
+        player({ legalExposureRatio: 0.8, scrutiny: 100, outrage: 100, cash: 100000, shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.5, rival: 0.5 } }, cases),
+        100000, // flat trend -> predictedNextCash = 100000 -> solvencyRisk = 100000/100000 = 1
+      );
+      // w1*1 + w2*1 + w3*1 + w4*1 + w5*1 = 0.32 + 0.16 + 0.16 + 0.16 + 0.2 = 1.0 -> 100
+      expect(terms.legalTerm + terms.scrutinyTerm + terms.outrageTerm + terms.ownershipTerm + terms.solvencyTerm).toBeCloseTo(100, 5);
     });
   });
 });

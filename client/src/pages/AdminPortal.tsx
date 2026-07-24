@@ -542,7 +542,8 @@ function NewDecisionForm({ token, onCancel, onCreated }: { token: string; onCanc
 }
 
 // ============================================================
-// Formulas editor — the pure, scalar, named-input math from FORMULAS.md §2-§7
+// Formulas editor — the 23 pure, scalar, named-input math formulas (competitiveness,
+// P&L, risk gauge, etc.)
 // (see CLAUDE.md's "Decisions/config are DB-backed, not static JSON" for the
 // formula-vs-procedural split). Fixed key set — no create/delete, only
 // expression/description are ever written. Single-line text inputs, not JSON

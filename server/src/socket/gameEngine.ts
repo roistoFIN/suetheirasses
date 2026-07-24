@@ -24,9 +24,16 @@ import {
   type FormulaInfo,
   type GameReadyUpdateResponse,
   type KpiHistoryResponse,
+  type KpiSnapshotPoint,
+  type LegalCaseData,
+  type GameTimelineResponse,
+  type TimelinePlayerInfo,
+  type TimelineDecisionEvent,
+  type TimelineLawsuitEvent,
 } from '@suetheirasses/shared';
 import { validateRoomJoin, validateSubmitDecisions, validateDigDeeper, validateFileLawsuit, validateRoomRejoin, validateAnnualReportRequest, validateChatMessage, validateGameReady, validateRoomSetInviteOnly, validateKpiHistoryRequest, validateMakeOffer, validateAcceptOffer, validateGoToCourt, validateDigDeeperCase } from '../validation/schemas.js';
 import { GameLoop } from '../engine/gameLoop.js';
+import type { BankruptedPlayer } from '../engine/gameLoop.js';
 import { generateAnnualReportBlurb } from '../services/llmService.js';
 
 export class GameEngine {
@@ -49,7 +56,7 @@ export class GameEngine {
   // Each room's last resolved turn (or round-1 starting snapshot) — re-sent to a
   // reconnecting player immediately instead of making them wait for the next turn.
   private lastTurnResults: Map<string, TurnResolutionResult> = new Map();
-  // Core turn-resolution engine — authoritative source of all GAME_PHASE calculations (FORMULAS.md).
+  // Core turn-resolution engine — authoritative source of all GAME_PHASE calculations.
   // Definite-assignment: only ever used after loadGameData() resolves (see index.ts's
   // start() — awaited before httpServer.listen, so no socket can connect first).
   private gameLoop!: GameLoop;
@@ -62,7 +69,7 @@ export class GameEngine {
   // playerStartingValues/adminVariables, live-reloaded on every admin config edit.
   private gameConfig!: GameConfig;
   // In-memory mirror of the `formulas` table — the pure, scalar, named-input
-  // formulas from FORMULAS.md §2-§7, live-reloaded on every admin formula edit.
+  // formulas (competitiveness, P&L, risk gauge, etc.), live-reloaded on every admin formula edit.
   // Fixed key set (no create/delete via /admin) — see CLAUDE.md.
   private formulasByKey!: Map<string, { expression: string; description: string }>;
 
@@ -152,6 +159,17 @@ export class GameEngine {
           engineState: outcome.engineStateUpdate as any,
         },
       });
+      // The dig that lands exactly on investigationLevel 1 is the one that first reveals
+      // the attacker's identity without yet revealing the decision itself — see
+      // `enrichIncomingAttackBlurbs`'s doc comment for why this can't happen inside
+      // `GameLoop.digDeeper` itself.
+      if (outcome.attack.investigationLevel === 1 && outcome.attack.attackerId) {
+        const attackerCompany = dbPlayers.find((p) => p.id === outcome.attack.attackerId)?.company;
+        const activeDecisions = ((attackerCompany?.engineState as any)?.activeDecisions ?? []) as import('../engine/gameLoop.js').PersistedDecisionInstance[];
+        const instance = activeDecisions.find((d) => d.id === outcome.attack.attackId);
+        const blurb = await this.annualReportBlurbForInstance(instance);
+        if (blurb) outcome.attack.annualReportBlurb = blurb;
+      }
     }
     return outcome;
   }
@@ -204,6 +222,21 @@ export class GameEngine {
     if (outcome.success) {
       await this.persistLegalCaseAction(outcome);
       this.emitLegalCaseUpdate(roomId, outcome);
+      // The only out-of-band case action that can resolve a case outside resolveTurn
+      // (makeOffer never changes status; goToCourt only ever reaches 'awaiting_trial',
+      // never loggable as "resolved") — so this is the one other call site
+      // persistLegalCaseHistory's per-turn hook can't cover on its own. The row is
+      // guaranteed to already exist by the time acceptOffer can run (filing only ever
+      // happens inside resolveTurn's Step 8), so the defensive `create` branch inside
+      // recordLegalCaseHistory should never actually populate names here in practice.
+      if (outcome.case.status === 'resolved') {
+        const round = this.rooms.get(roomId)?.room.currentPhaseRound ?? 0;
+        try {
+          await this.recordLegalCaseHistory(outcome.case, round, new Map());
+        } catch (err) {
+          console.error(`[acceptOffer] Failed to persist history for case ${caseId}, round ${round}:`, err);
+        }
+      }
     }
     return outcome;
   }
@@ -297,6 +330,55 @@ export class GameEngine {
     return entries;
   }
 
+  /** Same AI-narrated (or `competitorsView`-fallback) blurb `getAnnualReport` generates
+   * for one decision instance, reused for `IncomingAttackInfo.annualReportBlurb` (see its
+   * doc comment) — `undefined` if the instance is unknown or its definition has no
+   * `competitorsView` to draw a fallback from (mirrors `getAnnualReport`'s own filter). */
+  private async annualReportBlurbForInstance(instance: import('../engine/gameLoop.js').PersistedDecisionInstance | undefined): Promise<string | undefined> {
+    if (!instance) return undefined;
+    const def = this.decisionsByName.get(instance.definitionName);
+    if (!def?.competitorsView?.length) return undefined;
+    const fallback = def.competitorsView[instance.elapsedYears % def.competitorsView.length];
+    return generateAnnualReportBlurb({
+      decisionName: def.decision,
+      description: def.description,
+      elapsedYears: instance.elapsedYears,
+      fallback,
+    });
+  }
+
+  /**
+   * Fills in `IncomingAttackInfo.annualReportBlurb` (mutating in place) for every attack
+   * at investigationLevel === 1, across every player's `incomingAttacks` — the tier where
+   * the attacker's identity is known but the decision itself isn't yet (see
+   * `revealAttack`'s tiers in `GameLoop`). Deliberately lives here, not inside
+   * `GameLoop.buildIncomingAttacks`/`revealAttack`: those run inside the pure, synchronous
+   * `resolveTurn`/`getInitialSnapshot`, which must never do network I/O (CLAUDE.md's
+   * two-layer architecture split) — this mirrors why `getAnnualReport` itself is entirely
+   * `GameEngine`'s job, not `GameLoop`'s. `activeDecisionsByPlayer` must be POST-turn
+   * engine state (`companyUpdates`, not the pre-turn `dbPlayers` this same call resolved
+   * from) — a decision deployed or matured this very turn must resolve the same instance
+   * `buildIncomingAttacks` itself just described.
+   */
+  private async enrichIncomingAttackBlurbs(
+    players: PlayerTurnResult[],
+    activeDecisionsByPlayer: Map<string, import('../engine/gameLoop.js').PersistedDecisionInstance[]>,
+  ): Promise<void> {
+    const tasks: Promise<void>[] = [];
+    for (const player of players) {
+      for (const attack of player.incomingAttacks) {
+        if (attack.investigationLevel !== 1 || !attack.attackerId) continue;
+        const instance = activeDecisionsByPlayer.get(attack.attackerId)?.find((d) => d.id === attack.attackId);
+        tasks.push(
+          this.annualReportBlurbForInstance(instance).then((blurb) => {
+            if (blurb) attack.annualReportBlurb = blurb;
+          }),
+        );
+      }
+    }
+    await Promise.all(tasks);
+  }
+
   /**
    * KPI history (persisted `KpiSnapshot` rows, oldest round first) for either the
    * requesting player themselves (`includePrediction: true`, adds a 3-turn-ahead
@@ -339,6 +421,109 @@ export class GameEngine {
   }
 
   /**
+   * The whole room's game-timeline replay/spectator data — every player (active or
+   * eliminated), every decision ever deployed, every lawsuit ever filed/resolved. Unlike
+   * `getKpiHistory` (per-target, fetched fresh per open graph), this returns everything
+   * at once: the single data source behind both the live spectator view (an eliminated
+   * player who chose to keep watching) and the finished-game replay (the Game Over
+   * screen, for everyone) — see CLAUDE.md's game-timeline section.
+   *
+   * Pure serialization — no `GameLoop`/`DecisionEngine` involvement needed. Decision
+   * names are resolved client-side against the already-cached deck (the same pattern
+   * `ActiveDecisionCard` already uses), and everything else here is either already in
+   * Postgres verbatim (`KpiSnapshot`, `LegalCaseHistory`) or raw JSON already sitting in
+   * `Company.engineState.activeDecisions` (append-only, never pruned — see
+   * `PersistedDecisionInstance`'s doc comment in `gameLoop.ts`).
+   *
+   * Queries every `Player` in the room regardless of `bankrupt` (mirrors
+   * `buildGameOverPayload`'s "everyone, not just active" shape, not
+   * `loadActiveCompanyPlayers`'s active-only one) — an eliminated player's data must
+   * still appear in the replay.
+   */
+  async getGameTimeline(roomId: string): Promise<GameTimelineResponse | null> {
+    const roomState = this.rooms.get(roomId);
+    if (!roomState) return null;
+    // A room being actively watched (even read-only, no state-mutating actions) should
+    // never get swept up by the stale-room cleanup out from under a spectator.
+    this.touchRoomActivity(roomId);
+
+    // Stable join order — client-side color assignment for the multi-player race chart
+    // relies on `players` always arriving in the same order across re-fetches, so the
+    // same player always lands on the same categorical color slot.
+    const dbPlayers = await this.prisma.player.findMany({
+      where: { roomId },
+      include: { company: true },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const players: TimelinePlayerInfo[] = dbPlayers.map((p) => ({
+      playerId: p.id,
+      playerName: p.name,
+      bankrupt: p.bankrupt,
+      eliminatedRound: (p as any).eliminatedRound ?? undefined,
+    }));
+
+    const kpiRows = await this.prisma.kpiSnapshot.findMany({
+      where: { player: { roomId } },
+      orderBy: [{ playerId: 'asc' }, { round: 'asc' }],
+    });
+    const kpiHistory: Record<string, KpiSnapshotPoint[]> = {};
+    for (const r of kpiRows) {
+      const point: KpiSnapshotPoint = { round: r.round, variables: r.variables as any, derived: r.derived as any, riskGauge: r.riskGauge };
+      (kpiHistory[r.playerId] ??= []).push(point);
+    }
+
+    const decisions: TimelineDecisionEvent[] = [];
+    for (const p of dbPlayers) {
+      const activeDecisions = ((p.company?.engineState as any)?.activeDecisions ?? []) as Array<Record<string, any>>;
+      for (const d of activeDecisions) {
+        decisions.push({
+          instanceId: d.id,
+          playerId: p.id,
+          decisionName: d.definitionName,
+          deployedYear: d.deployedYear,
+          targetId: d.targetId,
+          voidedByLawsuit: !!d.voidedByLawsuit,
+        });
+      }
+    }
+
+    const lawsuitRows = await this.prisma.legalCaseHistory.findMany({
+      where: { roomId },
+      orderBy: { filedRound: 'asc' },
+    });
+    const lawsuits: TimelineLawsuitEvent[] = lawsuitRows.map((c: any) => ({
+      id: c.id,
+      plaintiffId: c.plaintiffId,
+      plaintiffName: c.plaintiffName,
+      defendantId: c.defendantId,
+      defendantName: c.defendantName,
+      decisionName: c.decisionName,
+      groundName: c.groundName,
+      description: c.description,
+      stakes: Number(c.stakes),
+      filedRound: c.filedRound,
+      resolvedRound: c.resolvedRound ?? undefined,
+      verdict: c.verdict ?? undefined,
+    }));
+
+    // The turn:resolved cache already carries gameOver/winnerId — no need to
+    // re-derive the win condition here.
+    const cachedResult = this.lastTurnResults.get(roomId);
+
+    return {
+      roomId,
+      currentRound: roomState.room.currentPhaseRound,
+      gameOver: roomState.room.status === RoomStatus.AFTERMATH,
+      winnerId: cachedResult?.winnerId,
+      players,
+      kpiHistory,
+      decisions,
+      lawsuits,
+    };
+  }
+
+  /**
    * Broadcast each player's starting-position snapshot the instant the game starts,
    * so the client renders the game room immediately instead of a blank loading state
    * for the whole first round's timer.
@@ -359,8 +544,10 @@ export class GameEngine {
    * unique-constraint crash on a UI-triggered write path is worse than a harmless
    * overwrite). Never called for a bankrupted player's final round — they're excluded
    * from `outcome.result.players`/`getInitialSnapshot`'s output the same way
-   * `companyUpdates` excludes them (see `BankruptedPlayer.finalCash`'s doc comment);
-   * their last real cash figure already lives on the Game Over screen instead.
+   * `companyUpdates` excludes them (see `BankruptedPlayer.finalCash`'s doc comment).
+   * `resolveGameTurn`'s bankruptcy-persistence loop writes that final round's
+   * `KpiSnapshot` separately, using `BankruptedPlayer.finalVariables`/`finalDerived`/
+   * `finalRiskGauge` — see the comment there.
    */
   private async persistKpiSnapshots(players: PlayerTurnResult[], round: number): Promise<void> {
     for (const p of players) {
@@ -387,6 +574,88 @@ export class GameEngine {
         // follows this call.
         console.error(`[persistKpiSnapshots] Failed to persist KPI snapshot for player ${p.playerId}, round ${round}:`, err);
       }
+    }
+  }
+
+  /**
+   * Durable lawsuit-lifecycle log for the game-timeline replay/spectator feature — see
+   * the `LegalCaseHistory` Prisma model's doc comment for why this has to exist at all
+   * (a resolved `LegalCaseData` only survives one extra turn in `engineState.legalCases`
+   * before `GameLoop`'s Step 7 prunes it from persisted state for good). `GameLoop`
+   * itself never touches this table — it's pure, no I/O — so this reads every case
+   * already present in this turn's broadcast result and upserts a history row per case,
+   * exactly the same "GameLoop computes, GameEngine persists" split every other
+   * turn-resolution write already follows.
+   *
+   * `players` (this turn's still-active players) and `bankrupted` (this turn's
+   * eliminations) both need to contribute cases and names: a case can reference a
+   * player bankrupted THIS exact turn, who's excluded from `players` — but per
+   * `distributeCaseWaterfall`'s own doc comment, every case touching a player bankrupted
+   * this turn is force-resolved the same turn, so a case can never reference a player
+   * bankrupted in some earlier round while still appearing here.
+   */
+  private async persistLegalCaseHistory(players: PlayerTurnResult[], bankrupted: BankruptedPlayer[], round: number): Promise<void> {
+    const casesById = new Map<string, LegalCaseData>();
+    for (const p of players) {
+      for (const c of p.legalCases) casesById.set(c.id, c);
+    }
+    if (casesById.size === 0) return;
+
+    const nameById = new Map<string, string>();
+    for (const p of players) nameById.set(p.playerId, p.playerName);
+    for (const b of bankrupted) nameById.set(b.playerId, b.playerName);
+
+    for (const c of casesById.values()) {
+      try {
+        await this.recordLegalCaseHistory(c, round, nameById);
+      } catch (err) {
+        console.error(`[persistLegalCaseHistory] Failed to persist history for case ${c.id}, round ${round}:`, err);
+      }
+    }
+  }
+
+  /**
+   * Shared by `persistLegalCaseHistory` (the once-per-turn choke point) and
+   * `acceptOffer` (the one out-of-band case action that can resolve a case outside
+   * `resolveTurn` — `makeOffer` never changes status, `goToCourt` only ever reaches
+   * `'awaiting_trial'`, neither is a loggable "filed/resolved" event on its own).
+   *
+   * `upsert` ensures the row exists (covers a case filed and immediately resolved the
+   * same turn, e.g. by the bankruptcy waterfall) — `create` populates every field,
+   * including `resolvedRound`/`verdict` if already resolved at first sight. The
+   * separate, GUARDED `updateMany` below is what actually stamps a resolution: a
+   * resolved case is still visible in the FOLLOWING turn's broadcast too (Step 7 only
+   * drops it from persisted state starting the turn after that), so an unconditional
+   * update here would silently overwrite `resolvedRound` to a later, wrong round the
+   * next time the same already-resolved case is seen. `resolvedRound: null` in the
+   * `where` clause is what prevents that.
+   */
+  private async recordLegalCaseHistory(c: LegalCaseData, round: number, nameById: Map<string, string>): Promise<void> {
+    await this.prisma.legalCaseHistory.upsert({
+      where: { id: c.id },
+      create: {
+        id: c.id,
+        roomId: c.roomId,
+        plaintiffId: c.plaintiffId,
+        plaintiffName: nameById.get(c.plaintiffId) ?? 'Unknown',
+        defendantId: c.defendantId,
+        defendantName: nameById.get(c.defendantId) ?? 'Unknown',
+        decisionName: c.decisionName,
+        groundName: c.groundName,
+        description: c.description,
+        stakes: c.stakes,
+        filedRound: round,
+        resolvedRound: c.status === 'resolved' ? round : null,
+        verdict: c.status === 'resolved' ? (c.verdict ?? null) : null,
+      },
+      update: {},
+    });
+
+    if (c.status === 'resolved') {
+      await this.prisma.legalCaseHistory.updateMany({
+        where: { id: c.id, resolvedRound: null },
+        data: { resolvedRound: round, verdict: c.verdict ?? null },
+      });
     }
   }
 
@@ -515,7 +784,29 @@ export class GameEngine {
       for (const [roomId, lastActivity] of this.roomLastActivity.entries()) {
         if (now - lastActivity > this.STALE_ROOM_THRESHOLD) {
           const roomState = this.rooms.get(roomId);
-          if (roomState && roomState.players.size === 0) {
+          // Eliminated (bankrupt) players are exempt from finalizePlayerRemoval below —
+          // their Player/Company rows (and KpiSnapshot history) are kept for the rest of
+          // the room's life so a game-timeline replay/spectator view never loses their
+          // data just because they closed their tab. That means `players.size === 0`
+          // alone can no longer detect "everyone's actually gone" once a room has ever
+          // had an elimination — a room can sit with only eliminated players' (never-
+          // removed) entries forever.
+          //
+          // Fix: a room is stale once every REMAINING entry is both eliminated AND
+          // currently disconnected — `p.bankrupt && !p.socketId`, not just `!p.socketId`
+          // alone. Checking `!p.socketId` alone would be wrong: a still-active,
+          // non-bankrupt player who's merely mid-reconnect-grace-period also has
+          // `socketId: null` for up to RECONNECT_GRACE_PERIOD_MS, and this stale-room
+          // check must never race ahead of that grace period / finalizePlayerRemoval
+          // below and tear the whole room down first (a real regression caught by
+          // gameEngine.test.ts's existing single-disconnected-player finalization test).
+          // Requiring `p.bankrupt` too means an active player's temporary disconnect
+          // never counts toward "stale," only a genuinely eliminated-and-gone spectator
+          // does.
+          const allDisconnected = roomState
+            ? roomState.players.size === 0 || Array.from(roomState.players.values()).every((p) => p.bankrupt && !p.socketId)
+            : false;
+          if (roomState && allDisconnected) {
             console.log(`[Heartbeat] Cleaning up stale room ${roomId} (no players for ${this.STALE_ROOM_THRESHOLD}ms)`);
             this.rooms.delete(roomId);
             this.roomLastActivity.delete(roomId);
@@ -539,6 +830,16 @@ export class GameEngine {
           // for now and let the next 10s tick retry; `disconnectedPlayers` isn't touched,
           // so nothing about their grace period is lost, just delayed a few seconds.
           if (this.advancingRooms.has(roomId)) continue;
+          // Eliminated players are exempt from removal entirely — there's no "coming
+          // back" concept for someone who's already out of the game, and a game-timeline
+          // replay/spectator view needs their data to survive regardless of how long
+          // they stay disconnected (they can still room:rejoin whenever they like,
+          // since their row is never deleted). Left in `disconnectedPlayers` forever is
+          // harmless — this check just no-ops on every future tick instead of removing
+          // them. Relies on the in-memory `bankrupt` flag being accurate, which
+          // resolveGameTurn's bankruptcy loop and forfeitGame both now keep in sync.
+          const player = this.rooms.get(roomId)?.players.get(playerId);
+          if (player?.bankrupt) continue;
           console.log(`[Heartbeat] Finalizing removal of player ${playerId} (no reconnect within ${this.RECONNECT_GRACE_PERIOD_MS}ms)`);
           this.finalizePlayerRemoval(roomId, playerId).catch((err) => {
             console.error(`[Heartbeat] Failed to finalize removal of player ${playerId}:`, err);
@@ -823,7 +1124,7 @@ export class GameEngine {
    * Resolve the current GAME_PHASE turn via GameLoop, then either loop into
    * another GAME_PHASE round or — once only one player remains — transition
    * to AFTERMATH. GAME_PHASE is not a single linear step in PHASE_ORDER; it
-   * repeats every `turnDurationSeconds` until the game is over (FORMULAS §12).
+   * repeats every `turnDurationSeconds` until the game is over.
    */
   async resolveGameTurn(roomId: string): Promise<void> {
     if (this.advancingRooms.has(roomId)) return;
@@ -853,24 +1154,69 @@ export class GameEngine {
       // room down with it.
       for (const bankrupted of outcome.bankruptedPlayers) {
         try {
+          // Reused for BOTH elimination reasons (bankruptcy and merger takeover) —
+          // there's no separate "merged" flag in the schema, and `bankrupt`
+          // already means exactly what's needed everywhere else it's read (e.g.
+          // `loadActiveCompanyPlayers`'s `bankrupt: false` filter). `bankrupted.reason`
+          // (broadcast below) is what lets the client tell the two apart.
           await this.prisma.player.update({
             where: { id: bankrupted.playerId },
-            data: { bankrupt: true },
+            data: { bankrupt: true, eliminatedRound: round },
           });
-          // Bankrupted players are deliberately excluded from outcome.companyUpdates (see
-          // BankruptedPlayer.finalCash doc comment) — their negative cash has to be persisted
-          // here instead, or the DB (and anything reading it later, e.g. buildGameOverPayload's
-          // final-standings cash column) keeps showing their last still-active positive balance.
+          // Eliminated players (either reason) are deliberately excluded from
+          // outcome.companyUpdates (see BankruptedPlayer.finalCash doc comment) — their
+          // final cash has to be persisted here instead, or the DB (and anything reading
+          // it later, e.g. buildGameOverPayload's final-standings cash column) keeps
+          // showing their last still-active balance. The acquirer's own inherited
+          // cash/assets/intangibleAssets (merger only) are already reflected in their
+          // OWN normal companyUpdates entry — no separate persistence needed for them.
           await this.prisma.company.update({
             where: { playerId: bankrupted.playerId },
             data: { cash: bankrupted.finalCash },
           });
+          // One final KpiSnapshot capturing this player's true end-of-game numbers —
+          // persistKpiSnapshots (below) only ever runs against outcome.result.players,
+          // which excludes eliminated players the same way companyUpdates does, so
+          // without this their KPI history would simply stop one round early, missing
+          // the actual round they went bankrupt/were acquired in. GameLoop computes
+          // these values (finalVariables/finalDerived/finalRiskGauge) the same way it
+          // computes them for any still-active player, just also captured here before
+          // the player's engine state is discarded — see BankruptedPlayer's doc comment.
+          await this.prisma.kpiSnapshot.upsert({
+            where: { playerId_round: { playerId: bankrupted.playerId, round } },
+            create: {
+              playerId: bankrupted.playerId,
+              round,
+              variables: bankrupted.finalVariables as any,
+              derived: bankrupted.finalDerived as any,
+              riskGauge: bankrupted.finalRiskGauge,
+            },
+            update: {
+              variables: bankrupted.finalVariables as any,
+              derived: bankrupted.finalDerived as any,
+              riskGauge: bankrupted.finalRiskGauge,
+            },
+          });
         } catch (err) {
-          console.error(`[resolveGameTurn] Failed to persist bankruptcy for player ${bankrupted.playerId} (room ${roomId}):`, err);
+          console.error(`[resolveGameTurn] Failed to persist elimination for player ${bankrupted.playerId} (room ${roomId}):`, err);
+        }
+        // Keep the in-memory roster's bankrupt flag in sync too — forfeitGame already
+        // does this for a voluntary forfeit, but this natural-elimination path (covers
+        // both bankruptcy and merger) previously only wrote the DB row, leaving
+        // roomState.players' own copy stale. Anything reading "is this player
+        // eliminated" from the live roster (e.g. the heartbeat sweep's disconnect-
+        // cleanup exemption) depends on this being accurate.
+        const liveEntry = roomState.players.get(bankrupted.playerId);
+        if (liveEntry) {
+          liveEntry.bankrupt = true;
+          liveEntry.eliminatedRound = round;
         }
         this.io.to(roomId).emit(ServerEvents.PLAYER_BANKRUPT, {
           playerId: bankrupted.playerId,
           playerName: bankrupted.playerName,
+          reason: bankrupted.reason,
+          acquirerId: bankrupted.acquirerId,
+          acquirerName: bankrupted.acquirerName,
         });
       }
 
@@ -889,7 +1235,13 @@ export class GameEngine {
         }
       }
 
+      // POST-turn engine state (companyUpdates), not the pre-turn dbPlayers loaded above —
+      // see enrichIncomingAttackBlurbs's doc comment for why.
+      const activeDecisionsByPlayer = new Map(outcome.companyUpdates.map((u) => [u.playerId, u.engineState.activeDecisions]));
+      await this.enrichIncomingAttackBlurbs(outcome.result.players, activeDecisionsByPlayer);
+
       await this.persistKpiSnapshots(outcome.result.players, round);
+      await this.persistLegalCaseHistory(outcome.result.players, outcome.bankruptedPlayers, round);
 
       this.lastTurnResults.set(roomId, outcome.result);
       this.io.to(roomId).emit(ServerEvents.TURN_RESOLVED, outcome.result);
@@ -907,7 +1259,9 @@ export class GameEngine {
           round: roomState.room.currentPhaseRound,
           timeLimit: PHASE_TIMERS[RoomStatus.AFTERMATH],
         });
-        this.startTimer(roomId, PHASE_TIMERS[RoomStatus.AFTERMATH]);
+        // No timer started here — AFTERMATH is terminal (last entry in PHASE_ORDER), so a
+        // timer that ran here used to just broadcast pointless timer:update ticks for 30s
+        // and then call a guaranteed-no-op advancePhase. See CLAUDE.md.
         return;
       }
 
@@ -967,8 +1321,10 @@ export class GameEngine {
         return { success: false, reason: 'not_active' };
       }
 
-      await this.syncPlayerToDB(playerId, { bankrupt: true });
+      const forfeitRound = roomState.room.currentPhaseRound;
+      await this.syncPlayerToDB(playerId, { bankrupt: true, eliminatedRound: forfeitRound });
       player.bankrupt = true;
+      player.eliminatedRound = forfeitRound;
       this.io.to(roomId).emit(ServerEvents.PLAYER_BANKRUPT, {
         playerId: player.id,
         playerName: player.name,
@@ -987,7 +1343,7 @@ export class GameEngine {
           round: roomState.room.currentPhaseRound,
           timeLimit: PHASE_TIMERS[RoomStatus.AFTERMATH],
         });
-        this.startTimer(roomId, PHASE_TIMERS[RoomStatus.AFTERMATH]);
+        // No timer started here either — see the matching comment in resolveGameTurn.
         return { success: true };
       }
 
@@ -1032,7 +1388,7 @@ export class GameEngine {
     };
   }
 
-  /** Build the winner + ranked standings payload once only one player remains (FORMULAS §12). */
+  /** Build the winner + ranked standings payload once only one player remains. */
   private async buildGameOverPayload(roomId: string, winnerId?: string): Promise<GameOverResponse> {
     const dbPlayers = await this.prisma.player.findMany({
       where: { roomId },
@@ -1045,6 +1401,7 @@ export class GameEngine {
       roomId: p.roomId,
       isHost: (p as any).isHost ?? false,
       bankrupt: p.bankrupt,
+      eliminatedRound: (p as any).eliminatedRound ?? undefined,
       companyId: p.companyId ?? undefined,
       socketId: p.socketId ?? null,
     });
@@ -1125,7 +1482,7 @@ export class GameEngine {
     });
   }
 
-  async syncPlayerToDB(playerId: string, data: { isHost?: boolean; bankrupt?: boolean }): Promise<void> {
+  async syncPlayerToDB(playerId: string, data: { isHost?: boolean; bankrupt?: boolean; eliminatedRound?: number }): Promise<void> {
     await this.prisma.player.update({
       where: { id: playerId },
       data,
@@ -2034,6 +2391,30 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
           message: error.message || 'Invalid KPI history request',
         });
       }
+    });
+
+    // Request the whole room's game-timeline replay/spectator data — no payload, unlike
+    // every other on-demand request (this always returns everyone's data, there's no
+    // per-target to select). Deliberately allowed in BOTH GAME_PHASE (an eliminated
+    // player who chose to keep watching) and AFTERMATH (the finished-game replay) — every
+    // other on-demand handler above only allows GAME_PHASE, this one doesn't gate on
+    // phase at all beyond "not WAITING" (there's nothing to replay before a game starts).
+    // Result goes only to this socket, never broadcast.
+    socket.on(ClientEvents.GAME_GET_GAME_TIMELINE, async () => {
+      const roomId = engine.getPlayerRoom(socket.id);
+      if (!roomId) return;
+
+      const roomState = engine.rooms.get(roomId);
+      if (!roomState || roomState.room.status === RoomStatus.WAITING) return;
+
+      const player = Array.from(roomState.players.values()).find(
+        (p: Player) => p.socketId === socket.id,
+      );
+      if (!player) return;
+
+      const response = await engine.getGameTimeline(roomId);
+      if (!response) return;
+      socket.emit(ServerEvents.GAME_TIMELINE_RESULT, response);
     });
 
     // Voluntary forfeit — "Leave Game" button, GAME_PHASE only. Instant bankruptcy
