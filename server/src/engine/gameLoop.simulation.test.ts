@@ -224,4 +224,36 @@ describe('GameLoop — randomized 4-player simulation (regression, real decision
     const alice = outcome.result.players.find((p) => p.playerId === 'p1')!;
     expect(alice.riskGauge).toBeGreaterThanOrEqual(0);
   });
+
+  it('regression: an idle player (never submits a decision) neither profits nor loses cash, turn over turn', () => {
+    // Production is always capacity-bound at maxSupply = installedCapacity * capacityUtilization
+    // (350 tons) rather than market-share-bound, for any 2-4 player game — see CLAUDE.md's
+    // "How default values of variables could be changed so idle players break even" — so this
+    // holds regardless of player count/symmetry. price/operatingExpenses were tuned so that
+    // (price - materialCostPerTon - logisticsCostPerTon) * maxSupply exactly equals
+    // operatingExpenses + staffCost + baseFinanceCost, i.e. profitBeforeTax = 0 at the seeded
+    // defaults with zero decisions ever deployed.
+    const gameLoop = new GameLoop(config);
+    gameLoop.loadFormulas(DEFAULT_FORMULA_SEEDS);
+    gameLoop.loadDecisions(decisions);
+    const roomId = 'room-idle-breakeven';
+    const state: Record<string, { variables: unknown; engineState: unknown }> = {
+      p1: { variables: {}, engineState: {} },
+      p2: { variables: {}, engineState: {} },
+    };
+
+    for (let round = 1; round <= 5; round++) {
+      gameLoop.submitDecisions(roomId, 'p1', { strategic: [], operational: [], lawsuits: [] });
+      gameLoop.submitDecisions(roomId, 'p2', { strategic: [], operational: [], lawsuits: [] });
+      const players: EngineDataInput[] = ['p1', 'p2'].map((id) => ({
+        id, name: id, company: { variables: state[id].variables, engineState: state[id].engineState },
+      }));
+      const outcome = gameLoop.resolveTurn(roomId, round, players);
+      for (const update of outcome.companyUpdates) {
+        state[update.playerId].variables = update.variables;
+        state[update.playerId].engineState = update.engineState;
+        expect(update.cash).toBeCloseTo(100000, 6);
+      }
+    }
+  });
 });

@@ -337,6 +337,8 @@ function DecisionsEditor({
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [draftText, setDraftText] = useState<string | undefined>(undefined);
+  const [genOpen, setGenOpen] = useState(false);
 
   return (
     <Stack gap="xs">
@@ -352,13 +354,129 @@ function DecisionsEditor({
       ))}
 
       {adding ? (
-        <NewDecisionForm token={token} onCancel={() => setAdding(false)} onCreated={() => { setAdding(false); onChanged(); }} />
+        <NewDecisionForm
+          token={token}
+          initialText={draftText}
+          onCancel={() => { setAdding(false); setDraftText(undefined); }}
+          onCreated={() => { setAdding(false); setDraftText(undefined); onChanged(); }}
+        />
       ) : (
-        <Button variant="outline" size="sm" leftSection={<IconPlus size={14} />} onClick={() => setAdding(true)}>
-          Add Decision
-        </Button>
+        <Group gap="xs">
+          <Button variant="outline" size="sm" leftSection={<IconPlus size={14} />} onClick={() => setAdding(true)}>
+            Add Decision
+          </Button>
+          <Button variant="outline" size="sm" color="grape" onClick={() => setGenOpen((v) => !v)}>
+            ✨ Generate with AI (experimental)
+          </Button>
+        </Group>
+      )}
+
+      {genOpen && !adding && (
+        <AiGeneratePanel
+          token={token}
+          onClose={() => setGenOpen(false)}
+          onGenerated={(text) => { setDraftText(text); setGenOpen(false); setAdding(true); }}
+        />
       )}
     </Stack>
+  );
+}
+
+// ============================================================
+// EXPERIMENTAL — AI decision generation. Asks the local llama.cpp/Qwen3-1.7B server
+// (see server/src/services/decisionGenService.ts) to invent a new decision + its legal
+// risks, gated behind decisionDefinitionSchema + a second, semantic clamp pass
+// (server/src/services/decisionGenGuardrails.ts) before ever reaching this component.
+// Deliberately never auto-saves: a successful generation only pre-fills the same
+// raw-JSON NewDecisionForm a hand-written decision goes through — the admin reviews/
+// edits it and hits the same "Create" button either way. See CLAUDE.md.
+// ============================================================
+
+function AiGeneratePanel({
+  token,
+  onClose,
+  onGenerated,
+}: {
+  token: string;
+  onClose: () => void;
+  onGenerated: (draftText: string) => void;
+}) {
+  const [theme, setTheme] = useState('');
+  const [level, setLevel] = useState('');
+  const [nature, setNature] = useState('');
+  const [offensive, setOffensive] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [warnings, setWarnings] = useState<string[]>([]);
+
+  const generate = async () => {
+    setGenerating(true);
+    setError(null);
+    setWarnings([]);
+    try {
+      const res = await adminFetch('/api/admin/decisions/generate', token, {
+        method: 'POST',
+        body: { theme: theme || undefined, level: level || undefined, nature: nature || undefined, offensive },
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(`${body.message || body.error || `Generation failed (${res.status})`}${body.raw ? ` — last raw output: ${body.raw.slice(0, 200)}` : ''}`);
+        return;
+      }
+      setWarnings((body.warnings || []).map((w: any) => `${w.path}: ${w.message}`));
+      onGenerated(JSON.stringify(body.decision, null, 2));
+    } catch {
+      setError('Could not reach the server (is the LLM container running?).');
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  return (
+    <Paper withBorder p="sm" radius="sm">
+      <Stack gap="sm">
+        <Text size="sm" fw={600}>✨ Generate a decision with AI (experimental)</Text>
+        <Text size="xs" c="dimmed">
+          Best-effort — the local Qwen3-1.7B model invents a candidate, which is schema-validated
+          and clamped to bounded KPI/lawsuit ranges before landing in the editable draft below.
+          It never saves on its own; review it like any hand-written decision before hitting Create.
+        </Text>
+        {error && <Alert color="red" title="Generation failed">{error}</Alert>}
+        {warnings.length > 0 && (
+          <Alert color="yellow" title={`${warnings.length} guardrail adjustment(s) applied`}>
+            <Stack gap={2}>
+              {warnings.map((w, i) => <Text key={i} size="xs">{w}</Text>)}
+            </Stack>
+          </Alert>
+        )}
+        <TextInput
+          placeholder="Theme (optional) — e.g. 'a supply chain attack' or 'a green PR stunt'"
+          value={theme}
+          onChange={(e) => setTheme(e.currentTarget.value)}
+        />
+        <Group gap="sm">
+          <select value={level} onChange={(e) => setLevel(e.currentTarget.value)}>
+            <option value="">Any level</option>
+            <option value="Strategic">Strategic</option>
+            <option value="Operational">Operational</option>
+          </select>
+          <select value={nature} onChange={(e) => setNature(e.currentTarget.value)}>
+            <option value="">Any nature</option>
+            <option value="Traditional">Traditional</option>
+            <option value="Grey Area">Grey Area</option>
+            <option value="Dirty">Dirty</option>
+          </select>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.875rem' }}>
+            <input type="checkbox" checked={offensive} onChange={(e) => setOffensive(e.currentTarget.checked)} />
+            Direct attack on a chosen opponent
+          </label>
+        </Group>
+        <Group justify="flex-end">
+          <Button size="xs" variant="subtle" onClick={onClose}>Cancel</Button>
+          <Button size="xs" color="grape" loading={generating} onClick={generate}>Generate</Button>
+        </Group>
+      </Stack>
+    </Paper>
   );
 }
 
@@ -480,7 +598,19 @@ function DecisionRow({
   );
 }
 
-function NewDecisionForm({ token, onCancel, onCreated }: { token: string; onCancel: () => void; onCreated: () => void }) {
+function NewDecisionForm({
+  token,
+  initialText,
+  onCancel,
+  onCreated,
+}: {
+  token: string;
+  /** Pre-fills the textarea, e.g. with an AI-generated draft from `AiGeneratePanel` — still
+   * has to pass through the same Create button/validation as a hand-written decision. */
+  initialText?: string;
+  onCancel: () => void;
+  onCreated: () => void;
+}) {
   const blank = {
     decision: 'New Decision Name',
     level: 'Operational',
@@ -490,7 +620,7 @@ function NewDecisionForm({ token, onCancel, onCreated }: { token: string; onCanc
     excludes: [],
     impacts: {},
   };
-  const [text, setText] = useState(JSON.stringify(blank, null, 2));
+  const [text, setText] = useState(initialText ?? JSON.stringify(blank, null, 2));
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 

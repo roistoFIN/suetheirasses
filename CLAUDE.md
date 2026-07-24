@@ -1229,6 +1229,151 @@ game is fully playable with the `llm` container never started. Don't add a hard
 dependency on this service being up anywhere; if you need to gate something on it, use
 the same fallback-on-failure shape this module already has.
 
+### AI decision generation (EXPERIMENTAL, admin-only) — the same local Qwen3-1.7B can invent a whole decision + its lawsuits, but only as a human-reviewed draft, never live
+
+Explored on request: could the same local model already narrating annual-report blurbs
+also *invent* new decisions (with their own `legalRisks`) during a live session? Built as
+a real, working prototype — `server/src/services/decisionGenService.ts` (prompt +
+network call + retry loop) and `server/src/services/decisionGenGuardrails.ts` (a second,
+semantic validation pass) — then evaluated against the actual running container before
+deciding how far to take it. **Verdict: yes, worth keeping, but as an admin-side content-
+assist tool only — never wired into a live game.** This was the explicit scope from the
+start ("let's not go live with this"), and the eval below confirms it was the right call:
+the model's *prose* (decision names, descriptions, legally-flavored lawsuit grounds) is
+consistently plausible and on-theme, but its *numbers* — both magnitudes and which of
+`absolute`/`relative` a given field is supposed to use — are unreliable enough that
+nothing it produces should reach a live game without a human looking at it first.
+
+**Generation only ever produces a reviewable draft, never a save.** `POST
+/api/admin/decisions/generate` (admin-token gated, same as every other `/api/admin/*`
+route) calls `generateDecisionCandidate` and returns the result — it never touches the
+`Decision` table itself. `AdminPortal.tsx`'s new "✨ Generate with AI (experimental)"
+button (in the Decisions tab, next to "Add Decision") pre-fills the *existing* raw-JSON
+`NewDecisionForm` textarea with the draft; saving it still goes through the exact same
+`decisionDefinitionSchema`-gated `POST /api/admin/decisions` a hand-written decision
+does. There is no code path anywhere that lets a generated decision reach a `Company`'s
+`activeDecisions` without an admin explicitly reviewing and clicking Create — the same
+"AI proposes, human disposes" boundary this file's earlier LLM section already
+established for annual-report text, just for something with real gameplay stakes instead
+of flavor text.
+
+**The prompt** (`buildDecisionGenPrompt`) gives the model: the exact required JSON shape
+(mirroring `DecisionDefinition`+inline `LegalRiskDefinition`), an explicit whitelist of
+the ~30 `impacts` field names it may use (never a free-form field), the `absolute`
+(flat add) vs. `relative` (×(1+value)) semantics, a compact magnitude cheat-sheet derived
+from scanning the real 45-decision library's own observed ranges per field, a rule that
+`legalRisks[].impact.target` may only be `cash`/`equity`/`revenue` (the only three the
+engine actually knows how to price stakes from — see `LegalEngine.fileLawsuit`), a
+"touch 2-4 fields, not more" instruction, and one real decision (picked fresh at random
+from the current live deck each call, not hardcoded) as a full worked few-shot example.
+Caller-supplied hints (`theme`/`level`/`nature`/`offensive`) are appended to the user
+message; the existing decision library's names are listed so the model doesn't collide
+with one.
+
+**The guardrail pass (`clampDecisionCandidate`) is the part doing the real safety work,
+confirmed by the eval below — not a defensive afterthought.** Applied AFTER
+`decisionDefinitionSchema.parse` already confirmed the raw shape, since a schema-valid
+decision can still be a bad one:
+- `impacts` is filtered to the same whitelist the prompt describes (anything else,
+  including a `target.*`-prefixed hallucination, is dropped with a warning) and capped at
+  `MAX_IMPACT_FIELDS` (5) total.
+- Every schedule value is clamped into `FIELD_RANGES[field][type]` — the same real-data-
+  derived ranges the prompt's cheat-sheet describes, so the prompt and the enforcement
+  agree on what's "normal" for a field.
+- **A field that only ever appears as ONE of `absolute`/`relative` in the real 45-decision
+  library (true of every field except `operatingExpenses`/`capacityUtilization`) has its
+  `type` coerced to that one real type if the model picked the other** — `resolveImpactType`
+  exists specifically because a magnitude clamp alone can't catch this: a flat `+100`
+  "absolute" addition to `materialCostPerTon` (a field the real library only ever treats as
+  a `relative` fraction) easily fits inside a generic fallback range even though it's a
+  categorically different, uncalibrated effect than what that field is supposed to mean.
+- `legalRisks` capped at `MAX_LEGAL_RISKS` (3), `impact.target` forced into
+  `cash`/`equity`/`revenue` (defaulting to `cash` otherwise) with `type` forced to match
+  (`cash`→absolute, `equity`/`revenue`→relative) regardless of what the model paired them
+  as, probability clamped to `[0.01, 0.7]`, duplicate ground names dropped.
+- `offensiveAction`/`requiresTarget` are derived from whether a `target.*` impact actually
+  *survived* clamping, not trusted from the model's own flag — a decision can't end up
+  with a dangling target-picker UI and no real target effect, or vice versa.
+- A name collision with an existing decision is resolved by suffix (`"X (AI)"`, `"X (AI
+  2)"`, …), `excludes` is filtered to only real existing decision names (a hallucinated
+  exclude target is dropped), `cashFlowCategory` is forced present-and-valid whenever
+  `impacts.cash` survives and stripped entirely otherwise. A candidate reduced to zero
+  real `impacts` fields is treated as a failed generation attempt (`isViableCandidate`),
+  not shipped as an empty draft — `generateDecisionCandidate` retries up to 3 times total.
+- `decisionGenGuardrails.test.ts` (24 tests) and `decisionGenService.test.ts` (14 tests,
+  covering `extractJson`'s handling of `<think>` blocks/markdown fences/stray prose, the
+  prompt builder, and the retry loop) are the regression coverage — extend those, not
+  just the happy path, if you touch this again.
+
+**Live eval against the actual container** (Qwen3-1.7B-Q4_K_M, CPU-only, no GPU — the
+same model/container the annual-report feature uses): 6 generation requests spanning a
+mix of themes/levels/natures/offensive hints, each candidate then dropped into a real
+`GameLoop` alongside the full 45-decision seed library and played for 20 rounds across 2
+random seeds (240 simulated turns total) to check for crashes/NaN/out-of-range values —
+a smaller version of this file's own "randomized-simulation bug hunt" methodology, aimed
+at one specific new decision instead of the whole deck.
+
+- **6/6 succeeded on the first attempt** (no retry needed) — schema-valid, and left with
+  at least one real impact field after clamping. Generation took 85-113 seconds each on
+  this CPU-only container (a first run with a too-short 30s timeout aborted 100% of
+  attempts — not a model-quality failure, a harness bug, since a ~300-token JSON response
+  plus a long, mostly-static system prompt's own processing time genuinely takes this
+  long without a GPU). Tolerable for an admin clicking a button and waiting under two
+  minutes; not something to ever call synchronously mid-turn.
+- **0/6 crashed the engine or produced an invariant violation** across all 240 simulated
+  turns — encouraging, but this reflects the *engine's* existing defenses (the zero-floor
+  clamps, the NaN guards from this file's own earlier bug-hunt section) and this feature's
+  own guardrail pass doing their job, not evidence the model's raw output was safe on its
+  own.
+- **19 guardrail warnings fired across the 6 successes (~3.2 per decision)** — guardrails
+  were load-bearing on nearly every single generation, not decorative. Concretely: one
+  outright hallucinated field name (`target.environmentalImpact`, not a real
+  `PlayerVariables` field, dropped); five `absolute`/`relative` type-convention mismatches
+  across three different decisions (the model swapping which fields use which
+  convention despite the prompt's explicit cheat-sheet and worked example); and — the
+  most telling single case — a "Strategic" data-center decision that asked for `debt:
+  500000-600000`, `operatingExpenses: 150000-180000/turn`, and `capacityUtilization: +0.3
+  to +0.4` treated as `absolute` (all clamped down to `120000`/`30000`/`0.2`
+  respectively). Unclamped, that one candidate alone would have handed a player 5-6x
+  starting cash in fresh debt and nearly 6x a normal decision's ongoing opex burden,
+  compounding every turn — exactly the kind of number a small model produces with
+  perfectly confident, plausible-sounding prose wrapped around it.
+- **One further, accepted limitation surfaced, not fixed**: `revenue`'s real-library
+  convention is "absolute, always a positive gain" (the only two real decisions that
+  touch it, Channel Stuffing and a marketing-style boost, only ever add revenue) — so
+  `FIELD_RANGES.revenue.absolute` is `[0, 50000]`. A generated attack decision that tried
+  to reduce a target's revenue by 15-20% (a perfectly reasonable creative intent) had that
+  value clamped to `0` — a legitimate-sounding effect silently neutered because it used an
+  existing field in a direction the real deck happens to never use it in. This is the
+  conservative failure mode of deriving every range strictly from precedent: safe by
+  construction, but it can flatten a plausible new idea that doesn't fit an existing
+  field's one observed direction. Not fixed here — widening it is a real content decision
+  (does this game want revenue-reducing attacks routed through this field?), not a bug.
+- **A sign error the guardrails caught rather than the prompt preventing**: one candidate
+  gave a `legalRisks[].impact` a *positive* schedule value (as if suing the deployer were
+  a payout to them, not a cost) — `LEGAL_RISK_FIELD_RANGES` being strictly negative-only
+  is what forced this to a sane number instead of silently inverting who benefits from a
+  lawsuit.
+
+**Bottom line**: the model is good at the part it was already proven at (the annual-
+report feature) — short, plausible, on-theme prose, including surprisingly convincing
+fake legal-doctrine names — and unreliable at the part it was never asked to do before
+(tracking a specific game's numeric conventions and scale across ~30 fields). That split
+is exactly why this stays a human-reviewed admin content-assist tool: useful for
+drafting a starting point worth editing, not a generator trustworthy enough to skip
+review, and nowhere close to something that should invent decisions unsupervised inside
+a running game session.
+
+While testing this, found and fixed an unrelated, real, pre-existing bug: `docker-
+compose.yml`'s `llm` service requested `/models/Qwen3-1.7B-Q4_K_M.gguf`, but the actual
+file on disk is lowercase `qwen3-1.7b-q4_k_m.gguf` — a case mismatch on Linux's
+case-sensitive filesystem, so the container was crash-looping (`gguf_init_from_file:
+failed to open GGUF file`) on every start. Fixed by matching the command's `-m` path to
+the real filename. This affected the pre-existing annual-report feature too, not just
+this one — anyone who ran `docker-compose up llm` locally would have gotten a
+permanently-unavailable LLM (silently masked by `llmService.ts`'s fallback-on-failure
+design, which is exactly why nobody had noticed).
+
 ### An incoming attack's tier-1 hint reuses the same AI-narrated annual-report blurb — computed in `GameEngine`, never inside `GameLoop`
 
 `IncomingAttackInfo.annualReportBlurb` is set whenever an attack's `investigationLevel`
@@ -1766,6 +1911,56 @@ every other change this session). All four remain data-only edits in
 `server/src/data/game_engine.json`, covered the same way as round 1's — exercised by
 `gameLoop.simulation.test.ts` against the real seed data, no dedicated per-decision unit
 test. **An already-seeded dev database needs `npm run db:seed` re-run** to pick these up.
+
+### Idle-player breakeven — `price`/`operatingExpenses` tuned so doing nothing neither profits nor loses money, in `game_config.json`
+
+Raised directly by the user: a player who deploys zero decisions, forever, was quietly
+netting a real per-turn profit rather than standing still. Root cause was structural, not
+one bad number: `theoreticalVolume = marketShare * totalMarketVolume` is always at least
+`totalMarketVolume / maxPlayers` (2,500 tons at 4 players, the worst case), while
+`maxSupply = installedCapacity * capacityUtilization` is only `350 * 1.0 = 350` — so
+`volume = MIN(theoreticalVolume, maxSupply)` is **always capacity-bound at exactly 350
+tons**, for any 2-4 player game, completely independent of market share/competitiveness.
+Depreciation is also 0 for an idle player (the seeded starting `assets`/`intangibleAssets`
+are never entered into the depreciation ledger — only decision-driven purchases are, see
+*Deleting a decision is guarded* above), and `debt` starts at 0 so `interestRate` never
+fires either — which collapses `profitBeforeTax` for an idle player down to one fixed
+expression with no per-turn variability at all:
+
+```
+(price - materialCostPerTon - logisticsCostPerTon) * (installedCapacity * capacityUtilization)
+  - operatingExpenses - staffCost + otherIncome - baseFinanceCost
+```
+
+At the old defaults this was `(700-500-50)*350 - 20000 - 10000 - 5000 = +17,500` — an idle
+player netted **+$14,000/turn** (17,500 minus 20% tax) doing nothing at all, every turn,
+forever. Since tax only applies to positive `profitBeforeTax`
+(`MAX(0,profitBeforeTax)*taxRate`), `profitBeforeTax = 0` is the exact breakeven point for
+`netProfit = 0` — not merely "close to zero."
+
+Several single-field ways to remove exactly $17,500 were possible (lower `price`, raise
+`materialCostPerTon`/`logisticsCostPerTon`, raise `operatingExpenses`, raise
+`baseFinanceCost`); by explicit request the fix **splits the $17,500 evenly across two
+fields** rather than moving one number a long way: `price` 700 → 675 (-$8,750 of margin)
+and `operatingExpenses` 20,000 → 28,750 (+$8,750 of fixed cost). Chosen over an uneven
+split so no single field looks conspicuously arbitrary; `operatingExpenses` was picked as
+the cost-side lever (over `staffCost`/`baseFinanceCost`) with no particular reason to
+prefer it beyond "pick one," and `price` as the revenue-side lever since it's the more
+legible of the two to a player reading their own KPIs. This does mean `price`'s drop
+slightly changes `competitiveness`/`stockValue` math for players who *do* act (both take
+`price` as a direct input) — an accepted side effect of touching the revenue side at all,
+not something `operatingExpenses`-only would have caused.
+
+Both fields are plain `game_config.json` `playerStartingValues` — DB-backed, admin-editable,
+same story as every other config value in this file (see *Decisions/config are DB-backed*
+above). **An already-seeded dev database needs `npm run db:seed` re-run** to pick this up.
+`gameLoop.simulation.test.ts`'s new `"an idle player (never submits a decision) neither
+profits nor loses cash, turn over turn"` regression test resolves 5 consecutive turns for
+two players who never submit anything and asserts cash stays at exactly the starting
+$100,000 the whole way — extend that, not just the happy path, if you touch `price`,
+`materialCostPerTon`, `logisticsCostPerTon`, `operatingExpenses`, `staffCost`,
+`installedCapacity`, `capacityUtilization`, or `adminVariables.finance.baseFinanceCost`
+again, since any of those can silently reopen a nonzero idle-profit floor.
 
 ### Randomized-simulation comparison: blind lawsuits vs. investigation-driven ("smart") ones
 

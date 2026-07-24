@@ -6,6 +6,7 @@ import { PrismaClient } from '@prisma/client';
 import { setupSocketHandlers } from './socket/gameEngine.js';
 import { requireAdminToken } from './middleware/adminAuth.js';
 import { validateDecisionDefinition, validateGameConfig, validateFormulaUpdate } from './validation/schemas.js';
+import { generateDecisionCandidate, type DecisionGenRequest } from './services/decisionGenService.js';
 
 const app = express();
 const httpServer = createServer(app);
@@ -129,6 +130,33 @@ app.delete('/api/admin/decisions/:name', requireAdminToken, async (req, res) => 
     return;
   }
   res.status(204).end();
+});
+
+// EXPERIMENTAL — asks the local llama.cpp/Qwen3-1.7B server (see decisionGenService.ts)
+// to invent a new decision + its legal-risk grounds. Deliberately never writes to the
+// DB itself: the response is a draft for the admin's own review, which still has to
+// go through the normal, unmodified POST /api/admin/decisions (same
+// decisionDefinitionSchema gate a hand-written decision goes through) to actually be
+// saved. See CLAUDE.md's "AI decision generation (experimental)" section.
+app.post('/api/admin/decisions/generate', requireAdminToken, async (req, res) => {
+  const body = req.body ?? {};
+  const request: DecisionGenRequest = {
+    theme: typeof body.theme === 'string' ? body.theme.slice(0, 200) : undefined,
+    level: body.level === 'Strategic' || body.level === 'Operational' ? body.level : undefined,
+    nature: ['Traditional', 'Grey Area', 'Dirty'].includes(body.nature) ? body.nature : undefined,
+    offensive: body.offensive === true,
+  };
+
+  const existing = engine.getDecisionsSnapshot();
+  const existingNames = existing.map((d) => d.decision);
+  const fewShotExample = existing[Math.floor(Math.random() * existing.length)];
+
+  const result = await generateDecisionCandidate(request, existingNames, fewShotExample);
+  if (!result.success) {
+    res.status(502).json({ error: 'Generation failed', message: result.error, raw: result.raw, attempts: result.attempts });
+    return;
+  }
+  res.json({ decision: result.decision, warnings: result.warnings, attempts: result.attempts });
 });
 
 app.put('/api/admin/config', requireAdminToken, async (req, res) => {
