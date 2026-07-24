@@ -580,7 +580,7 @@ const Matchmaking: React.FC = () => {
         size="lg"
       >
         <Stack gap="md">
-          <Text size="sm" fs="italic" style={{ color: 'var(--ink-text-soft)' }}>Last Updated: July 23, 2026</Text>
+          <Text size="sm" fs="italic" style={{ color: 'var(--ink-text-soft)' }}>Last Updated: July 24, 2026</Text>
 
           <Text size="sm">
             This Privacy Policy describes how Sue Their Asses ("we", "us", or "our")
@@ -619,6 +619,15 @@ const Matchmaking: React.FC = () => {
             <List.Item>Essential cookies or local storage keys required to maintain your game session.</List.Item>
             <List.Item>Third-party cookies and tracking scripts provided by Google (see Section 5).</List.Item>
           </List>
+          <Text size="sm" fw={700}>Feedback (Optional):</Text>
+          <List size="sm" spacing={2}>
+            <List.Item>
+              If you choose to use the "Feedback" form, we collect a 1-5 satisfaction
+              rating and any free-text comment you enter. This is submitted anonymously —
+              it is never linked to your Player ID, username, IP address, or any other
+              identifier, so it is not personal data under GDPR.
+            </List.Item>
+          </List>
 
           <Title order={4} style={mmStyles.title}>3. Legal Grounds and Purposes of Processing</Title>
           <Text size="sm">We process your data for the following purposes and legal bases:</Text>
@@ -646,6 +655,11 @@ const Matchmaking: React.FC = () => {
                 <Table.Td>Device/browser data, cookie identifiers, interaction data</Table.Td>
                 <Table.Td><b>Consent:</b> Required before loading Google Analytics and Google Ads scripts via our Consent Banner.</Table.Td>
               </Table.Tr>
+              <Table.Tr>
+                <Table.Td>Product Feedback (Optional)</Table.Td>
+                <Table.Td>Satisfaction rating, optional free-text comment — no identifiers attached</Table.Td>
+                <Table.Td><b>Legitimate Interest:</b> To understand player satisfaction and improve the game. As this data is fully anonymous, it does not constitute personal data under GDPR.</Table.Td>
+              </Table.Tr>
             </Table.Tbody>
           </Table>
 
@@ -653,6 +667,7 @@ const Matchmaking: React.FC = () => {
           <List size="sm" spacing={2}>
             <List.Item><b>Server Location:</b> Our game servers are hosted on a Hetzner Cloud VPS located in Finland (EU/EEA).</List.Item>
             <List.Item><b>Retention Period:</b> All IP addresses, server logs, player IDs, usernames, and in-game action logs are automatically and permanently deleted after 90 days.</List.Item>
+            <List.Item><b>Feedback Retention:</b> Because feedback ratings/comments carry no identifier linking them to you, the 90-day deletion above does not apply to them — they may be retained indefinitely for product-improvement purposes.</List.Item>
           </List>
 
           <Title order={4} style={mmStyles.title}>5. Third-Party Services and Analytics</Title>
