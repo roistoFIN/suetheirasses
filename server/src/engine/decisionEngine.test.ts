@@ -179,7 +179,6 @@ describe('DecisionEngine', () => {
     });
 
     it('should block if this decision excludes an active one', () => {
-      const exclusiveDef = makeDecisionDef({ decision: 'Exclusive Deal', excludes: ['Competitor Lock-in'] });
       const lockinDef = makeDecisionDef({ decision: 'Competitor Lock-in' });
       const deployed: DeployedDecision[] = [
         {
@@ -198,7 +197,6 @@ describe('DecisionEngine', () => {
 
     it('should block if an active decision excludes this one', () => {
       const exclusiveDef = makeDecisionDef({ decision: 'Exclusive Deal', excludes: ['Competitor Lock-in'] });
-      const lockinDef = makeDecisionDef({ decision: 'Competitor Lock-in' });
       const deployed: DeployedDecision[] = [
         {
           id: 'd1',
@@ -216,7 +214,6 @@ describe('DecisionEngine', () => {
 
     it('should allow reverse exclusion if the blocking decision is matured', () => {
       const exclusiveDef = makeDecisionDef({ decision: 'Exclusive Deal', excludes: ['Competitor Lock-in'] });
-      const lockinDef = makeDecisionDef({ decision: 'Competitor Lock-in' });
       const deployed: DeployedDecision[] = [
         {
           id: 'd1',

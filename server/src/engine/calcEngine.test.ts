@@ -13,7 +13,6 @@ import {
   applyDecisionImpacts,
   applyTargetImpacts,
   calculateMaturityYears,
-  getScheduleValue,
   renormalizeShareOwnership,
   SELF_OWNERSHIP_KEY,
   EXTERNAL_MARKET_KEY,
@@ -543,13 +542,6 @@ describe('calcEngine', () => {
           schedule: { default: 0.4 },
         },
       };
-      const impacts2 = {
-        installedCapacity: {
-          type: 'relative' as const,
-          schedule: { default: 0.4 },
-        },
-      };
-
       // First instance: 10000 * (1 + 0.4) = 14000
       const r1 = applyDecisionImpacts(baseVars, impacts1, 3);
       expect(r1.updatedVars.installedCapacity).toBeCloseTo(14000, 4);

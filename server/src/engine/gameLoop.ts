@@ -2117,6 +2117,7 @@ export class GameLoop {
   }
 
   private stripInternal(v: PlayerVariables): PlayerVariables {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { _playerId, ...rest } = v as any;
     return rest;
   }

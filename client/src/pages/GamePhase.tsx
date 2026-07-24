@@ -2937,8 +2937,6 @@ function CashWaterfallView({ data, prevData, onFieldClick }: CashWaterfallViewPr
   const { variables: v, derived: d } = data;
   const cur = computeCashWaterfall(data);
   const prev = prevData ? computeCashWaterfall(prevData) : undefined;
-  // Starting cash = current cash - netProfit - depreciation (reverse of the newCash formula)
-  const startingCash = v.cash - cur.netProfit - d.depreciation;
 
   // `field` is the KpiSnapshotPoint dot-path a row's history/prediction graph should
   // read — omitted for rows that are only computed here (COGS, gross profit, EBITDA,
@@ -2962,12 +2960,10 @@ function CashWaterfallView({ data, prevData, onFieldClick }: CashWaterfallViewPr
     { label: 'Depreciation (non-cash add-back)', value: d.depreciation, type: 'plus', trend: computeTrend(d.depreciation, prevData?.derived.depreciation) },
   ];
 
-  let running = startingCash;
   return (
     <Stack gap={0} style={gpStyles.modalContent}>
       <Text style={{ ...boldStyle, fontSize: '0.8rem', marginBottom: 12 }}>CASH WATERFALL</Text>
       {rows.map((row, i) => {
-        running += row.value;
         const valueText = fmt(row.value);
         return row.field ? (
           <ClickableStatRow key={i} label={row.label} value={valueText} colorType={row.type} trend={row.trend} invert={row.invert} onClick={() => onFieldClick({ field: row.field!, label: row.label })} />

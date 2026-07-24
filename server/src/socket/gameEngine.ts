@@ -1976,7 +1976,7 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
 
       // Collect in-memory active rooms — invite-only rooms never appear here, same
       // as they're never a Quick Play candidate.
-      for (const [_roomId, roomState] of engine.rooms) {
+      for (const roomState of engine.rooms.values()) {
         if (
           roomState.room.status === RoomStatus.WAITING &&
           !roomState.room.inviteOnly &&

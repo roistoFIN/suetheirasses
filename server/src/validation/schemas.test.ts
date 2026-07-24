@@ -7,9 +7,6 @@ import {
   validateGameConfig,
   validateFormulaUpdate,
   validateFeedbackSubmit,
-  roomJoinSchema,
-  chatMessageSchema,
-  submitDecisionsSchema,
 } from './schemas';
 
 describe('Validation Schemas', () => {
@@ -314,6 +311,7 @@ describe('Validation Schemas', () => {
     });
 
     it('should reject a missing required field', () => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { description, ...missingDescription } = validDecision;
       expect(() => validateDecisionDefinition(missingDescription)).toThrow();
     });
@@ -374,6 +372,7 @@ describe('Validation Schemas', () => {
     });
 
     it('should reject a config missing an adminVariables sub-section', () => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { finance, ...missingFinance } = validConfig.adminVariables;
       expect(() => validateGameConfig({ ...validConfig, adminVariables: missingFinance })).toThrow();
     });

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { GameEngine } from './gameEngine';
 import { RoomStatus, ServerEvents, PHASE_TIMERS, PHASE_ORDER, type DecisionDefinition, type GameConfig } from '@suetheirasses/shared';
-import type { Server, Socket } from 'socket.io';
+import type { Server } from 'socket.io';
 import type { PrismaClient, Room as PrismaRoom, Player as PrismaPlayer, Company as PrismaCompany } from '@prisma/client';
 import gameEngineData from '../data/game_engine.json' with { type: 'json' };
 import gameConfigData from '../data/game_config.json' with { type: 'json' };
@@ -70,10 +70,10 @@ const createMockPrisma = () => {
         players: [dbPlayer],
       });
     }),
-    findFirst: vi.fn().mockImplementation(({ where }: { where: Record<string, unknown> }) => {
+    findFirst: vi.fn().mockImplementation((_args: { where: Record<string, unknown> }) => {
       return Promise.resolve(null);
     }),
-    findUnique: vi.fn().mockImplementation(({ where }: { where: Record<string, unknown> }) => {
+    findUnique: vi.fn().mockImplementation((_args: { where: Record<string, unknown> }) => {
       return Promise.resolve(null);
     }),
     update: vi.fn().mockResolvedValue({}),

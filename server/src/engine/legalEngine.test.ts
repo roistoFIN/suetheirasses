@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { LegalEngine } from './legalEngine';
-import type { AdminVariables, LegalCaseData, PlayerVariables } from '@suetheirasses/shared';
+import type { AdminVariables, PlayerVariables } from '@suetheirasses/shared';
 
 // ── Helpers ──────────────────────────────────────────────────
 
