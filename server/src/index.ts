@@ -5,8 +5,9 @@ import { Server } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
 import { setupSocketHandlers } from './socket/gameEngine.js';
 import { requireAdminToken } from './middleware/adminAuth.js';
-import { validateDecisionDefinition, validateGameConfig, validateFormulaUpdate } from './validation/schemas.js';
+import { validateDecisionDefinition, validateGameConfig, validateFormulaUpdate, validateFeedbackSubmit } from './validation/schemas.js';
 import { generateDecisionCandidate, type DecisionGenRequest } from './services/decisionGenService.js';
+import type { FeedbackEntry, FeedbackSource } from '@suetheirasses/shared';
 
 const app = express();
 const httpServer = createServer(app);
@@ -64,6 +65,27 @@ app.get('/api/room/:roomId', async (req, res) => {
   } catch (error) {
     console.error('Error fetching room:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Player-submitted feedback (1-5 Likert rating + optional free text) — a plain public
+// REST endpoint, not a socket event, since the landing-page form has no room/socket to
+// piggyback on and the game-over form shouldn't behave differently just because one
+// exists. Deliberately anonymous (no player/room id accepted or stored) — see the
+// `Feedback` Prisma model's own doc comment.
+app.post('/api/feedback', async (req, res) => {
+  try {
+    const feedback = validateFeedbackSubmit(req.body);
+    await prisma.feedback.create({
+      data: {
+        rating: feedback.rating,
+        message: feedback.message ?? null,
+        source: feedback.source,
+      },
+    });
+    res.status(201).json({ ok: true });
+  } catch (error: any) {
+    res.status(400).json({ error: 'Invalid feedback', message: error.message });
   }
 });
 
@@ -175,6 +197,21 @@ app.put('/api/admin/config', requireAdminToken, async (req, res) => {
 // site GameLoop hard-depends on; only the expression/description text is editable.
 app.get('/api/admin/formulas', requireAdminToken, (_req, res) => {
   res.json({ formulas: engine.getFormulasSnapshot() });
+});
+
+// Read-only — feedback is collected via the public POST /api/feedback above and never
+// written from the admin side. Anonymous by design (see the Feedback Prisma model), so
+// there's nothing here to edit, only to review.
+app.get('/api/admin/feedback', requireAdminToken, async (_req, res) => {
+  const rows = await prisma.feedback.findMany({ orderBy: { createdAt: 'desc' } });
+  const feedback: FeedbackEntry[] = rows.map((r) => ({
+    id: r.id,
+    rating: r.rating,
+    message: r.message,
+    source: r.source as FeedbackSource,
+    createdAt: r.createdAt.toISOString(),
+  }));
+  res.json({ feedback });
 });
 
 app.put('/api/admin/formulas/:key', requireAdminToken, async (req, res) => {

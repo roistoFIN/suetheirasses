@@ -17,8 +17,8 @@ import {
   Textarea,
   Tabs,
 } from '@mantine/core';
-import { IconLogout, IconTrash, IconPlus } from '@tabler/icons-react';
-import type { AdminRoomSnapshot, DecisionDefinition, GameConfig, FormulaInfo } from '@suetheirasses/shared';
+import { IconLogout, IconTrash, IconPlus, IconMoodCry, IconMoodSad, IconMoodNeutral, IconMoodSmile, IconMoodHappy } from '@tabler/icons-react';
+import type { AdminRoomSnapshot, DecisionDefinition, GameConfig, FormulaInfo, FeedbackEntry } from '@suetheirasses/shared';
 
 /**
  * Admin Portal — a real, independent URL (`/admin`), not driven by game phase state
@@ -60,6 +60,7 @@ const AdminPortal: React.FC = () => {
   const [config, setConfig] = useState<GameConfig | null>(null);
   const [decisions, setDecisions] = useState<DecisionDefinition[]>([]);
   const [formulas, setFormulas] = useState<FormulaInfo[]>([]);
+  const [feedback, setFeedback] = useState<FeedbackEntry[]>([]);
 
   const loadEditableData = useCallback(async (authToken: string) => {
     const [configRes, decisionsRes, formulasRes] = await Promise.all([
@@ -104,8 +105,12 @@ const AdminPortal: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Poll rooms only — genuinely live data. A 401/503 mid-session (token revoked,
-  // ADMIN_TOKEN unset on the server) drops back to the login form.
+  // Poll rooms + feedback — both genuinely live data (rooms change as players play;
+  // feedback keeps arriving from the two public forms), unlike config/decisions/
+  // formulas, which are edit targets fetched once so a poll can never clobber an
+  // admin's in-progress edit (see this component's own top-of-file doc comment).
+  // A 401/503 mid-session (token revoked, ADMIN_TOKEN unset on the server) drops back
+  // to the login form.
   useEffect(() => {
     if (!authed) return;
     let cancelled = false;
@@ -122,6 +127,13 @@ const AdminPortal: React.FC = () => {
         }
         const roomsData = await roomsRes.json();
         if (!cancelled) setRooms(roomsData.rooms);
+
+        const feedbackRes = await adminFetch('/api/admin/feedback', token);
+        if (cancelled) return;
+        if (feedbackRes.ok) {
+          const feedbackData = await feedbackRes.json();
+          if (!cancelled) setFeedback(feedbackData.feedback);
+        }
       } catch {
         // Transient network hiccup — the next poll retries, no need to drop the session.
       }
@@ -143,6 +155,7 @@ const AdminPortal: React.FC = () => {
     setConfig(null);
     setDecisions([]);
     setFormulas([]);
+    setFeedback([]);
   };
 
   if (!authed) {
@@ -231,6 +244,7 @@ const AdminPortal: React.FC = () => {
             <Tabs.Tab value="config">Game Config</Tabs.Tab>
             <Tabs.Tab value="decisions">Decisions ({decisions.length})</Tabs.Tab>
             <Tabs.Tab value="formulas">Formulas ({formulas.length})</Tabs.Tab>
+            <Tabs.Tab value="feedback">Feedback ({feedback.length})</Tabs.Tab>
           </Tabs.List>
 
           <Tabs.Panel value="config">
@@ -255,6 +269,10 @@ const AdminPortal: React.FC = () => {
               token={token}
               onChanged={() => loadEditableData(token)}
             />
+          </Tabs.Panel>
+
+          <Tabs.Panel value="feedback">
+            <FeedbackTab feedback={feedback} />
           </Tabs.Panel>
         </Tabs>
       </Paper>
@@ -682,6 +700,58 @@ function NewDecisionForm({
 // object. The server validates syntax (a real parser) and a per-key variable
 // whitelist before anything is saved; a rejection surfaces inline below.
 // ============================================================
+
+// ============================================================
+// Feedback — read-only. Collected anonymously via the public POST /api/feedback (the
+// landing page's inline "Feedback" button, and the game-over screen's floating one —
+// see FeedbackForm.tsx) and never written from here; there's nothing to edit, only to
+// review. Polled alongside rooms (see this component's own polling effect) since new
+// rows can arrive at any time.
+// ============================================================
+const MOOD_ICON_BY_RATING: Record<number, React.ComponentType<{ size?: number }>> = {
+  1: IconMoodCry,
+  2: IconMoodSad,
+  3: IconMoodNeutral,
+  4: IconMoodSmile,
+  5: IconMoodHappy,
+};
+
+function FeedbackTab({ feedback }: { feedback: FeedbackEntry[] }) {
+  if (feedback.length === 0) {
+    return <Text size="sm" c="dimmed">No feedback submitted yet.</Text>;
+  }
+
+  return (
+    <Table striped highlightOnHover verticalSpacing="sm">
+      <Table.Thead>
+        <Table.Tr>
+          <Table.Th>When</Table.Th>
+          <Table.Th>Rating</Table.Th>
+          <Table.Th>Source</Table.Th>
+          <Table.Th>Message</Table.Th>
+        </Table.Tr>
+      </Table.Thead>
+      <Table.Tbody>
+        {feedback.map((entry) => {
+          const MoodIcon = MOOD_ICON_BY_RATING[entry.rating];
+          return (
+            <Table.Tr key={entry.id}>
+              <Table.Td style={{ whiteSpace: 'nowrap' }}>{new Date(entry.createdAt).toLocaleString()}</Table.Td>
+              <Table.Td>
+                <Group gap={4} wrap="nowrap">
+                  {MoodIcon && <MoodIcon size={18} />}
+                  <Text size="sm">{entry.rating} / 5</Text>
+                </Group>
+              </Table.Td>
+              <Table.Td><Badge variant="light">{entry.source === 'gameover' ? 'Game Over' : 'Landing'}</Badge></Table.Td>
+              <Table.Td>{entry.message || <Text size="sm" c="dimmed" fs="italic">(no message)</Text>}</Table.Td>
+            </Table.Tr>
+          );
+        })}
+      </Table.Tbody>
+    </Table>
+  );
+}
 
 function FormulasEditor({
   formulas,

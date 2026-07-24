@@ -7,6 +7,7 @@ import { IconPlayerPlay, IconPlayerPause } from '@tabler/icons-react';
 import { useGameStore } from '../stores/gameStore';
 import { useSocketStore } from '../stores/socketStore';
 import ChatWidget from '../components/ChatWidget';
+import FeedbackWidget from '../components/FeedbackWidget';
 import {
   ServerEvents, ClientEvents,
   type GameTimelineResponse, type TimelineDecisionEvent, type TimelineLawsuitEvent,
@@ -251,6 +252,12 @@ export default function GameTimelineView({ mode }: GameTimelineViewProps) {
           mode==='finished' has no Leave action at all) — see CLAUDE.md for why the
           floating-Leave treatment was deliberately kept scoped to the in-game screen. */}
       <ChatWidget />
+      {/* Floating Feedback button (bottom-left) — only for a genuinely finished game
+          (mode="finished"), not the live spectator view, matching "start page and
+          game-over pages" as the two places a feedback form was asked for. Bottom-left
+          is free on this screen for the same reason ChatWidget's own comment already
+          explains (no floating Leave button here to pair with/conflict with). */}
+      {mode === 'finished' && <FeedbackWidget />}
       <Container size="lg" py="xl">
         <Paper p="xl" style={{ background: 'var(--ink-parchment)', backgroundImage: 'var(--paper-texture)', border: '1px solid #cbb888', borderRadius: 4, boxShadow: '6px 8px 0 rgba(0,0,0,0.45)' }}>
         <Flex justify="space-between" align="center" mb="md">

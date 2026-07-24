@@ -104,6 +104,30 @@ export function validateChatMessage(data: unknown): ChatMessagePayload {
   return chatMessageSchema.parse(data);
 }
 
+/** Zod schema for `POST /api/feedback`'s body — a 1-5 Likert rating plus optional free
+ * text. No player/room identity fields at all (feedback is deliberately anonymous —
+ * see the `Feedback` Prisma model's doc comment); `source` is only ever one of the two
+ * real form locations, never client-supplied free text. */
+export const feedbackSubmitSchema = z.object({
+  rating: z.number().int().min(1).max(5),
+  message: z.string().max(2000).optional(),
+  source: z.enum(['landing', 'gameover']),
+});
+
+/** Inferred TypeScript type for a validated `POST /api/feedback` body. */
+export type FeedbackSubmitPayload = z.infer<typeof feedbackSubmitSchema>;
+
+/**
+ * Validates and parses raw data against the feedback-submission schema.
+ *
+ * @param data - Raw request body from `POST /api/feedback`.
+ * @returns Validated `FeedbackSubmitPayload` object.
+ * @throws ZodValidationError if the payload fails any constraint.
+ */
+export function validateFeedbackSubmit(data: unknown): FeedbackSubmitPayload {
+  return feedbackSubmitSchema.parse(data);
+}
+
 /** Zod schema for the `game:ready` Socket.IO event payload — toggles ready status for the in-flight turn. */
 export const gameReadySchema = z.object({
   ready: z.boolean(),

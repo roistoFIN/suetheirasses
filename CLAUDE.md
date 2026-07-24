@@ -3890,3 +3890,78 @@ badge clearing on open, and — after one player forfeits — the game-over repl
 still showing a working chat button with the complete history from every earlier phase.
 Extend `sendChatMessage`'s describe block and `chatStore.test.ts`, not just the happy
 path, if you touch chat's phase reach or the continuous-history mechanism again.
+
+### Player Feedback — a REST endpoint (not a socket event), deliberately anonymous, with a shared form component reused across two different button/popup shells
+
+Requested directly: a themed popup feedback form (1-5 Likert scale as mood-face icons +
+optional free text), reachable from a button on the landing page and on the game-over
+screen, readable by admins. Two product decisions were confirmed before building rather
+than assumed (see this file's own "ask when genuinely unsure" convention): feedback stays
+**fully anonymous everywhere** (no player/room id attached even at game-over, where that
+context would technically be available), and the admin view is **read-only** (no delete).
+
+**Why a plain REST endpoint, not a socket event.** Every other player-facing write in
+this app goes through Socket.IO, but the landing page has no room/socket context to
+piggyback a feedback submission onto — there's no player, no room, nothing `game:*`-
+shaped to attach it to. Making the game-over form use a *different* mechanism just
+because a socket happens to be available there would mean the two forms behave
+differently for no real benefit, and the whole feature is meant to look identical from
+either entry point. `POST /api/feedback` (public, no `x-admin-token`, validated by
+`feedbackSubmitSchema`) is the one and only write path for both.
+
+**The `Feedback` Prisma model deliberately has no FK to `Player`/`Room` at all** — not
+just "id omitted," genuinely no relation columns — matching this app's no-auth,
+unauthenticated-id-pair trust model (see *Reconnection & Session Resume*) taken to its
+logical conclusion: since there's no real identity to attach feedback to in the first
+place, don't invent one. `source: 'landing' | 'gameover'` is the only context a row
+carries, purely for admin-side triage of which form it came from — never anything that
+could identify who submitted it.
+
+**One shared `FeedbackForm.tsx`, two different shells.** The rating-picker + textarea +
+submit/thanks-state logic lives in exactly one component, embedded two ways: an inline
+**Feedback** button next to Matchmaking.tsx's existing About/Privacy Policy buttons,
+opening a Mantine `Modal` (matching that page's own established button-opens-Modal
+convention); and a new `FeedbackWidget.tsx` — a floating fab + popup panel, structurally
+a near-exact mirror of `ChatWidget.tsx`'s own fab/panel shape, just in the **bottom-left**
+corner instead of bottom-right. This split exists because the two host pages have
+different conventions to fit into, not because the form itself differs — don't stretch
+`FeedbackForm` to also own its own button/shell chrome, and don't duplicate its rating/
+submit logic into a second copy if a third entry point is ever added; wrap it in a third
+shell instead, the same way this one already composes into two.
+
+**Bottom-left was a deliberate, checked choice, not an arbitrary pick.** `ChatWidget` is
+mounted in `GameTimelineView.tsx` for both `mode="live"` (spectating) and
+`mode="finished"` (the real game-over screen) at bottom-right, with no floating Leave
+button on that screen to occupy bottom-left (see ChatWidget's own doc comment — the
+in-game screen's floating Leave Game button is a `GamePhase.tsx`-only thing). Confirmed
+before writing `FeedbackWidget` that bottom-left is genuinely free there, not just assumed
+free by symmetry with `GamePhase.tsx`. `FeedbackWidget` is deliberately mounted only for
+`mode === 'finished'`, not `'live'` — matching "start page and game-over pages" as the two
+places asked for, not the live-spectator view a still-in-progress game's forfeited player
+might be watching.
+
+**Admin Portal gained a fourth, read-only tab**, following the existing three tabs'
+established "fetched separately, not shoehorned into one blob" shape — but polled
+alongside the rooms table (every 5s) rather than fetched once-on-auth like
+config/decisions/formulas. The once-on-auth tabs are edit targets where a background poll
+risks silently clobbering an admin's in-progress edit (see this component's own top-of-
+file doc comment); feedback has nothing to edit, only ever-growing rows to observe, so
+it's "genuinely live data" in exactly the same sense the rooms table already is — the same
+reasoning, applied to a second tab instead of carving out a third polling cadence.
+
+`schemas.test.ts` gained a `feedbackSubmitSchema` describe block (rating bounds 1-5,
+integer-only, optional message capped at 2000 chars, `source` restricted to the two real
+values) and `tests/api/feedback.test.ts` (new) covers the Prisma model round-trip
+end-to-end — create with/without a message, confirm no `playerId`/`roomId` field exists on
+the row at all, and read-back ordering matches `GET /api/admin/feedback`'s own
+`orderBy: { createdAt: 'desc' }` — following this test layer's existing convention (see
+`room.test.ts`) of exercising the real Postgres schema directly rather than an HTTP-level
+test of the Express routes (nothing in this suite spins up the actual app that way; see
+`socket.test.ts`, which builds its own bare `httpServer`/`io` instead of importing
+`server/src/index.ts`). Verified live against the real running dev stack before considering
+this done: POST with and without a message, POST with an out-of-range rating (rejected,
+400), GET without a token (401), and GET with the real admin token (returns both rows,
+newest first, no player/room fields) — run via a scratch `tsx` process on a throwaway port
+against the already-running dev Postgres, specifically to avoid touching the Docker
+containers already running the (now-stale) built images. Extend all three, not just the
+happy path, if you touch this feature again.

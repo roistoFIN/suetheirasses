@@ -22,10 +22,11 @@ import {
   List,
   Table,
 } from '@mantine/core';
-import { IconCheck, IconCopy, IconInfoCircle, IconShieldLock } from '@tabler/icons-react';
+import { IconCheck, IconCopy, IconInfoCircle, IconShieldLock, IconMessageStar } from '@tabler/icons-react';
 import { useSocketStore } from '../stores/socketStore';
 import { useGameStore } from '../stores/gameStore';
 import { useChatStore } from '../stores/chatStore';
+import FeedbackForm from '../components/FeedbackForm';
 import { ClientEvents, ServerEvents, type RoomInfo } from '@suetheirasses/shared';
 
 /** localStorage key for remembering the player's name across visits — see `Matchmaking`'s name-entry section. */
@@ -108,6 +109,7 @@ const Matchmaking: React.FC = () => {
   const [chatInput, setChatInput] = useState('');
   const [aboutOpen, setAboutOpen] = useState(false);
   const [privacyOpen, setPrivacyOpen] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const chatViewportRef = useRef<HTMLDivElement>(null);
   const { send, on } = useSocketStore();
   const { room, player, error, setError } = useGameStore();
@@ -402,6 +404,14 @@ const Matchmaking: React.FC = () => {
             onClick={() => setPrivacyOpen(true)}
           >
             Privacy Policy
+          </Button>
+          <Button
+            variant="subtle"
+            color="dark"
+            leftSection={<IconMessageStar size={16} />}
+            onClick={() => setFeedbackOpen(true)}
+          >
+            Feedback
           </Button>
         </Group>
 
@@ -704,6 +714,16 @@ const Matchmaking: React.FC = () => {
 
           <Button onClick={() => setPrivacyOpen(false)} style={mmStyles.primaryBtn}>Got it</Button>
         </Stack>
+      </Modal>
+
+      <Modal
+        opened={feedbackOpen}
+        onClose={() => setFeedbackOpen(false)}
+        title={<Text component="span" style={{ ...mmStyles.title, fontSize: '1.3rem' }}>💬 Feedback</Text>}
+        centered
+        size="sm"
+      >
+        <FeedbackForm source="landing" onClose={() => setFeedbackOpen(false)} />
       </Modal>
     </Container>
   );

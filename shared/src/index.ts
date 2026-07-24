@@ -311,6 +311,38 @@ export interface FormulasResponse {
   formulas: FormulaInfo[];
 }
 
+/** Which of the two feedback forms a `Feedback` row came from — purely for admin
+ * triage, since the row itself carries no player/room identity at all (see
+ * `FeedbackEntry`'s doc comment). */
+export type FeedbackSource = 'landing' | 'gameover';
+
+/** Body for `POST /api/feedback` — a plain public REST endpoint (no auth, no socket
+ * involvement), since the landing-page form has no room/socket to piggyback on and
+ * the game-over form shouldn't behave differently just because one exists. `rating`
+ * is a 1-5 Likert score (mapped to mood-icon faces client-side); `message` is
+ * optional free text. */
+export interface FeedbackSubmitPayload {
+  rating: number;
+  message?: string;
+  source: FeedbackSource;
+}
+
+/** One submitted feedback row, as read back by `GET /api/admin/feedback`. Deliberately
+ * carries no player/room identity — feedback is fully anonymous by design (see the
+ * `Feedback` Prisma model's own doc comment) — `source` is the only context an admin
+ * gets beyond the rating/message/timestamp themselves. */
+export interface FeedbackEntry {
+  id: string;
+  rating: number;
+  message: string | null;
+  source: FeedbackSource;
+  createdAt: string;
+}
+
+export interface FeedbackListResponse {
+  feedback: FeedbackEntry[];
+}
+
 /** Response for `game:digDeeperResult` — sent only to the socket that paid for the dig. */
 export interface DigDeeperResultPayload {
   attackId: string;

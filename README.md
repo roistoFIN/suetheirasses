@@ -194,6 +194,8 @@ suetheirasses/
 │   │   ├── components/              # Reusable UI components
 │   │   │   ├── Timer.tsx            # Phase countdown timer
 │   │   │   ├── ChatWidget.tsx       # Floating in-game/game-over chat button + popup
+│   │   │   ├── FeedbackForm.tsx     # Shared 1-5 mood-face rating + text feedback form
+│   │   │   ├── FeedbackWidget.tsx   # Floating game-over feedback button + popup (wraps FeedbackForm)
 │   │   │   └── ...
 │   │   ├── pages/                   # Page components
 │   │   │   ├── Matchmaking.tsx      # Lobby: create/join/quick-play, invite links, inline chat
@@ -420,6 +422,20 @@ model LegalCaseHistory {
 
   @@index([roomId])
   @@index([roomId, filedRound])
+}
+
+// Player-submitted feedback (see "Player Feedback" above) — a 1-5 Likert rating plus
+// optional free text. Deliberately no FK to Player/Room at all: fully anonymous by
+// design, submitted via a plain public REST endpoint (POST /api/feedback), read back
+// only via GET /api/admin/feedback (admin-token gated, read-only).
+model Feedback {
+  id        String   @id @default(cuid())
+  rating    Int
+  message   String?
+  source    String   // 'landing' | 'gameover'
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
 }
 ```
 
@@ -1471,6 +1487,32 @@ wrapper `Box` rather than directly on the button (Mantine's `Indicator` badge po
 relative to its child's normal-flow box, which collapses to nothing if that child is itself
 taken out of flow via `position: fixed`).
 
+### Player Feedback
+
+A themed popup form — a 1-5 Likert scale rendered as mood-face icons (😢🙁😐🙂😄, via
+`@tabler/icons-react`'s `IconMoodCry`/`IconMoodSad`/`IconMoodNeutral`/`IconMoodSmile`/
+`IconMoodHappy`) plus an optional free-text box — reachable from two places: an inline
+**Feedback** button on the landing page (next to About/Privacy Policy, opening a Modal),
+and a floating button in the bottom-left corner of the game-over/replay screen
+(`GameTimelineView` in `mode="finished"` — the mirror image of the floating **Chat**
+button's bottom-right corner; see *In-Game & Game-Over Chat* above). Both embed the same
+`client/src/components/FeedbackForm.tsx`; only the surrounding shell (Modal vs. floating
+popup) differs, matching whichever button convention the host page already uses.
+
+**Deliberately, fully anonymous.** Submitting posts `{ rating, message?, source }` to a
+plain public REST endpoint (`POST /api/feedback`, no socket involvement, no auth) —
+nothing identifying the player, their room, or their game is ever collected or sent, even
+from the game-over form where that context would technically be available. This matches
+the rest of the app's no-auth trust model (see *Reconnection & Session Resume* above) and
+keeps the two forms behaving identically regardless of where they're opened from;
+`source` (`'landing' | 'gameover'`) is the only context a submission carries, purely for
+admin-side triage. A rating is required to submit; the message is optional.
+
+Feedback is read-only from the outside — the only way to see submissions is
+`GET /api/admin/feedback` (admin-token gated, see *Admin Portal* below); there's no
+socket event, no player-facing "see what others said" view, and nothing here is ever
+edited, only reviewed.
+
 ### AI-Narrated Annual Reports
 
 A rival's "Full Filing" report used to show one of 3-4 fixed, hand-written
@@ -1571,6 +1613,11 @@ It has two parts:
   the expression (not a JSON textarea — these are one-line math expressions, not nested
   objects). A parse or unknown-variable error from the server is surfaced inline on the
   row that failed. Same fetch-once-on-auth-plus-after-save pattern as the other two tabs.
+- **Feedback (read-only)** — every submission from the two player-facing feedback forms
+  (see *Player Feedback* below): rating, optional message, source, and timestamp, newest
+  first. Nothing here is editable — feedback is collected anonymously via a public
+  endpoint and only ever read back here. Polled every 5 seconds alongside the rooms
+  table, since new rows can arrive at any time.
 
 The decision library, game config, and formulas are all **stored in Postgres, not static
 JSON** (see *Decisions & Game Config* and *Formulas* below) — every save here takes
@@ -1999,6 +2046,7 @@ docker-compose up -d --build
 |--------|----------|-------------|
 | GET | `/health` | Health check |
 | GET | `/api/room/:roomId` | Get room details |
+| POST | `/api/feedback` | Submit player feedback — `{ rating: 1-5, message?, source: 'landing' \| 'gameover' }`. Body validated by `feedbackSubmitSchema`. Public, no auth — deliberately anonymous, no player/room id accepted. See *Player Feedback* above. |
 | GET | `/api/admin/rooms` | Every in-memory room (any phase), with per-player status. Requires `x-admin-token`. See *Admin Portal* below. |
 | GET | `/api/admin/decisions` | The full decision library, from the DB. Requires `x-admin-token`. |
 | POST | `/api/admin/decisions` | Create a new decision. Body validated by `decisionDefinitionSchema`; 409 if the name already exists. Requires `x-admin-token`. |
@@ -2008,6 +2056,7 @@ docker-compose up -d --build
 | PUT | `/api/admin/config` | Replace the game config. Body validated by `gameConfigSchema`. Requires `x-admin-token`. |
 | GET | `/api/admin/formulas` | All 23 pure-math formulas, from the DB. Requires `x-admin-token`. See *Formulas* above. |
 | PUT | `/api/admin/formulas/:key` | Update one formula's expression/description. Body validated by `formulaUpdateSchema` — real syntax parse plus a per-key variable whitelist; 400 on either failure, 404 if the key is unknown. No create/delete — the key set is fixed. Requires `x-admin-token`. |
+| GET | `/api/admin/feedback` | Every submitted feedback row, newest first. Read-only — nothing here is ever written from the admin side. Requires `x-admin-token`. See *Player Feedback* above. |
 
 ### WebSocket API
 

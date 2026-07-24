@@ -201,3 +201,25 @@ model LegalCaseHistory {
   @@index([roomId, filedRound])
   @@map("legal_case_history")
 }
+
+// Player-submitted feedback (1-5 Likert rating + optional free text), collected from a
+// themed popup form reachable from a button on both the landing page and the
+// game-over/finished-replay screen (GameTimelineView). Deliberately fully anonymous —
+// no FK to Player/Room at all — matching this app's no-auth trust model (see the
+// Reconnection & Session Resume section in CLAUDE.md): the landing page has no
+// player/room to attach to in the first place, and requiring one only at game-over
+// would make the two forms behave inconsistently for no real benefit. `source`
+// distinguishes which of the two forms a row came from, purely for admin triage.
+// Submitted via a plain public REST endpoint (POST /api/feedback, no admin token) —
+// read back only via GET /api/admin/feedback (admin-token gated, read-only).
+model Feedback {
+  id        String   @id @default(cuid())
+  rating    Int
+  message   String?
+  // 'landing' | 'gameover'
+  source    String
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("feedback")
+}

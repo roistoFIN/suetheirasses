@@ -6,6 +6,7 @@ import {
   validateDecisionDefinition,
   validateGameConfig,
   validateFormulaUpdate,
+  validateFeedbackSubmit,
   roomJoinSchema,
   chatMessageSchema,
   submitDecisionsSchema,
@@ -132,6 +133,62 @@ describe('Validation Schemas', () => {
       const data = { message: 'a' };
       const result = validateChatMessage(data);
       expect(result.message).toBe('a');
+    });
+  });
+
+  describe('feedbackSubmitSchema', () => {
+    it('should validate a full feedback submission', () => {
+      const result = validateFeedbackSubmit({ rating: 4, message: 'Loved the lawsuits!', source: 'gameover' });
+      expect(result.rating).toBe(4);
+      expect(result.message).toBe('Loved the lawsuits!');
+      expect(result.source).toBe('gameover');
+    });
+
+    it('should validate a rating with no message (message is optional)', () => {
+      const result = validateFeedbackSubmit({ rating: 3, source: 'landing' });
+      expect(result.rating).toBe(3);
+      expect(result.message).toBeUndefined();
+    });
+
+    it('should accept ratings 1 through 5', () => {
+      for (const rating of [1, 2, 3, 4, 5]) {
+        expect(() => validateFeedbackSubmit({ rating, source: 'landing' })).not.toThrow();
+      }
+    });
+
+    it('should reject a rating of 0', () => {
+      expect(() => validateFeedbackSubmit({ rating: 0, source: 'landing' })).toThrow();
+    });
+
+    it('should reject a rating of 6', () => {
+      expect(() => validateFeedbackSubmit({ rating: 6, source: 'landing' })).toThrow();
+    });
+
+    it('should reject a non-integer rating', () => {
+      expect(() => validateFeedbackSubmit({ rating: 3.5, source: 'landing' })).toThrow();
+    });
+
+    it('should reject a missing rating', () => {
+      expect(() => validateFeedbackSubmit({ source: 'landing' })).toThrow();
+    });
+
+    it('should reject a source outside landing/gameover', () => {
+      expect(() => validateFeedbackSubmit({ rating: 3, source: 'lobby' as any })).toThrow();
+    });
+
+    it('should reject a missing source', () => {
+      expect(() => validateFeedbackSubmit({ rating: 3 })).toThrow();
+    });
+
+    it('should reject a message exceeding 2000 characters', () => {
+      const longMessage = 'a'.repeat(2001);
+      expect(() => validateFeedbackSubmit({ rating: 3, message: longMessage, source: 'landing' })).toThrow();
+    });
+
+    it('should accept a message at exactly 2000 characters', () => {
+      const message = 'a'.repeat(2000);
+      const result = validateFeedbackSubmit({ rating: 3, message, source: 'landing' });
+      expect(result.message).toBe(message);
     });
   });
 
