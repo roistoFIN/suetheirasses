@@ -25,8 +25,11 @@ RUN npm run build
 WORKDIR /app/client
 RUN npm run build
 
-# Build server
+# Build server (tsc needs @prisma/client's generated types to resolve
+# Prisma-typed code in gameEngine.ts/index.ts — same class of gap already
+# fixed in CI's Type Check/Build jobs and in server/Dockerfile)
 WORKDIR /app/server
+RUN npx prisma generate --schema=prisma/schema.prisma
 RUN npm run build
 
 # Production stage
