@@ -58,11 +58,15 @@ async function requestBlurb({ decisionName, description, elapsedYears }: AnnualR
               'You write a single-sentence corporate press-release blurb for a company\'s ' +
               'annual report, describing one strategic move in vague, upbeat corporate PR ' +
               'jargon. Never mention numbers, dollar amounts, or percentages. Output ONLY ' +
-              'the sentence itself — no quotes, no preamble, no explanation. /no_think',
+              'the sentence itself — no quotes, no preamble, no explanation.',
           },
           {
             role: 'user',
-            content: `Move: "${decisionName}" — ${description}. It has been running for ${elapsedYears} year(s). Write the blurb.`,
+            // Qwen3 only honors the /no_think switch when it's on the user turn, not the
+            // system prompt (confirmed live: system-prompt placement still emitted a
+            // <think> block every time) — see sanitize()'s doc comment for what happens
+            // if a think block ever leaks through anyway.
+            content: `Move: "${decisionName}" — ${description}. It has been running for ${elapsedYears} year(s). Write the blurb. /no_think`,
           },
         ],
         max_tokens: 80,
@@ -85,10 +89,18 @@ async function requestBlurb({ decisionName, description, elapsedYears }: AnnualR
   }
 }
 
-/** Strips Qwen3's optional `<think>...</think>` reasoning block and surrounding quotes/whitespace. */
+/** Strips Qwen3's optional `<think>...</think>` reasoning block and surrounding quotes/whitespace.
+ * Also defensively drops everything from an unclosed `<think>` tag onward — this was a real,
+ * reported bug: `/no_think` in the system prompt didn't actually suppress the model's reasoning
+ * mode, and the `stop: ['\n']` sequence then truncated generation right after `<think>\n`, before
+ * the closing tag, so the well-formed-pair regex alone let a bare "<think>" leak through as if it
+ * were real blurb text (and get cached forever under `requestBlurb`'s cache key). `/no_think` now
+ * lives on the user turn instead, where it's actually honored — this second strip stays as a
+ * defense-in-depth backstop in case a think block (complete or truncated) ever shows up again. */
 function sanitize(raw: string): string {
   return raw
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<think>[\s\S]*$/gi, '')
     .replace(/^["'\s]+|["'\s]+$/g, '')
     .trim();
 }

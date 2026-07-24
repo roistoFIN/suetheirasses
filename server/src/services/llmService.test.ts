@@ -47,6 +47,18 @@ describe('generateAnnualReportBlurb', () => {
     expect(text).toBe('Streamlining core competencies for market alignment.');
   });
 
+  it('falls back to the caller-supplied text when the response is a truncated, unclosed <think> block (regression)', async () => {
+    // Real, reported bug: the LLM's /no_think switch wasn't honored, and a stop sequence
+    // then cut generation off right after "<think>\n" — before the closing tag — so a
+    // bare "<think>" leaked through as if it were real blurb text and got cached forever.
+    global.fetch = mockFetchOk('<think>') as any;
+    const req = makeRequest({ decisionName: 'Unique Decision Truncated Think' });
+
+    const text = await generateAnnualReportBlurb(req);
+
+    expect(text).toBe(req.fallback);
+  });
+
   it('falls back to the caller-supplied text when the server responds non-OK', async () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 503 }) as any;
     const req = makeRequest({ decisionName: 'Unique Decision C' });
