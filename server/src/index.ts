@@ -142,7 +142,7 @@ app.post('/api/admin/decisions/generate', requireAdminToken, async (req, res) =>
   const body = req.body ?? {};
   const request: DecisionGenRequest = {
     theme: typeof body.theme === 'string' ? body.theme.slice(0, 200) : undefined,
-    level: body.level === 'Strategic' || body.level === 'Operational' ? body.level : undefined,
+    level: body.level === 'Strategic' || body.level === 'Operational' || body.level === 'Financial' ? body.level : undefined,
     nature: ['Traditional', 'Grey Area', 'Dirty'].includes(body.nature) ? body.nature : undefined,
     offensive: body.offensive === true,
   };

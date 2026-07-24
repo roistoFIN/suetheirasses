@@ -438,8 +438,8 @@ same way — don't assume a phase change ever tears the component down for you.
 ### Everything per-round is client-full-replacement, not incremental
 
 `game:submitDecisions` sends the player's *entire* pending selection every time
-(strategic/operational decisions + lawsuit filings); the server always treats it as a
-full replacement for that in-flight turn, never a delta. Keep this in mind when touching
+(strategic/operational/financial decisions + lawsuit filings); the server always treats it
+as a full replacement for that in-flight turn, never a delta. Keep this in mind when touching
 either the client submission logic (`GamePhase.tsx`) or `GameLoop.submitDecisions`.
 
 ### Queued (not-yet-resolved) decisions and lawsuits render as lightweight stand-ins, not by reusing the resolved-state cards
@@ -448,7 +448,7 @@ either the client submission logic (`GamePhase.tsx`) or `GameLoop.submitDecision
 queued picks too, not just already-active ones) and "Open Lawsuits" used to render only
 server-authoritative, already-resolved state (`myData.activeDecisions` /
 `myData.legalCases`) — nothing queued this turn (`pending.strategic`/`operational`/
-`lawsuits`, the exact same client-local state the Decision Deck and Sue modal already
+`financial`/`lawsuits`, the exact same client-local state the Decision Deck and Sue modal already
 read/write) showed up there at all, even though both boxes are the natural place a player
 would look to confirm what they've picked. Both now merge `pending`'s entries into the
 same list, marked with the same red `QUEUED` `gpStyles.stamp` badge the Decision Deck
@@ -470,14 +470,14 @@ exact same `pending` mutation the Decision Deck's toggle and the Sue modal's
 pending[bucket].filter(...) })` — so cancelling from "Active Decisions"/"Open Lawsuits"
 is not a separate code path, just the same state update triggered from a third location.
 
-`Active Decisions`' header count (`"{N} strategic and {M} operational"`) deliberately
-counts everything the box actually shows — active *and* still-queued, per bucket — the
-same "the number always equals how many cards are visible" convention `Open Lawsuits
-(N)` already established. Since `ActiveDecisionInstance` carries no `level` field of its
-own (only `DecisionDefinition` does), each active instance has to be looked back up by
-`decisionName` against the loaded `decisions` deck to bucket it; queued entries don't need
-this lookup at all, since `pending.strategic`/`pending.operational` are already
-bucket-keyed by construction.
+`Active Decisions`' header count (`"{N} strategic, {M} operational, and {K} financial"`)
+deliberately counts everything the box actually shows — active *and* still-queued, per
+bucket — the same "the number always equals how many cards are visible" convention
+`Open Lawsuits (N)` already established. Since `ActiveDecisionInstance` carries no `level`
+field of its own (only `DecisionDefinition` does), each active instance has to be looked
+back up by `decisionName` against the loaded `decisions` deck to bucket it; queued entries
+don't need this lookup at all, since `pending.strategic`/`pending.operational`/
+`pending.financial` are already bucket-keyed by construction.
 
 **The `pending`-reset effect must be keyed on `round`, not `turnResults?.round`** — a real,
 reproduced bug (not just theoretical) where a decision made exactly once showed up twice
@@ -1048,7 +1048,7 @@ don't assume "the only listener for `game:kpiHistoryResult`" is safe to skip it.
 
 Both boxes used to render a `<Text c="dimmed">No active decisions</Text>` / `No open
 lawsuits` line when their combined active+queued list was empty. Removed as redundant:
-the section title itself (`"Active Decisions (0 strategic and 0 operational)"`,
+the section title itself (`"Active Decisions (0 strategic, 0 operational, and 0 financial)"`,
 `"Open Lawsuits (0)"`) already states the count, so an empty-state line under an
 already-zeroed header said the same thing twice. Both `SectionCard` bodies now always
 render their `Stack` unconditionally — when nothing's active or queued it just renders
@@ -1146,7 +1146,7 @@ height Mantine's own stylesheet still applies underneath. If you add another `gp
 helper that overrides a Mantine component's border/padding, check whether it also needs to
 take over that component's centering the same way — a thicker border is exactly the kind
 of change that silently breaks Mantine's own default vertical centering.
-`gpStyles.filterChip` (the ALL/STRATEGIC/OPERATIONAL filter pills) and
+`gpStyles.filterChip` (the ALL/STRATEGIC/OPERATIONAL/FINANCIAL filter pills) and
 `gpStyles.semaphoreChip` (the case-probability chip) weren't affected — neither overrides
 `display` or uses as thick a border, so neither fights Mantine's own centering (or, for
 `semaphoreChip`, isn't a `Badge` in the first place — it's a plain `Box` with its own
@@ -2205,6 +2205,169 @@ those tests reuse from elsewhere in the file: a player fixture needs `installedC
 capacityUtilization: 0` to suppress volume/revenue entirely, or a turn's ordinary P&L can
 swing cash by amounts large enough to make a "should end up bankrupt" fixture flip sign
 unpredictably.
+
+### Buy Shares paid out a fraction of what the buyer spent — a real, reported bug in `applyShareTransaction`'s dilution-payout formula
+
+Reported directly: buying into another player's company charged the buyer the full amount
+(e.g. $99,000) but credited the diluted owner with only a small fraction of it (e.g.
+$7,974) — cash was supposed to move 1:1 between buyer and seller (modulo any dilution
+absorbed by `EXTERNAL_MARKET`/other holders, which have always been the accepted
+exceptions — see the payout formula in *Share ownership & majority-ownership takeover*
+above), not evaporate. Root cause: the per-owner payout line was
+`ownerCtx.vars.cash += fraction * fractionBought * spend` — multiplying by `fractionBought`
+*twice*. `fraction` is already that owner's pre-dilution ownership share of the company
+being bought into; the correct payout (and what this method's own doc comment already
+said, before the code was fixed to match it: "receives their pro-rata share of that amount
+in cash") is simply `fraction * spend` — a seller who owns 100% of the diluted company
+receives 100% of what the buyer paid, not `fractionBought` (e.g. 8%) of it. Fixed by
+dropping the extra `* fractionBought` factor; the **Sell** branch (returns proceeds to
+`EXTERNAL_MARKET`, capped at the actual holding) was never affected — the bug was isolated
+to the **Buy** branch's per-owner payout loop.
+
+`gameLoop.test.ts`'s "Buy/Sell Shares" describe block gained a `toBeCloseTo(20000, ...)`
+regression assertion on its existing single-owner purchase test (previously asserted the
+buggy `4000`) and a new dedicated test with a three-way cap table (founder/other real
+player/`EXTERNAL_MARKET`) proving each real seller receives exactly their own pre-dilution
+fraction of the buyer's spend, while `EXTERNAL_MARKET`'s share of the dilution is paid to
+nobody (an intentional, separate design point, unaffected by this fix) — extend those, not
+just the single-owner happy path, if you touch `applyShareTransaction`'s buy branch again.
+
+### Buy Shares / Sell Shares are their own decision-type category (`level: 'Financial'`), not Strategic — a separate per-turn budget, admin-configurable
+
+Requested directly, alongside the payout bug above: Buy Shares and Sell Shares used to be
+tagged `level: 'Strategic'` in `game_engine.json`, consuming one of a player's regular
+`maxStrategicDecisionsPerTurn` slots (1 by default) — meaning a player who wanted to trade
+shares gave up their one other strategic pick that round, and vice versa. By explicit
+product decision, `'Financial'` is now a third `DecisionDefinition.level` value alongside
+`'Strategic'`/`'Operational'`, with its own admin-configurable per-turn cap,
+`gameSettings.maxFinancialDecisionsPerTurn` (seeded default: 2, matching the Operational
+budget — a deliberate choice among the three options offered, since Buy/Sell Shares is a
+frequently-repeatable, low-friction action more like Operational play than a once-a-round
+Strategic commitment). Only Buy Shares and Sell Shares carry this level currently — nothing
+else in the seeded library was retagged.
+
+This touched every place in the codebase that assumed exactly two decision-type buckets —
+the single most load-bearing change was `shared/src/gameTypes.ts`'s `SubmittedDecisions`
+(`{ strategic, operational, lawsuits }` → `{ strategic, operational, financial, lawsuits }`),
+since `game:submitDecisions`' full-replacement payload (see *Everything per-round is
+client-full-replacement* above) is what every downstream bucket assumption traces back to.
+Server-side, `GameLoop` now exports a shared `DECISION_BUCKETS = ['strategic', 'operational',
+'financial'] as const` tuple/`DecisionBucket` type, used everywhere a bucket is iterated or
+keyed (`entryKey`/`entryTimestamp`/`stampEntryTimestamps`'s FIFO-timestamp tracking, and
+`processNewDecisions`'s `maxForLevel` lookup that replaced a `bucket === 'strategic' ? maxStrat
+: maxOp` ternary) — deliberately a single shared constant rather than three independent
+hardcoded two-item arrays, since a hardcoded pair is exactly the class of bug that silently
+drops a third value the next time this needs to grow (the same lesson this file's own
+`DEPRECIATING_ASSETS`/`legalRiskConditions` sections already learned the hard way for
+decision-name allowlists — see *Decisions/config are DB-backed* above). Client-side,
+`GamePhase.tsx` gained the equivalent `LEVEL_TO_BUCKET`/`maxForBucket` lookups, used by
+`togglePending` and the Decision Deck's per-card deploy-limit check (both previously a
+`def.level === 'Strategic' ? 'strategic' : 'operational'`-shaped ternary that would have
+silently misfiled a `'Financial'` decision into the `'operational'` bucket) — the "Active
+Decisions" header count, the Decision Deck's level filter chips, and its
+"`X/Y STRATEGIC · X/Y OPERATIONAL QUEUED`" counter line all gained a third `FINANCIAL`
+term/chip the same way.
+
+**The FIFO submission-timestamp tracking (`stampEntryTimestamps`) needed the `financial`
+bucket added too, or Buy/Sell Shares' own simultaneous-purchase ordering guarantee (see
+*Share ownership & majority-ownership takeover*'s FIFO section above) would have silently
+broken** — before this change, that stamping loop only ever walked `decisions.strategic`/
+`decisions.operational` (Buy Shares was itself `'Strategic'` at the time, so this was
+correct then); moving Buy Shares to a bucket the stamping loop didn't know about would have
+meant every Buy Shares entry fell back to `entryTimestamp`'s `Date.now()` safety-net every
+single time, defeating the "first-seen, not last-touched" FIFO ordering the whole mechanism
+exists for. Iterating the shared `DECISION_BUCKETS` tuple instead of a hardcoded pair closes
+this same gap for any *future* bucket too, not just this one.
+
+**The Decision Card's target picker is now labeled "COMPANY," not "TARGET," for Buy/Sell
+Shares specifically** — a separate, smaller product decision confirmed alongside the level
+change: the picker was never actually "who receives the shares" (a sale has always gone
+only to `EXTERNAL_MARKET`, never to another player — see *Share ownership &
+majority-ownership takeover* above), it's "whose cap table this trade acts on," which reads
+very differently from a real attack decision's target (e.g. Bot Attack) picking a
+counterparty to harm. `DecisionCard` now shows a small "COMPANY"/"TARGET" label above the
+`<select>`, switched on the same `allowsSelfTarget` flag (`!!def.shareTransactionType`)
+that already gated the "Myself" option — every other `target.*`-bearing decision keeps the
+unchanged "TARGET" label and "Select target…" placeholder. This was considered against
+just relabeling in the description text alone and rejected — the ambiguity was in the
+picker's own header, not the decision's prose, which already explained this correctly (see
+README's *Share Ownership & Takeover* section).
+
+The AI decision-generation tool (see *AI decision generation (EXPERIMENTAL, admin-only)*
+above) also gained `'Financial'` as a selectable level — in its admin-portal dropdown, its
+`DecisionGenRequest.level` type, the required-shape line of its own prompt to the model
+(with one added rule note steering it toward *Financial* only for genuinely
+trading/financial-engineering-flavored ideas, not everyday operations), and
+`clampDecisionCandidate`'s level-clamping fallback (which previously silently coerced any
+unrecognized level — including a hypothetical `'Financial'` from a future prompt change —
+down to `'Operational'`). This wasn't asked for directly but follows the same "don't
+hardcode a two-way check where a third value now legitimately exists" principle as
+everywhere else in this change — an admin asking the generator for a `'Financial'`-flavored
+draft would otherwise have had it silently miscategorized.
+
+`gameLoop.test.ts` gained a dedicated "should enforce financial decision limit
+independently of strategic/operational" regression test (two financial entries submitted
+against a `maxFinancialDecisionsPerTurn: 1` fixture; only the first deploys, regardless of
+the much higher strategic/operational limits the same fixture sets) — extend that, not just
+the strategic-limit test next to it, if you touch `processNewDecisions`'s per-bucket cap
+enforcement again. Every existing test fixture across `gameLoop.test.ts`,
+`gameLoop.simulation.test.ts`/`.simulation.smart.test.ts`, `gameEngine.test.ts`,
+`schemas.test.ts`, and the `tests/api/*` Docker-dependent suites needed a `financial: []`
+(or a real financial entry) added to every hand-built `SubmittedDecisions` object — a
+`financial`-less literal now throws (`TypeError: decisions[bucket] is not iterable`) the
+instant `GameLoop.submitDecisions` tries to stamp its FIFO timestamps, since the bucket is
+no longer optional. If you add a fourth `DecisionDefinition.level` value in the future,
+expect the same blast radius and start from this section's file list.
+
+### `room:startGame` broadcast a fast client's real turn-1 resolution before its own always-empty initial snapshot — a real race, found via a live Docker smoke test, not code review
+
+While building/testing this session's other changes (the Buy Shares fixes above) against a
+real `docker compose up --build` stack — not just the mocked unit-test layer — a live
+two-socket reproduction (create room, join, start game, both players submit + ready up
+immediately) surfaced a genuine ordering bug that no existing test caught: the client's own
+`turnResults` state could end up showing an always-empty round-1 snapshot **after** it had
+already received the real, decision-reflecting round-1 resolution — silently reverting
+"my activeDecisions/cash" back to starting values the instant a game began, for any player
+fast enough to ready up immediately.
+
+**Root cause**: `ROOM_START_GAME`'s handler broadcast `PHASE_CHANGED` (and
+`GAME_READY_UPDATE`/`GAME_DECK`) — the events that make the client render the GamePhase
+screen and allow submitting/readying up — **before** `await
+engine.broadcastInitialSnapshot(roomId, 1)` had actually resolved. `broadcastInitialSnapshot`
+does real async DB work first (`loadActiveCompanyPlayers`, `persistKpiSnapshots`) before its
+own `TURN_RESOLVED` broadcast. Since both players' sockets could see `PHASE_CHANGED` and
+fire `game:submitDecisions`/`game:ready` well before that DB work finished, the OWN,
+ready-triggered `resolveGameTurn` call (a completely separate, faster code path — no similar
+DB dependency chain in front of its own `TURN_RESOLVED`) could complete and broadcast the
+REAL round-1 result FIRST, only for the slower, always-`activeDecisions: []` initial
+snapshot to land moments later and silently overwrite it client-side (both go through the
+same `handleTurnResolved`/`turnResults` state, which has no concept of "is this event
+actually newer than what I already have"). Reproduced directly, not inferred: a real
+Socket.IO client pair readying up immediately on `PHASE_CHANGED` reliably received the
+initial (empty) snapshot as a **second**, later `TURN_RESOLVED`, after the real one.
+
+**Fix**: reordered `ROOM_START_GAME` so `broadcastInitialSnapshot` is awaited and its
+`TURN_RESOLVED` broadcasts **before** `PHASE_CHANGED`/`GAME_READY_UPDATE`/`GAME_DECK` —
+since a client can't act (submit/ready) until it's told the phase changed, awaiting the
+initial snapshot first means no client can possibly race past it. While fixing this, the
+handler's state-mutation/broadcast orchestration (previously inline in the raw
+`socket.on(ClientEvents.ROOM_START_GAME, ...)` callback, unlike every comparable handler —
+`resolveGameTurn`, `forfeitGame`, `toggleReady` — which are all public `GameEngine` methods)
+was pulled out into a new `GameEngine.startGame(roomId)` method specifically so this
+ordering has real regression coverage; the handler itself keeps only the
+`NOT_HOST`/`NOT_ENOUGH_PLAYERS` validation, which needs direct `socket.emit` access.
+
+`gameEngine.test.ts`'s new `startGame` describe block covers this directly: one test walks
+`mockIo.emit.mock.calls` (all room broadcasts land in this one ordered array with the
+existing `to: vi.fn().mockReturnThis()` mock — see `createMockIo`) and asserts
+`TURN_RESOLVED`'s call index is strictly less than `PHASE_CHANGED`'s — extend that, not just
+the happy-path "did it broadcast everything" test, if you touch `startGame`'s ordering
+again. This is also a concrete example of why building/running the actual Docker stack (not
+just the mocked test suite) surfaced a real bug the mocks structurally couldn't: the mocked
+`Server`/Prisma in `gameEngine.test.ts` have no real async latency between `TURN_RESOLVED`
+broadcasts from two different code paths, so a call-order bug driven by *relative timing*
+between two genuinely concurrent async operations was invisible there until a live,
+real-latency reproduction exposed it.
 
 ### OWNERSHIP (CAP TABLE) — the STOCK VALUE drill-down shows who actually holds the shares, not just what they're worth
 
@@ -3316,13 +3479,15 @@ to every push into it.
 
 ### Post-turn events are a passive, clickable News feed — nothing auto-pops a modal anymore
 
-Being sued, a lawsuit reaching a verdict (or settling by negotiation), and a new round
-starting can all happen off the same `resolveTurn` call, and each has its own art/copy
-(`sued.png`, `lawsuit-won.png`/`lawsuit-lost.png`/`defender-won.png`,
-`settlement-proposal.png`, `turn-change.png`). `GamePhase.tsx` models all four as a single
+Being sued, a lawsuit reaching a verdict (or settling by negotiation), somebody buying a
+stake in your own company, and a new round starting can all happen off the same
+`resolveTurn` call, and each has its own art/copy (`sued.png`,
+`lawsuit-won.png`/`lawsuit-lost.png`/`defender-won.png`, `settlement-proposal.png`,
+`shares-bought.png`, `turn-change.png`). `GamePhase.tsx` models all five as a single
 discriminated union, `PostTurnEvent = { type: 'sued'; case } | { type: 'verdict'; outcome;
-case } | { type: 'settlement'; case } | { type: 'turnChange'; round }` — **one case per
-event, always**, never a batch (see the dedicated section below for why). This **used to** drive a
+case } | { type: 'settlement'; case } | { type: 'sharesBought'; buyerId; buyerName;
+fractionBought } | { type: 'turnChange'; round }` — **one case/purchase per event,
+always**, never a batch (see the dedicated section below for why). This **used to** drive a
 single auto-opening `Modal` off the front of a dismiss-to-advance `eventQueue` (each
 event interrupted play the instant it happened); it now instead wraps every event into a
 `NewsItem { id, round, event }` and appends it to `newsItems`, rendered as a scrollable
@@ -3332,9 +3497,27 @@ exact same per-type content it always did, but it's now driven by `newsModalItem
 row, if any, the player clicked) rather than the queue's front — clicking a `NewsRow`
 opens it, closing just clears `newsModalItem`, and there's no more "pop the queue and
 reveal what's next" dismissal chain since nothing needs to auto-advance. If you add a
-fifth post-turn event type, extend the `PostTurnEvent` union and give it a `newsTopic`
+sixth post-turn event type, extend the `PostTurnEvent` union and give it a `newsTopic`
 case and a modal-content branch — don't reintroduce a separate auto-popping `Modal`/
 boolean for it, or you've reintroduced the exact interruption this replaced.
+
+**`sharesBought` is the one event type that needs no before/after diff** — every other
+event type is detected by comparing the player's own `legalCases` between the previous and
+current turn snapshot (see the three detector functions below), because `LegalCaseData` is
+persisted, ongoing state with no "did this happen THIS turn" flag of its own. Buy Shares
+trades are different: `GameLoop.resolveTurn`'s Step 1b already knows, at the exact instant
+each trade executes, who bought and `fractionBought` (see `applyShareTransaction`'s return
+value and the `sharesBoughtByTarget` map that collects it) — so `PlayerTurnResult.
+sharesBoughtThisTurn` is scoped to exactly this turn's trades by construction, and the
+turn-sync effect just reads `myPlayer.sharesBoughtThisTurn` directly rather than diffing
+against `myData`. **Only surfaced to the target, and never for a self-buyback** — the
+buyer already knows about their own trade (reclaiming your own previously-diluted stake
+via Buy Shares isn't news to yourself), so `applyShareTransaction` only returns a
+`fractionBought` when `request.buyerId !== request.targetId`; a self-buyback returns
+`undefined` and never enters `sharesBoughtByTarget` at all. Two simultaneous buyers
+against the same target in one turn correctly produce two separate `sharesBought` events
+(and two News rows), matching the "one case per event, never a batch" rule the whole
+feature already follows.
 
 `NewsItem.round` is `turnResults.round` for sued/verdict/settlement (the round that
 *just* resolved, when the event actually happened — not the `round` state variable, which
@@ -3364,6 +3547,16 @@ to the *querying player's own* perspective (`outcome: 'won' | 'lost'`, or `role:
 'plaintiff' | 'defendant'`) — `LegalCaseData.verdict` itself is plaintiff-centric, so a
 defendant's own win/loss (or which side paid whom in a settlement) is the logical inverse;
 downstream UI never re-derives this, it just reads the already-flipped field.
+
+`sharesBoughtThisTurn` itself has no client-side detector to test (see above, no diff
+needed) — its regression coverage lives server-side instead, in `gameLoop.test.ts`'s
+"Buy/Sell Shares" describe block: a genuine other-player purchase surfaces exactly one
+entry on the *target's* own result with the correct `buyerId`/`buyerName`/`fractionBought`
+(and none on the buyer's own result); a self-buyback surfaces none; two simultaneous
+buyers against the same target surface two separate entries; and a Sell Shares transaction
+surfaces none at all. Extend that describe block, not just the happy path, if you touch
+`applyShareTransaction`'s return value or the `sharesBoughtByTarget` collection in Step 1b
+again.
 
 **The 'verdict' modal's art distinguishes a plaintiff's payout from a defendant's
 dismissal, not just win/lose.** `lawsuit-won.png` depicts collecting a large payout — right
@@ -3599,3 +3792,101 @@ convention `GamePhase.utils.test.ts` established), and `gameStore.test.ts` cover
 round trip for both `Player.eliminatedRound` and `LegalCaseHistory`'s full lifecycle
 (including its cascade-delete-with-room behavior) — extend these, not just the happy path,
 if you touch any part of this feature again.
+
+### Chat expanded beyond the WAITING lobby — one continuous conversation via a new client-side `chatStore`, not three independent chat UIs
+
+Requested directly: chat only ever worked in the WAITING lobby (`Matchmaking.tsx`'s inline
+"Lobby Chat" box), with the server itself hard-gating `chat:message` to
+`roomState.room.status === WAITING` — nothing let players talk once the game actually
+started or after it ended. Three explicit product decisions were confirmed before building
+this (asked rather than guessed, since each had a real, non-obvious alternative): the
+lobby keeps its existing inline box unchanged rather than switching to the same floating
+UI everywhere; the conversation is continuous across phases (lobby → game → game-over is
+one chat history, not three separate ones); and the game-over/spectator screen
+(`GameTimelineView`) gets the new floating chat button but *not* a floating Leave button to
+match — its existing inline "Leave & Return to Start"/"Play Again" buttons were left alone.
+
+**Server-side, the phase gate is just gone** — `GameEngine.sendChatMessage(socketId,
+payload)` (pulled out of the inline `chat:message` handler into its own method, matching
+this class's dominant convention of testable public methods behind thin handlers, and
+specifically so this change could get real regression coverage — see below) no longer
+checks `roomState.room.status` at all; any socket resolvable to a room via
+`getPlayerRoom` may send, in WAITING, GAME_PHASE, or AFTERMATH alike. It still silently
+no-ops for a socket that can't be resolved to a room (same as before), and still throws for
+a genuinely invalid payload (empty/too-long message), which the handler turns into an
+`INVALID_CHAT_MESSAGE` error emit back to just that socket — behavior otherwise unchanged.
+
+**Client-side, chat history had to move out of whatever page component happens to be
+showing it** — `App.tsx` swaps `Matchmaking`/`GamePhase`/`GameTimelineView` in and out off
+the same `currentPhase` switch with no path-based routing (see *"Client: no path-based
+routing for game phases"* above), so a page-local `useState` chat history — which is all
+the old lobby chat ever had — would be wiped out the instant the game started. A new
+`client/src/stores/chatStore.ts` (a Zustand store, following the existing
+`gameStore`/`socketStore` split rather than folding this into either) holds `messages`
+independently of any one page, plus `isVisible`/`unreadCount` for the unread-badge
+mechanism described below. `socketStore.ts` registers the `chat:message` listener globally
+(`useChatStore.getState().addMessage(data)`) inside its own `connect()`, the same place
+every other server-broadcast handler already lives, rather than each page wiring its own
+`socket.on`/`socket.off` — a page-local listener would miss any message sent while a
+*different* page was mounted, exactly the bug this store exists to avoid.
+
+**History resets only on an actual room change, never on a phase change** —
+`chatStore.resetForRoom(roomId)`, called from `socketStore`'s `room:joined` handler (which
+already fires on both a fresh join and a successful rejoin), compares against the room id
+chat history is currently scoped to and only clears `messages`/`unreadCount`/`isVisible`
+if it's genuinely different — a same-room rejoin or an ordinary WAITING→GAME_PHASE→
+AFTERMATH transition is a no-op, which is exactly what "continuous history" requires.
+`Matchmaking.tsx` was refactored to read/write this shared store instead of its own local
+`chatMessages` state (its `[room?.id]`-keyed reset effect was deleted outright — redundant
+now that `resetForRoom` does the same job store-side) while keeping its inline-box UI
+completely unchanged, per the first product decision above.
+
+**The unread badge is `isVisible`-gated, not just "was the popup open at send time."**
+`ChatWidget.tsx` (new, `client/src/components/`) is the floating button + popup used by
+`GamePhase.tsx` and `GameTimelineView.tsx` (both `mode="live"` and `mode="finished"`, i.e.
+also the live spectator view, not just the finished-game replay — no reason to gate it to
+one mode when the same component already serves both). Opening the popup calls
+`chatStore.show()` (marks visible, clears `unreadCount`); closing or unmounting calls
+`hide()`. `Matchmaking.tsx`'s inline box does the same via a `useEffect` keyed on `room` —
+mounted-with-a-room marks it visible, unmount/no-room marks it hidden — so a message read
+directly in the always-visible lobby box never later shows up as a phantom unread count
+once the game starts. `addMessage` is the one place that actually increments
+`unreadCount`, and only when `isVisible` is false at that moment.
+
+**A real, caught-before-shipping layout bug: `position: fixed` doesn't compose with
+Mantine's `Indicator` the naive way.** The first version put `position: fixed; bottom: 20;
+right: 20` directly on the `ActionIcon` wrapped by `Indicator` (the unread-count badge).
+Mantine's `Indicator` positions its badge `absolute` relative to its child's own normal-
+flow box — but a `position: fixed` child is taken out of flow entirely, collapsing that
+box to zero size, so the badge ends up positioned relative to a collapsed box instead of
+tracking the button. Fixed by moving the fixed positioning to a plain wrapping `Box`
+(`chatStyles.fabWrapper`) and leaving the `ActionIcon`/`Indicator` pair inside it
+positioned normally — the same "don't put `position: fixed` on the thing an absolutely-
+positioned sibling/badge is measuring against" gotcha to watch for anywhere else in this
+codebase a badge/tooltip/indicator wraps a fixed-position element.
+
+**Leave Game moved from bottom-right to bottom-left specifically to make room for Chat in
+the opposite corner** — `GamePhase.tsx`'s floating Leave Game button (already
+`position: fixed` in the bottom-right, see the CLAUDE.md section on its original move out
+of the header) had its `right: 20` changed to `left: 20`; nothing else about it changed.
+This was a deliberate pairing, not an independent repositioning — confirmed live via a
+real 2-player Playwright run (not just visual inspection of the code) that the two buttons
+sit in opposite corners at the same `bottom: 20` with no overlap, at a standard 1280×720
+viewport.
+
+`gameEngine.test.ts` gained a `sendChatMessage` describe block: a parameterized test
+(`it.each([WAITING, GAME_PHASE, AFTERMATH])`) proving chat broadcasts identically in every
+phase — the actual regression this change is about, previously untestable since the raw
+`chat:message` handler had never been exposed as a method any test could call directly —
+plus the silent-no-op-for-unknown-socket and throws-on-invalid-payload cases.
+`chatStore.test.ts` (new) covers `addMessage`'s visibility-gated unread counting, `show`/
+`hide`, and `resetForRoom`'s same-room-vs-different-room distinction, including the
+specific "phase transition within the same room must not touch history" case the whole
+feature exists for. Verified end-to-end with a real 2-player Playwright run covering the
+full lifecycle in one pass: lobby chat working both directions, the game screen's
+button positions, continuous history appearing in the game-screen popup, an unread badge
+appearing on one player's button while their popup is closed and a message arrives, the
+badge clearing on open, and — after one player forfeits — the game-over replay screen
+still showing a working chat button with the complete history from every earlier phase.
+Extend `sendChatMessage`'s describe block and `chatStore.test.ts`, not just the happy
+path, if you touch chat's phase reach or the continuous-history mechanism again.

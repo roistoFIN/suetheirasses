@@ -312,7 +312,7 @@ export function clampDecisionCandidate(
   const legalRisks = clampLegalRisks((raw as any).legalRisks, warnings);
   const hasTargetImpacts = Object.keys(impacts).some((k) => k.startsWith('target.'));
 
-  const level = raw.level === 'Strategic' || raw.level === 'Operational' ? raw.level : 'Operational';
+  const level = raw.level === 'Strategic' || raw.level === 'Operational' || raw.level === 'Financial' ? raw.level : 'Operational';
   if (level !== raw.level) warnings.push({ path: 'level', message: `invalid level — defaulted to "${level}"` });
 
   const nature = raw.nature === 'Traditional' || raw.nature === 'Grey Area' || raw.nature === 'Dirty' ? raw.nature : 'Traditional';

@@ -51,6 +51,7 @@ function makeConfig(overrides: Partial<GameConfig> = {}): GameConfig {
       maxLawsuitsPerPlayerPerTurn: 3,
       maxStrategicDecisionsPerTurn: 2,
       maxOperationalDecisionsPerTurn: 3,
+      maxFinancialDecisionsPerTurn: 1,
       totalMarketVolumeTonnesPerYear: 50000,
       marketFixed: true,
       digDeeperCost: 10000,
@@ -367,7 +368,7 @@ describe('GameLoop', () => {
     it('should accept decision submissions', () => {
       const decisions = {
         strategic: [{ name: 'New Factory' }],
-        operational: [{ name: 'Quality Certification' }],
+        operational: [{ name: 'Quality Certification' }], financial: [],
         lawsuits: [],
       };
 
@@ -380,12 +381,12 @@ describe('GameLoop', () => {
     it('should track multiple player submissions', () => {
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [{ name: 'New Factory' }],
-        operational: [],
+        operational: [], financial: [],
         lawsuits: [],
       });
       gameLoop.submitDecisions('room-1', 'player-2', {
         strategic: [],
-        operational: [{ name: 'Quality Certification' }],
+        operational: [{ name: 'Quality Certification' }], financial: [],
         lawsuits: [],
       });
 
@@ -395,7 +396,7 @@ describe('GameLoop', () => {
     it('should clear submissions', () => {
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [{ name: 'New Factory' }],
-        operational: [],
+        operational: [], financial: [],
         lawsuits: [],
       });
 
@@ -453,7 +454,7 @@ describe('GameLoop', () => {
     it('should deploy submitted strategic decisions', () => {
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [{ name: 'New Factory' }],
-        operational: [],
+        operational: [], financial: [],
         lawsuits: [],
       });
 
@@ -466,7 +467,7 @@ describe('GameLoop', () => {
     it('should deploy submitted operational decisions', () => {
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [],
-        operational: [{ name: 'Quality Certification' }],
+        operational: [{ name: 'Quality Certification' }], financial: [],
         lawsuits: [],
       });
 
@@ -482,7 +483,7 @@ describe('GameLoop', () => {
       // even though the underlying deployed instance always tracked it.
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [],
-        operational: [{ name: 'Bot Attack', targetId: 'player-2' }, { name: 'Quality Certification' }],
+        operational: [{ name: 'Bot Attack', targetId: 'player-2' }, { name: 'Quality Certification' }], financial: [],
         lawsuits: [],
       });
 
@@ -507,7 +508,7 @@ describe('GameLoop', () => {
       // unrelated to anything deployed in turn 1.
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [{ name: 'New Factory' }, { name: 'Share Issuance' }],
-        operational: [{ name: 'Quality Certification' }, { name: 'Water Pumping' }],
+        operational: [{ name: 'Quality Certification' }, { name: 'Water Pumping' }], financial: [],
         lawsuits: [],
       });
       const outcome1 = gameLoop.resolveTurn('room-1', 1, twoPlayers());
@@ -522,7 +523,7 @@ describe('GameLoop', () => {
       ]);
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [{ name: 'Buy Shares' }],
-        operational: [{ name: 'Bot Attack', targetId: 'player-2' }],
+        operational: [{ name: 'Bot Attack', targetId: 'player-2' }], financial: [],
         lawsuits: [],
       });
       const outcome2 = gameLoop.resolveTurn('room-1', 2, players2);
@@ -543,7 +544,7 @@ describe('GameLoop', () => {
       // outcome.companyUpdates), not just same-turn duplicate-submission handling.
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [],
-        operational: [{ name: 'Quality Certification' }],
+        operational: [{ name: 'Quality Certification' }], financial: [],
         lawsuits: [],
       });
 
@@ -559,7 +560,7 @@ describe('GameLoop', () => {
       // Second turn: try to deploy again while the first instance is still maturing
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [],
-        operational: [{ name: 'Quality Certification' }],
+        operational: [{ name: 'Quality Certification' }], financial: [],
         lawsuits: [],
       });
 
@@ -572,7 +573,7 @@ describe('GameLoop', () => {
     it('should enforce strategic decision limit', () => {
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [{ name: 'New Factory' }, { name: 'Exclusive Deal' }, { name: 'Competitor Lock-in' }],
-        operational: [],
+        operational: [], financial: [],
         lawsuits: [],
       });
 
@@ -585,10 +586,32 @@ describe('GameLoop', () => {
       expect(strategicCount).toBeLessThanOrEqual(2);
     });
 
+    it('should enforce financial decision limit independently of strategic/operational (Buy/Sell Shares is its own budget)', () => {
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [], operational: [],
+        financial: [
+          { name: 'Buy Shares', targetId: 'player-2', amount: 1000 },
+          { name: 'Sell Shares', targetId: 'player-1', amount: 1000 },
+        ],
+        lawsuits: [],
+      });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+
+      // makeConfig's maxFinancialDecisionsPerTurn is 1 — only the first submitted
+      // financial entry (Buy Shares) should have deployed, regardless of the
+      // (much higher) strategic/operational limits this fixture also sets.
+      const financialCount = outcome.result.players[0].activeDecisions.filter(
+        (d) => d.decisionName === 'Buy Shares' || d.decisionName === 'Sell Shares',
+      ).length;
+      expect(financialCount).toBe(1);
+      expect(outcome.result.players[0].activeDecisions[0].decisionName).toBe('Buy Shares');
+    });
+
     it('should block mutually exclusive decisions', () => {
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [{ name: 'Exclusive Deal' }],
-        operational: [],
+        operational: [], financial: [],
         lawsuits: [],
       });
 
@@ -605,7 +628,7 @@ describe('GameLoop', () => {
       // silently had no effect on the chosen opponent.
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [],
-        operational: [{ name: 'Bot Attack', targetId: 'player-2' }],
+        operational: [{ name: 'Bot Attack', targetId: 'player-2' }], financial: [],
         lawsuits: [],
       });
 
@@ -635,7 +658,7 @@ describe('GameLoop', () => {
       // attacker.
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [],
-        operational: [{ name: 'Bot Attack', targetId: 'player-2' }],
+        operational: [{ name: 'Bot Attack', targetId: 'player-2' }], financial: [],
         lawsuits: [],
       });
 
@@ -662,7 +685,7 @@ describe('GameLoop', () => {
       // effectiveInvestigationLevel's doc comment in gameLoop.ts.
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [],
-        operational: [{ name: 'Bot Attack', targetId: 'player-2' }],
+        operational: [{ name: 'Bot Attack', targetId: 'player-2' }], financial: [],
         lawsuits: [],
       });
 
@@ -683,7 +706,7 @@ describe('GameLoop', () => {
       // but it does carry legalRisks (weight-fraud suits), so it should still surface
       // as an incoming-attacks-style hint, just to everyone rather than one victim.
       gameLoop.submitDecisions('room-1', 'player-1', {
-        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+        strategic: [], operational: [{ name: 'Water Pumping' }], financial: [], lawsuits: [],
       });
 
       const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
@@ -711,7 +734,7 @@ describe('GameLoop', () => {
       // no target.* impacts and no legalRisks — nothing to reveal or sue over, so it's
       // neither a direct nor an indirect hint, just silent.
       gameLoop.submitDecisions('room-1', 'player-1', {
-        strategic: [{ name: 'New Factory' }], operational: [], lawsuits: [],
+        strategic: [{ name: 'New Factory' }], operational: [], financial: [], lawsuits: [],
       });
 
       const outcome = gameLoop.resolveTurn('room-1', 1, twoPlayers());
@@ -784,7 +807,7 @@ describe('GameLoop', () => {
     it('should NOT create a legal case just because a decision has legalRisks — filing is required', () => {
       // Alice deploys a risky decision but nobody files suit over it
       gameLoop.submitDecisions('room-1', 'player-1', {
-        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+        strategic: [], operational: [{ name: 'Water Pumping' }], financial: [], lawsuits: [],
       });
 
       const outcome = gameLoop.resolveTurn('room-1', 1, twoPlayers());
@@ -795,10 +818,10 @@ describe('GameLoop', () => {
 
     it('should create a legal case when another player deliberately files suit over a decision the target actually deployed', () => {
       gameLoop.submitDecisions('room-1', 'player-1', {
-        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+        strategic: [], operational: [{ name: 'Water Pumping' }], financial: [], lawsuits: [],
       });
       gameLoop.submitDecisions('room-1', 'player-2', {
-        strategic: [], operational: [],
+        strategic: [], operational: [], financial: [],
         lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
       });
 
@@ -818,10 +841,10 @@ describe('GameLoop', () => {
       // list would therefore double-count it (and double it again every subsequent
       // turn, since the duplicate gets re-persisted into both copies again).
       gameLoop.submitDecisions('room-1', 'player-1', {
-        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+        strategic: [], operational: [{ name: 'Water Pumping' }], financial: [], lawsuits: [],
       });
       gameLoop.submitDecisions('room-1', 'player-2', {
-        strategic: [], operational: [],
+        strategic: [], operational: [], financial: [],
         lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
       });
 
@@ -859,10 +882,10 @@ describe('GameLoop', () => {
 
     it('should force a case to trial after negotiationPeriodTurns, resolving it that same turn (regression — a case had no path out of "negotiating" at all before this)', () => {
       gameLoop.submitDecisions('room-1', 'player-1', {
-        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+        strategic: [], operational: [{ name: 'Water Pumping' }], financial: [], lawsuits: [],
       });
       gameLoop.submitDecisions('room-1', 'player-2', {
-        strategic: [], operational: [],
+        strategic: [], operational: [], financial: [],
         lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
       });
 
@@ -903,7 +926,7 @@ describe('GameLoop', () => {
       // actually did, so this must still be a real, visible (if unwinnable) case, not a
       // silently-dropped filing.
       gameLoop.submitDecisions('room-1', 'player-2', {
-        strategic: [], operational: [],
+        strategic: [], operational: [], financial: [],
         lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
       });
 
@@ -922,7 +945,7 @@ describe('GameLoop', () => {
         { id: 'player-2', name: 'Bob' },
       ]);
       gameLoop.submitDecisions('room-1', 'player-2', {
-        strategic: [], operational: [],
+        strategic: [], operational: [], financial: [],
         lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
       });
 
@@ -943,7 +966,7 @@ describe('GameLoop', () => {
         { id: 'player-2', name: 'Bob' },
       ]);
       gameLoop.submitDecisions('room-1', 'player-2', {
-        strategic: [], operational: [],
+        strategic: [], operational: [], financial: [],
         lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
       });
 
@@ -972,7 +995,7 @@ describe('GameLoop', () => {
 
       it('should stamp plaintiffFullyInvestigated true when the victim dug all the way in before suing over the matching ground', () => {
         gameLoop.submitDecisions('room-1', 'player-2', {
-          strategic: [], operational: [],
+          strategic: [], operational: [], financial: [],
           lawsuits: [{ targetId: 'player-1', decisionName: 'Bot Attack', groundName: 'CFAA Digital Sabotage Lawsuit' }],
         });
 
@@ -984,7 +1007,7 @@ describe('GameLoop', () => {
 
       it('should leave plaintiffFullyInvestigated false when the victim never dug at all', () => {
         gameLoop.submitDecisions('room-1', 'player-2', {
-          strategic: [], operational: [],
+          strategic: [], operational: [], financial: [],
           lawsuits: [{ targetId: 'player-1', decisionName: 'Bot Attack', groundName: 'CFAA Digital Sabotage Lawsuit' }],
         });
 
@@ -996,7 +1019,7 @@ describe('GameLoop', () => {
 
       it('should leave plaintiffFullyInvestigated false when the victim dug in but not all the way (level 2)', () => {
         gameLoop.submitDecisions('room-1', 'player-2', {
-          strategic: [], operational: [],
+          strategic: [], operational: [], financial: [],
           lawsuits: [{ targetId: 'player-1', decisionName: 'Bot Attack', groundName: 'CFAA Digital Sabotage Lawsuit' }],
         });
 
@@ -1010,10 +1033,10 @@ describe('GameLoop', () => {
         // Fully investigated 'attack-1', but files against a decision that isn't
         // actually targeting them at all (Water Pumping has no targetId concept).
         gameLoop.submitDecisions('room-1', 'player-1', {
-          strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+          strategic: [], operational: [{ name: 'Water Pumping' }], financial: [], lawsuits: [],
         });
         gameLoop.submitDecisions('room-1', 'player-2', {
-          strategic: [], operational: [],
+          strategic: [], operational: [], financial: [],
           lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
         });
 
@@ -1030,7 +1053,7 @@ describe('GameLoop', () => {
         // otherwise-uninvolved bystander here, not Water Pumping's "victim" — it has none)
         // fully investigates it and sues over the real suggested ground.
         gameLoop.submitDecisions('room-1', 'player-1', {
-          strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+          strategic: [], operational: [{ name: 'Water Pumping' }], financial: [], lawsuits: [],
         });
 
         // First turn: deploy Water Pumping and capture its freshly generated instance id.
@@ -1043,7 +1066,7 @@ describe('GameLoop', () => {
         // over its real suggested ground.
         const persistedAlice = deployOutcome.companyUpdates.find((u) => u.playerId === 'player-1')!;
         gameLoop.submitDecisions('room-1', 'player-2', {
-          strategic: [], operational: [],
+          strategic: [], operational: [], financial: [],
           lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
         });
         const players2 = makePlayers([
@@ -1068,10 +1091,10 @@ describe('GameLoop', () => {
     // shown (the settlement offer bracket, the "You paid/received" trial-outcome line).
     it('prices an equity-relative ground off the defendant\'s own turn-computed equity, not the raw schedule fraction', () => {
       gameLoop.submitDecisions('room-1', 'player-1', {
-        strategic: [], operational: [{ name: 'Risky Fundraising' }], lawsuits: [],
+        strategic: [], operational: [{ name: 'Risky Fundraising' }], financial: [], lawsuits: [],
       });
       gameLoop.submitDecisions('room-1', 'player-2', {
-        strategic: [], operational: [],
+        strategic: [], operational: [], financial: [],
         lawsuits: [{ targetId: 'player-1', decisionName: 'Risky Fundraising', groundName: 'Fraudulent Capital Procurement' }],
       });
 
@@ -1088,10 +1111,10 @@ describe('GameLoop', () => {
 
     it('prices a revenue-relative ground off the defendant\'s own turn-computed revenue, not the raw schedule fraction', () => {
       gameLoop.submitDecisions('room-1', 'player-1', {
-        strategic: [], operational: [{ name: 'Risky Fundraising' }], lawsuits: [],
+        strategic: [], operational: [{ name: 'Risky Fundraising' }], financial: [], lawsuits: [],
       });
       gameLoop.submitDecisions('room-1', 'player-2', {
-        strategic: [], operational: [],
+        strategic: [], operational: [], financial: [],
         lawsuits: [{ targetId: 'player-1', decisionName: 'Risky Fundraising', groundName: 'Unfair Competition via Fundraising' }],
       });
 
@@ -1105,10 +1128,10 @@ describe('GameLoop', () => {
 
     it('still prices an absolute-type ground (e.g. Environmental Violation) exactly as before, unaffected by the relative-type fix', () => {
       gameLoop.submitDecisions('room-1', 'player-1', {
-        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+        strategic: [], operational: [{ name: 'Water Pumping' }], financial: [], lawsuits: [],
       });
       gameLoop.submitDecisions('room-1', 'player-2', {
-        strategic: [], operational: [],
+        strategic: [], operational: [], financial: [],
         lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
       });
 
@@ -1129,10 +1152,10 @@ describe('GameLoop', () => {
      * call so each test can control the verdict via Math.random. */
     function fileAndForceToTrial() {
       gameLoop.submitDecisions('room-1', 'player-1', {
-        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+        strategic: [], operational: [{ name: 'Water Pumping' }], financial: [], lawsuits: [],
       });
       gameLoop.submitDecisions('room-1', 'player-2', {
-        strategic: [], operational: [],
+        strategic: [], operational: [], financial: [],
         lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
       });
       const outcome1 = gameLoop.resolveTurn('room-1', 1, twoPlayers());
@@ -1184,7 +1207,7 @@ describe('GameLoop', () => {
       // only matured instance was voided rather than a successful completion.
       const aliceUpdate4 = outcome4.companyUpdates.find((u) => u.playerId === 'player-1')!;
       gameLoop.submitDecisions('room-1', 'player-1', {
-        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+        strategic: [], operational: [{ name: 'Water Pumping' }], financial: [], lawsuits: [],
       });
       const players5 = makePlayers([
         { id: 'player-1', name: 'Alice', variables: aliceUpdate4.variables, engineState: aliceUpdate4.engineState },
@@ -1211,10 +1234,10 @@ describe('GameLoop', () => {
 
     it('should void the sued instance when an unanswered offer auto-settles at a turn boundary (Step 8b)', () => {
       gameLoop.submitDecisions('room-1', 'player-1', {
-        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+        strategic: [], operational: [{ name: 'Water Pumping' }], financial: [], lawsuits: [],
       });
       gameLoop.submitDecisions('room-1', 'player-2', {
-        strategic: [], operational: [],
+        strategic: [], operational: [], financial: [],
         lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
       });
       const outcome1 = gameLoop.resolveTurn('room-1', 1, twoPlayers());
@@ -1287,7 +1310,7 @@ describe('GameLoop', () => {
         { id: 'player-1', name: 'Alice', engineState: { activeDecisions: [{ id: 'nf-1', definitionName: 'New Factory', deployedYear: 1, elapsedYears: 1, isMatured: true }] } },
         { id: 'player-2', name: 'Bob' },
       ]);
-      gameLoop.submitDecisions('room-1', 'player-1', { strategic: [{ name: 'New Factory' }], operational: [], lawsuits: [] });
+      gameLoop.submitDecisions('room-1', 'player-1', { strategic: [{ name: 'New Factory' }], operational: [], financial: [], lawsuits: [] });
 
       const outcome = gameLoop.resolveTurn('room-1', 2, players);
       const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
@@ -1299,7 +1322,7 @@ describe('GameLoop', () => {
         { id: 'player-1', name: 'Alice', engineState: { activeDecisions: [{ id: 'nf-1', definitionName: 'New Factory', deployedYear: 1, elapsedYears: 3, isMatured: true }] } },
         { id: 'player-2', name: 'Bob' },
       ]);
-      gameLoop.submitDecisions('room-1', 'player-1', { strategic: [{ name: 'New Factory' }], operational: [], lawsuits: [] });
+      gameLoop.submitDecisions('room-1', 'player-1', { strategic: [{ name: 'New Factory' }], operational: [], financial: [], lawsuits: [] });
 
       const outcome = gameLoop.resolveTurn('room-1', 4, players);
       const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
@@ -1310,14 +1333,14 @@ describe('GameLoop', () => {
   describe('resolveTurn — one lawsuit per decision instance, ever (regression)', () => {
     it('gives the first plaintiff a real case and a same-turn second plaintiff a hopeless (0%) one, first come first served', () => {
       gameLoop.submitDecisions('room-1', 'player-1', {
-        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+        strategic: [], operational: [{ name: 'Water Pumping' }], financial: [], lawsuits: [],
       });
       gameLoop.submitDecisions('room-1', 'player-2', {
-        strategic: [], operational: [],
+        strategic: [], operational: [], financial: [],
         lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
       });
       gameLoop.submitDecisions('room-1', 'player-3', {
-        strategic: [], operational: [],
+        strategic: [], operational: [], financial: [],
         lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
       });
       const players = makePlayers([
@@ -1340,10 +1363,10 @@ describe('GameLoop', () => {
 
     it('keeps blocking a second lawsuit against the same instance even after the first case resolves and drops out of legalCases history', () => {
       gameLoop.submitDecisions('room-1', 'player-1', {
-        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+        strategic: [], operational: [{ name: 'Water Pumping' }], financial: [], lawsuits: [],
       });
       gameLoop.submitDecisions('room-1', 'player-2', {
-        strategic: [], operational: [],
+        strategic: [], operational: [], financial: [],
         lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
       });
       const outcome1 = gameLoop.resolveTurn('room-1', 1, twoPlayers());
@@ -1390,7 +1413,7 @@ describe('GameLoop', () => {
       // hopeless — the instance itself remembers it was already sued, independent of
       // whether the original case is still visible in anyone's persisted history.
       gameLoop.submitDecisions('room-1', 'player-2', {
-        strategic: [], operational: [],
+        strategic: [], operational: [], financial: [],
         lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
       });
       const players5 = makePlayers([
@@ -1405,10 +1428,10 @@ describe('GameLoop', () => {
 
     it('allows suing a freshly redeployed instance of the same decision name — the block is per instance, not per name', () => {
       gameLoop.submitDecisions('room-1', 'player-1', {
-        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+        strategic: [], operational: [{ name: 'Water Pumping' }], financial: [], lawsuits: [],
       });
       gameLoop.submitDecisions('room-1', 'player-2', {
-        strategic: [], operational: [],
+        strategic: [], operational: [], financial: [],
         lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
       });
       const outcome1 = gameLoop.resolveTurn('room-1', 1, twoPlayers());
@@ -1438,10 +1461,10 @@ describe('GameLoop', () => {
       // Redeploy Water Pumping (allowed now the old instance is voided) and sue the NEW
       // instance in the very same turn.
       gameLoop.submitDecisions('room-1', 'player-1', {
-        strategic: [], operational: [{ name: 'Water Pumping' }], lawsuits: [],
+        strategic: [], operational: [{ name: 'Water Pumping' }], financial: [], lawsuits: [],
       });
       gameLoop.submitDecisions('room-1', 'player-2', {
-        strategic: [], operational: [],
+        strategic: [], operational: [], financial: [],
         lawsuits: [{ targetId: 'player-1', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
       });
       const players4 = makePlayers([
@@ -1476,7 +1499,7 @@ describe('GameLoop', () => {
       const baselineBob = baseline.result.players.find((p) => p.playerId === 'player-2')!;
 
       gameLoop.submitDecisions('room-1', 'player-2', {
-        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 20000 }], operational: [], lawsuits: [],
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 20000 }], operational: [], financial: [], lawsuits: [],
       });
       const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
         { id: 'player-1', name: 'Alice', variables: makeTargetVars() },
@@ -1490,9 +1513,112 @@ describe('GameLoop', () => {
       expect(alice.variables.shareOwnership['player-2']).toBeCloseTo(0.2, 4);
 
       // Isolate the transaction's cash effect from everything else a turn's P&L also
-      // moves (same technique CLAUDE.md's Bot Attack regression test uses).
+      // moves (same technique CLAUDE.md's Bot Attack regression test uses). Alice is
+      // the SOLE existing owner (fraction 1.0, no EXTERNAL_MARKET) — every dollar Bob
+      // spends must land in her pocket 1:1, not scaled down again by fractionBought
+      // (regression: an earlier version paid `fraction * fractionBought * spend`,
+      // double-counting the dilution fraction and paying Alice only 20% of what Bob
+      // actually spent).
       expect(bob.variables.cash - baselineBob.variables.cash).toBeCloseTo(-20000, 2);
-      expect(alice.variables.cash - baselineAlice.variables.cash).toBeCloseTo(4000, 2);
+      expect(alice.variables.cash - baselineAlice.variables.cash).toBeCloseTo(20000, 2);
+    });
+
+    it('splits the buyer\'s spend pro-rata across multiple existing owners, paying nothing to EXTERNAL_MARKET\'s share (regression)', () => {
+      // Alice's own cap table already has three kinds of holder: herself (0.5),
+      // another real player (player-3, 0.2), and the public float (0.3, no counterparty).
+      const capTable = { [SELF_OWNERSHIP_KEY]: 0.5, 'player-3': 0.2, [EXTERNAL_MARKET_KEY]: 0.3 };
+      const makeThreeWayPlayers = () => makePlayers([
+        { id: 'player-1', name: 'Alice', variables: makeTargetVars({ shareOwnership: { ...capTable } }) },
+        { id: 'player-2', name: 'Bob', variables: makeBuyerVars() },
+        { id: 'player-3', name: 'Carol', variables: makeVars({ cash: 10000 }) },
+      ]);
+      const baseline = gameLoop.resolveTurn('room-baseline', 1, makeThreeWayPlayers());
+      const baselineAlice = baseline.result.players.find((p) => p.playerId === 'player-1')!;
+      const baselineBob = baseline.result.players.find((p) => p.playerId === 'player-2')!;
+      const baselineCarol = baseline.result.players.find((p) => p.playerId === 'player-3')!;
+
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 20000 }], operational: [], financial: [], lawsuits: [],
+      });
+      const outcome = gameLoop.resolveTurn('room-1', 1, makeThreeWayPlayers());
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+      const bob = outcome.result.players.find((p) => p.playerId === 'player-2')!;
+      const carol = outcome.result.players.find((p) => p.playerId === 'player-3')!;
+
+      // fractionBought = 20000/10/10000 = 0.2. Each real seller receives their ORIGINAL
+      // fraction of the full $20,000 spend — 0.5*20000=10000 for Alice, 0.2*20000=4000
+      // for Carol — never scaled down again by fractionBought. EXTERNAL_MARKET's 0.3
+      // share of the dilution has no counterparty and is paid to nobody, so the total
+      // paid out (14000) is deliberately less than the full $20,000 Bob spent.
+      expect(bob.variables.cash - baselineBob.variables.cash).toBeCloseTo(-20000, 2);
+      expect(alice.variables.cash - baselineAlice.variables.cash).toBeCloseTo(10000, 2);
+      expect(carol.variables.cash - baselineCarol.variables.cash).toBeCloseTo(4000, 2);
+    });
+
+    it('surfaces a genuine other-player purchase as sharesBoughtThisTurn on the TARGET\'s own result (news-item feed)', () => {
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [], operational: [], financial: [{ name: 'Buy Shares', targetId: 'player-1', amount: 20000 }], lawsuits: [],
+      });
+      const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
+        { id: 'player-1', name: 'Alice', variables: makeTargetVars() },
+        { id: 'player-2', name: 'Bob', variables: makeBuyerVars() },
+      ]));
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+      const bob = outcome.result.players.find((p) => p.playerId === 'player-2')!;
+
+      // Only the TARGET (Alice) sees the event — the buyer already knows about their own trade.
+      expect(alice.sharesBoughtThisTurn).toHaveLength(1);
+      expect(alice.sharesBoughtThisTurn[0]).toEqual({ buyerId: 'player-2', buyerName: 'Bob', fractionBought: expect.closeTo(0.2, 4) });
+      expect(bob.sharesBoughtThisTurn).toHaveLength(0);
+    });
+
+    it('does not surface a self-buyback as sharesBoughtThisTurn — reclaiming your own diluted stake is not news to yourself', () => {
+      const vars = makeTargetVars({
+        cash: 50000,
+        shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.6, [EXTERNAL_MARKET_KEY]: 0.4 },
+      });
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [], operational: [], financial: [{ name: 'Buy Shares', targetId: 'player-1', amount: 20000 }], lawsuits: [],
+      });
+      const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
+        { id: 'player-1', name: 'Alice', variables: vars },
+      ]));
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+
+      expect(alice.sharesBoughtThisTurn).toHaveLength(0);
+    });
+
+    it('produces one sharesBoughtThisTurn entry per buyer when multiple players buy into the same target in one turn', () => {
+      const vars = makeTargetVars();
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [], operational: [], financial: [{ name: 'Buy Shares', targetId: 'player-1', amount: 20000 }], lawsuits: [],
+      });
+      gameLoop.submitDecisions('room-1', 'player-3', {
+        strategic: [], operational: [], financial: [{ name: 'Buy Shares', targetId: 'player-1', amount: 20000 }], lawsuits: [],
+      });
+      const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
+        { id: 'player-1', name: 'Alice', variables: vars },
+        { id: 'player-2', name: 'Bob', variables: makeBuyerVars() },
+        { id: 'player-3', name: 'Carol', variables: makeBuyerVars() },
+      ]));
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+
+      expect(alice.sharesBoughtThisTurn).toHaveLength(2);
+      expect(alice.sharesBoughtThisTurn.map((e) => e.buyerName).sort()).toEqual(['Bob', 'Carol']);
+    });
+
+    it('does not surface a Sell Shares transaction as sharesBoughtThisTurn', () => {
+      const vars = makeTargetVars({
+        cash: 10000,
+        shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.7, [EXTERNAL_MARKET_KEY]: 0.3 },
+      });
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [], operational: [], financial: [{ name: 'Sell Shares', targetId: 'player-1', amount: 15000 }], lawsuits: [],
+      });
+      const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([{ id: 'player-1', name: 'Alice', variables: vars }]));
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+
+      expect(alice.sharesBoughtThisTurn).toHaveLength(0);
     });
 
     it('self-buyback reclaims a stake from EXTERNAL_MARKET without paying itself', () => {
@@ -1501,7 +1627,7 @@ describe('GameLoop', () => {
         shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.6, [EXTERNAL_MARKET_KEY]: 0.4 },
       });
       gameLoop.submitDecisions('room-1', 'player-1', {
-        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 20000 }], operational: [], lawsuits: [],
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 20000 }], operational: [], financial: [], lawsuits: [],
       });
       const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
         { id: 'player-1', name: 'Alice', variables: vars },
@@ -1528,7 +1654,7 @@ describe('GameLoop', () => {
       const baselineAlice = baseline.result.players.find((p) => p.playerId === 'player-1')!;
 
       gameLoop.submitDecisions('room-1', 'player-1', {
-        strategic: [{ name: 'Sell Shares', targetId: 'player-1', amount: 15000 }], operational: [], lawsuits: [],
+        strategic: [{ name: 'Sell Shares', targetId: 'player-1', amount: 15000 }], operational: [], financial: [], lawsuits: [],
       });
       const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([{ id: 'player-1', name: 'Alice', variables: vars }]));
       const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
@@ -1543,7 +1669,7 @@ describe('GameLoop', () => {
       const vars = makeTargetVars({ shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.1, [EXTERNAL_MARKET_KEY]: 0.9 } });
       // Holding value = 0.1 * 10000 shares * $10 = $10,000 — request far more than that.
       gameLoop.submitDecisions('room-1', 'player-1', {
-        strategic: [{ name: 'Sell Shares', targetId: 'player-1', amount: 500000 }], operational: [], lawsuits: [],
+        strategic: [{ name: 'Sell Shares', targetId: 'player-1', amount: 500000 }], operational: [], financial: [], lawsuits: [],
       });
       const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([{ id: 'player-1', name: 'Alice', variables: vars }]));
       const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
@@ -1555,10 +1681,10 @@ describe('GameLoop', () => {
     it('resolves two same-target Buy Shares purchases in submission-arrival order (FIFO) — the second computes against the first\'s already-diluted cap table', () => {
       const vars = makeTargetVars();
       gameLoop.submitDecisions('room-1', 'player-2', {
-        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 50000 }], operational: [], lawsuits: [],
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 50000 }], operational: [], financial: [], lawsuits: [],
       });
       gameLoop.submitDecisions('room-1', 'player-3', {
-        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 50000 }], operational: [], lawsuits: [],
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 50000 }], operational: [], financial: [], lawsuits: [],
       });
 
       const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
@@ -1590,15 +1716,15 @@ describe('GameLoop', () => {
       // this resends player-2's ENTIRE pending state, but Buy Shares' own timestamp must
       // stay pinned to when IT was first queued, not reset to "now".
       gameLoop.submitDecisions('room-1', 'player-2', {
-        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 50000 }], operational: [], lawsuits: [],
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 50000 }], operational: [], financial: [], lawsuits: [],
       });
       gameLoop.submitDecisions('room-1', 'player-3', {
-        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 50000 }], operational: [], lawsuits: [],
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 50000 }], operational: [], financial: [], lawsuits: [],
       });
       // player-2 touches something unrelated — full-replacement resend of their whole
       // submission, Buy Shares entry included verbatim.
       gameLoop.submitDecisions('room-1', 'player-2', {
-        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 50000 }], operational: [{ name: 'Quality Certification' }], lawsuits: [],
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 50000 }], operational: [{ name: 'Quality Certification' }], financial: [], lawsuits: [],
       });
 
       const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
@@ -1618,9 +1744,9 @@ describe('GameLoop', () => {
 
     it('classifies Buy Shares as a direct attack (not broadcast to everyone) despite having no target.* impacts (isIndirectEffect regression)', () => {
       gameLoop.submitDecisions('room-1', 'player-2', {
-        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 20000 }], operational: [], lawsuits: [],
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 20000 }], operational: [], financial: [], lawsuits: [],
       });
-      gameLoop.submitDecisions('room-1', 'player-3', { strategic: [], operational: [], lawsuits: [] });
+      gameLoop.submitDecisions('room-1', 'player-3', { strategic: [], operational: [], financial: [], lawsuits: [] });
 
       const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
         { id: 'player-1', name: 'Alice', variables: makeTargetVars() },
@@ -1641,7 +1767,7 @@ describe('GameLoop', () => {
     it('cannot be sued over once the acquisition fraction falls short of legalRiskConditions.minPercentAcquiredInSingleTransaction', () => {
       gameLoop.submitDecisions('room-1', 'player-2', {
         // 1000 / 10 / 10000 = 1% — below the fixture's 5% minPercentAcquiredInSingleTransaction.
-        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 1000 }], operational: [], lawsuits: [],
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 1000 }], operational: [], financial: [], lawsuits: [],
       });
       const outcome1 = gameLoop.resolveTurn('room-1', 1, makePlayers([
         { id: 'player-1', name: 'Alice', variables: makeTargetVars() },
@@ -1651,7 +1777,7 @@ describe('GameLoop', () => {
       const bobUpdate1 = outcome1.companyUpdates.find((u) => u.playerId === 'player-2')!;
 
       gameLoop.submitDecisions('room-1', 'player-1', {
-        strategic: [], operational: [],
+        strategic: [], operational: [], financial: [],
         lawsuits: [{ targetId: 'player-2', decisionName: 'Buy Shares', groundName: 'Breach of Corporate Fiduciary Duty & Raiding Injunction' }],
       });
       const outcome2 = gameLoop.resolveTurn('room-1', 2, makePlayers([
@@ -1684,7 +1810,7 @@ describe('GameLoop', () => {
         // 60000/10/10000 = 60% — crosses the 50% threshold, on top of the existing 45%
         // held by player-3 (a different acquirer — only ONE acquirer can be found; the
         // buyer here, player-2, is the one who ends up over 50%).
-        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 60000 }], operational: [], lawsuits: [],
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 60000 }], operational: [], financial: [], lawsuits: [],
       });
 
       const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
@@ -1719,7 +1845,7 @@ describe('GameLoop', () => {
       const buyerVars = makeVars({ cash: 200000, assets: 10000, intangibleAssets: 1000 });
 
       gameLoop.submitDecisions('room-1', 'player-2', {
-        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 60000 }], operational: [], lawsuits: [],
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 60000 }], operational: [], financial: [], lawsuits: [],
       });
 
       const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
@@ -1847,7 +1973,7 @@ describe('GameLoop', () => {
     it('should include engine state in the returned company updates', () => {
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [{ name: 'New Factory' }],
-        operational: [],
+        operational: [], financial: [],
         lawsuits: [],
       });
 
@@ -1862,7 +1988,7 @@ describe('GameLoop', () => {
     it('should serialize activeDecisions with a definitionName the next turn can look up (round-trip regression)', () => {
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [{ name: 'New Factory' }],
-        operational: [],
+        operational: [], financial: [],
         lawsuits: [],
       });
 
@@ -1903,7 +2029,7 @@ describe('GameLoop', () => {
       // Force Alice into negative cash via a large strategic spend she can't cover.
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [{ name: 'New Factory' }],
-        operational: [],
+        operational: [], financial: [],
         lawsuits: [],
       });
 
@@ -1927,7 +2053,7 @@ describe('GameLoop', () => {
       // Turn 1: deploy decision
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [{ name: 'New Factory' }],
-        operational: [],
+        operational: [], financial: [],
         lawsuits: [],
       });
 
@@ -1967,7 +2093,7 @@ describe('GameLoop', () => {
       // decision deployed at all, exactly like the negotiation Step 8b tests above —
       // diffing out everything else a turn's P&L/balance-sheet math also moves.
       gameLoop.submitDecisions('room-1', 'player-1', {
-        strategic: [], operational: [{ name: 'Bot Attack', targetId: 'player-2' }], lawsuits: [],
+        strategic: [], operational: [{ name: 'Bot Attack', targetId: 'player-2' }], financial: [], lawsuits: [],
       });
       const outcome = gameLoop.resolveTurn('room-1', 1, twoPlayers());
 
@@ -1989,7 +2115,7 @@ describe('GameLoop', () => {
     it('should clear submissions after turn resolution', () => {
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [{ name: 'New Factory' }],
-        operational: [],
+        operational: [], financial: [],
         lawsuits: [],
       });
 
@@ -2332,7 +2458,7 @@ describe('GameLoop', () => {
       // makeConfig's maxLawsuitsPerPlayerPerTurn is 3.
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [],
-        operational: [],
+        operational: [], financial: [],
         lawsuits: [
           { targetId: 'player-2', decisionName: 'New Factory', groundName: 'ground-a' },
           { targetId: 'player-2', decisionName: 'New Factory', groundName: 'ground-b' },
@@ -2348,7 +2474,7 @@ describe('GameLoop', () => {
     it('does not count another player\'s queued lawsuits toward this player\'s limit', () => {
       gameLoop.submitDecisions('room-1', 'player-2', {
         strategic: [],
-        operational: [],
+        operational: [], financial: [],
         lawsuits: [{ targetId: 'player-1', decisionName: 'New Factory', groundName: 'ground-a' }],
       });
 
@@ -2360,7 +2486,7 @@ describe('GameLoop', () => {
     it('does not carry a room\'s queued-lawsuit count over to a different room', () => {
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [],
-        operational: [],
+        operational: [], financial: [],
         lawsuits: [
           { targetId: 'player-2', decisionName: 'New Factory', groundName: 'ground-a' },
           { targetId: 'player-2', decisionName: 'New Factory', groundName: 'ground-b' },
@@ -2808,7 +2934,7 @@ describe('GameLoop', () => {
     it('never touches the real room\'s in-flight submissions — a queued decision for the real room still applies after a prediction runs', () => {
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [{ name: 'Exclusive Deal' }],
-        operational: [],
+        operational: [], financial: [],
         lawsuits: [],
       });
 

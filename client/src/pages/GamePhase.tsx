@@ -7,6 +7,7 @@ import {
 import { LineChart } from '@mantine/charts';
 import { useGameStore } from '../stores/gameStore';
 import { useSocketStore } from '../stores/socketStore';
+import ChatWidget from '../components/ChatWidget';
 import {
   ServerEvents, ClientEvents,
   type PlayerTurnResult, type LegalCaseData, type PlayerVariables, type PlayerDerivedStats,
@@ -236,8 +237,9 @@ export function detectNewlySettledCases(
 }
 
 /**
- * The content of one "info window" — one case being sued/resolved/settled, or the round
- * simply advancing. Each one is wrapped into a `NewsItem` (below) and appended to the
+ * The content of one "info window" — one case being sued/resolved/settled, one other
+ * player buying a stake in your own company, or the round simply advancing. Each one is
+ * wrapped into a `NewsItem` (below) and appended to the
  * News box's list rather than popping up automatically — see the News box's own doc
  * comment for why this replaced the old auto-popping single-Modal queue.
  *
@@ -253,6 +255,7 @@ type PostTurnEvent =
   | { type: 'sued'; case: LegalCaseData }
   | { type: 'verdict'; outcome: 'won' | 'lost'; case: LegalCaseData }
   | { type: 'settlement'; case: SettledCaseForMe }
+  | { type: 'sharesBought'; buyerId: string; buyerName: string; fractionBought: number }
   | { type: 'turnChange'; round: number };
 
 /** One entry in the News box — a `PostTurnEvent` plus the round it was published in and a
@@ -271,6 +274,7 @@ function newsTopic(event: PostTurnEvent): string {
     case 'sued': return 'You have been sued';
     case 'verdict': return event.outcome === 'won' ? 'Case won' : 'Case lost';
     case 'settlement': return 'Case settled';
+    case 'sharesBought': return 'Your shares were bought';
     case 'turnChange': return 'Next turn';
   }
 }
@@ -577,7 +581,7 @@ export default function GamePhase() {
   // Pending decisions + lawsuits for this turn — shared between the Decision Deck and
   // the Sue modal, since both contribute to the same game:submitDecisions payload
   // (each submission is a full replacement, not an increment).
-  const [pending, setPending] = useState<SubmittedDecisions>({ strategic: [], operational: [], lawsuits: [] });
+  const [pending, setPending] = useState<SubmittedDecisions>({ strategic: [], operational: [], financial: [], lawsuits: [] });
   const submitPending = (next: SubmittedDecisions) => {
     setPending(next);
     socket?.emit(ClientEvents.GAME_SUBMIT_DECISIONS, next);
@@ -641,13 +645,19 @@ export default function GamePhase() {
         const newlySued = detectNewlySuedCases(myData.legalCases, myPlayer.legalCases, player.id);
         const newlyResolved = detectNewlyResolvedCases(myData.legalCases, myPlayer.legalCases, player.id);
         const newlySettled = detectNewlySettledCases(myData.legalCases, myPlayer.legalCases, player.id);
-        // One PostTurnEvent per case, never a batch — see PostTurnEvent's doc comment for
-        // why (a real, reported bug where multiple same-turn cases collapsed into one
-        // News row/alert, silently hiding every case after the first).
+        // Unlike the three detectors above, sharesBoughtThisTurn needs no before/after
+        // diff — the server already scopes it to exactly the trades that executed THIS
+        // turn (see gameLoop.ts's Step 1b), so myPlayer's own copy IS the "what's new"
+        // list. Never includes a self-buyback (see SharesBoughtEvent's doc comment).
+        const newlySharesBought = myPlayer.sharesBoughtThisTurn;
+        // One PostTurnEvent per case/purchase, never a batch — see PostTurnEvent's doc
+        // comment for why (a real, reported bug where multiple same-turn cases collapsed
+        // into one News row/alert, silently hiding every case after the first).
         const newEvents: PostTurnEvent[] = [
           ...newlySued.map((c): PostTurnEvent => ({ type: 'sued', case: c })),
           ...newlyResolved.map((r): PostTurnEvent => ({ type: 'verdict', outcome: r.outcome, case: r.case })),
           ...newlySettled.map((s): PostTurnEvent => ({ type: 'settlement', case: s })),
+          ...newlySharesBought.map((e): PostTurnEvent => ({ type: 'sharesBought', buyerId: e.buyerId, buyerName: e.buyerName, fractionBought: e.fractionBought })),
         ];
         if (newEvents.length > 0) {
           setNewsItems((prev) => [
@@ -692,7 +702,7 @@ export default function GamePhase() {
   // its stale QUEUED entry sitting alongside it in "Active Decisions" for one extra turn
   // — a real, reproduced bug, not just a cosmetic lag.
   useEffect(() => {
-    setPending({ strategic: [], operational: [], lawsuits: [] });
+    setPending({ strategic: [], operational: [], financial: [], lawsuits: [] });
   }, [round]);
 
   // Timer countdown — sync with server updates
@@ -741,14 +751,18 @@ export default function GamePhase() {
   // does), so each active instance is looked back up by name to bucket it.
   const activeStrategicCount = myData.activeDecisions.filter((d) => decisions.find((def) => def.decision === d.decisionName)?.level === 'Strategic').length + pending.strategic.length;
   const activeOperationalCount = myData.activeDecisions.filter((d) => decisions.find((def) => def.decision === d.decisionName)?.level === 'Operational').length + pending.operational.length;
+  const activeFinancialCount = myData.activeDecisions.filter((d) => decisions.find((def) => def.decision === d.decisionName)?.level === 'Financial').length + pending.financial.length;
   const currentEvent = newsModalItem?.event ?? null;
   const dismissCurrentEvent = () => setNewsModalItem(null);
 
   return (
     <div style={gpStyles.dashboard}>
-      {/* Leave Game — a fixed floating button in the page's bottom-right corner rather
+      {/* Leave Game — a fixed floating button in the page's bottom-LEFT corner rather
           than a header item, so it stays reachable regardless of scroll position and
-          no longer competes with the Threat/Turn boxes for header space. */}
+          no longer competes with the Threat/Turn boxes for header space. Bottom-left
+          specifically (not bottom-right) to pair with the floating Chat button
+          (ChatWidget, below) in the opposite corner — the two are a deliberate pair of
+          fixed-position controls, never sharing a corner. */}
       <Button
         size="xs"
         color="red"
@@ -758,7 +772,7 @@ export default function GamePhase() {
         style={{
           position: 'fixed',
           bottom: 20,
-          right: 20,
+          left: 20,
           zIndex: 100,
           background: 'var(--ink-parchment)',
           boxShadow: '3px 4px 0 rgba(0,0,0,0.45)',
@@ -766,6 +780,12 @@ export default function GamePhase() {
       >
         Leave Game
       </Button>
+
+      {/* Chat — floating button + popup, bottom-right corner (mirrors Leave Game above).
+          Shares its message history with the room lobby's inline chat box and the
+          game-over/spectator screen's own ChatWidget instance via chatStore, so it's one
+          continuous conversation across all three. */}
+      <ChatWidget />
 
       {/* ── Header ─────────────────────────────────────── */}
       <Flex justify="space-between" align="center" wrap="wrap" gap="sm" style={gpStyles.header}>
@@ -820,7 +840,7 @@ export default function GamePhase() {
         {/* ── Row 2: Active Decisions | Open Lawsuits ─────── */}
         <Flex wrap="wrap" gap="md">
           <Stack gap="md" style={{ flex: 1, minWidth: 320 }}>
-            <SectionCard title={`Active Decisions (${activeStrategicCount} strategic and ${activeOperationalCount} operational)`}>
+            <SectionCard title={`Active Decisions (${activeStrategicCount} strategic, ${activeOperationalCount} operational, and ${activeFinancialCount} financial)`}>
               <ActiveDecisionsBox
                 pending={pending}
                 activeDecisions={myData.activeDecisions}
@@ -987,6 +1007,7 @@ export default function GamePhase() {
             {currentEvent?.type === 'sued' && "⚖️ YOU'VE BEEN SUED"}
             {currentEvent?.type === 'verdict' && (currentEvent.outcome === 'won' ? '🏆 CASE WON' : '💩 CASE LOST')}
             {currentEvent?.type === 'settlement' && '🤝 CASE SETTLED'}
+            {currentEvent?.type === 'sharesBought' && '📈 SHARES BOUGHT'}
             {currentEvent?.type === 'turnChange' && `🔔 NEXT TURN`}
           </Text>
         }
@@ -1070,6 +1091,23 @@ export default function GamePhase() {
                 </Box>
               );
             })()}
+            <Button fullWidth onClick={dismissCurrentEvent}>
+              Close
+            </Button>
+          </Stack>
+        )}
+
+        {currentEvent?.type === 'sharesBought' && (
+          <Stack gap="md">
+            <Image src="/images/shares-bought.png" alt="Shares bought" radius="md" />
+            <Box style={{ borderLeft: '3px solid var(--mantine-color-yellow-6)', paddingLeft: 8 }}>
+              <Text size="sm" fw={600}>
+                {currentEvent.buyerName} bought {pct(currentEvent.fractionBought)} of your company's shares
+              </Text>
+              <Text size="sm" c="dimmed">
+                Check your STOCK VALUE cap table to see your updated ownership breakdown.
+              </Text>
+            </Box>
             <Button fullWidth onClick={dismissCurrentEvent}>
               Close
             </Button>
@@ -1552,7 +1590,7 @@ function ActiveDecisionsBox({ pending, activeDecisions, decisions, playerNames, 
   const [sortDirection, setSortDirection] = useState<'desc' | 'asc'>('desc');
 
   const items: DecisionBoxItem[] = [
-    ...(['strategic', 'operational'] as const).flatMap((bucket) =>
+    ...(['strategic', 'operational', 'financial'] as const).flatMap((bucket) =>
       pending[bucket].map((entry, i): DecisionBoxItem => ({
         kind: 'queued',
         key: `${bucket}-${i}`,
@@ -1655,6 +1693,26 @@ function ActiveDecisionsBox({ pending, activeDecisions, decisions, playerNames, 
  */
 function decisionNeedsTarget(def: DecisionDefinition): boolean {
   return def.requiresTarget === true || Object.keys(def.impacts).some((field) => field.startsWith('target.'));
+}
+
+/** Which `SubmittedDecisions` bucket a decision's `level` submits into — kept as one
+ * shared lookup (mirrors the server's `DECISION_BUCKETS`/`maxForLevel` map in
+ * gameLoop.ts) so every call site agrees on the mapping instead of each re-deriving its
+ * own ternary, which is exactly how a third level value silently falls into the wrong
+ * bucket if only two branches are checked. */
+const LEVEL_TO_BUCKET: Record<DecisionDefinition['level'], keyof Omit<SubmittedDecisions, 'lawsuits'>> = {
+  Strategic: 'strategic',
+  Operational: 'operational',
+  Financial: 'financial',
+};
+
+/** The per-turn cap for one `SubmittedDecisions` bucket, from admin-configured `GameSettings`. */
+function maxForBucket(gameSettings: GameSettings, bucket: keyof Omit<SubmittedDecisions, 'lawsuits'>): number {
+  return bucket === 'strategic'
+    ? gameSettings.maxStrategicDecisionsPerTurn
+    : bucket === 'operational'
+      ? gameSettings.maxOperationalDecisionsPerTurn
+      : gameSettings.maxFinancialDecisionsPerTurn;
 }
 
 /** Mirrors DecisionEngine.hasPermanentEffect (server, decisionEngine.ts) — kept in sync
@@ -1840,7 +1898,7 @@ function DecisionDeckView({ decisions, gameSettings, myData, competitors, pendin
   const sortableFields = getSortableKpiFields(decisions);
 
   const togglePending = (def: DecisionDefinition, targetId?: string, amount?: number) => {
-    const bucket = def.level === 'Strategic' ? 'strategic' : 'operational';
+    const bucket = LEVEL_TO_BUCKET[def.level];
     const already = pending[bucket].some((e) => e.name === def.decision);
     onSubmitPending({
       ...pending,
@@ -1852,12 +1910,12 @@ function DecisionDeckView({ decisions, gameSettings, myData, competitors, pendin
 
   return (
     <Stack gap="md" style={{ height: '100%', minHeight: 0 }}>
-      {/* Filter chips — level (Strategic/Operational) and nature (Traditional/Grey Area/
-          Dirty) are two independent filters, so each gets its own row rather than
-          wrapping together into one line as if they were a single chip group. */}
+      {/* Filter chips — level (Strategic/Operational/Financial) and nature (Traditional/
+          Grey Area/Dirty) are two independent filters, so each gets its own row rather
+          than wrapping together into one line as if they were a single chip group. */}
       <Stack gap={6}>
         <Flex wrap="wrap" gap="xs">
-          {['All', 'Strategic', 'Operational'].map((lvl) => (
+          {['All', 'Strategic', 'Operational', 'Financial'].map((lvl) => (
             <Badge key={lvl} style={gpStyles.filterChip(filterLevel === lvl)} onClick={() => setFilterLevel(lvl)}>
               {lvl}
             </Badge>
@@ -1915,7 +1973,7 @@ function DecisionDeckView({ decisions, gameSettings, myData, competitors, pendin
 
       {gameSettings && (
         <Text size="xs" c="dimmed" style={boldStyle}>
-          {pending.strategic.length}/{gameSettings.maxStrategicDecisionsPerTurn} STRATEGIC · {pending.operational.length}/{gameSettings.maxOperationalDecisionsPerTurn} OPERATIONAL QUEUED
+          {pending.strategic.length}/{gameSettings.maxStrategicDecisionsPerTurn} STRATEGIC · {pending.operational.length}/{gameSettings.maxOperationalDecisionsPerTurn} OPERATIONAL · {pending.financial.length}/{gameSettings.maxFinancialDecisionsPerTurn} FINANCIAL QUEUED
         </Text>
       )}
 
@@ -1926,10 +1984,10 @@ function DecisionDeckView({ decisions, gameSettings, myData, competitors, pendin
       ) : (
         <Stack gap="sm" style={{ flex: 1, minHeight: 0, overflowY: 'auto', paddingRight: 4 }}>
           {filtered.map((def) => {
-            const bucket = def.level === 'Strategic' ? 'strategic' : 'operational';
+            const bucket = LEVEL_TO_BUCKET[def.level];
             const isPending = pending[bucket].some((e) => e.name === def.decision);
             const atLimit = gameSettings
-              ? pending[bucket].length >= (bucket === 'strategic' ? gameSettings.maxStrategicDecisionsPerTurn : gameSettings.maxOperationalDecisionsPerTurn)
+              ? pending[bucket].length >= maxForBucket(gameSettings, bucket)
               : false;
             const deployability = getDeployability(def, myData.activeDecisions, decisions, gameSettings?.permanentEffectCooldownYears);
             return (
@@ -2063,11 +2121,21 @@ function DecisionCard({ def, isPending, blocked, disabledByLimit, competitors, m
       )}
       {blocked.blocked && <Text size="xs" c="red" style={{ marginTop: 4 }}>{blocked.reason}</Text>}
       {needsTarget && !isPending && !blocked.blocked && (
-        <select value={targetId} onChange={(e) => setTargetId(e.target.value)} style={{ width: '100%', marginTop: 8, padding: '6px 8px', border: '2px solid #333', borderRadius: 6, fontSize: '0.8rem' }}>
-          <option value="">Select target…</option>
-          {allowsSelfTarget && <option value={myData.playerId}>Myself</option>}
-          {competitors.map((c) => (<option key={c.playerId} value={c.playerId}>{c.playerName}</option>))}
-        </select>
+        <Stack gap={2} style={{ marginTop: 8 }}>
+          {/* Buy/Sell Shares' "target" isn't who the shares go TO (a sale always goes to
+              the external market, never to another player — see CLAUDE.md's share-
+              ownership section) — it's WHICH COMPANY's cap table this trade acts on, you
+              can hold shares in your own company or any rival's you've bought into. Label
+              it accordingly so it doesn't read as picking a counterparty. */}
+          <Text size="xs" style={{ ...boldStyle, color: 'var(--ink-text-soft)' }}>
+            {allowsSelfTarget ? 'COMPANY' : 'TARGET'}
+          </Text>
+          <select value={targetId} onChange={(e) => setTargetId(e.target.value)} style={{ width: '100%', padding: '6px 8px', border: '2px solid #333', borderRadius: 6, fontSize: '0.8rem' }}>
+            <option value="">{allowsSelfTarget ? 'Select company…' : 'Select target…'}</option>
+            {allowsSelfTarget && <option value={myData.playerId}>Myself</option>}
+            {competitors.map((c) => (<option key={c.playerId} value={c.playerId}>{c.playerName}</option>))}
+          </select>
+        </Stack>
       )}
       {needsAmount && !isPending && !blocked.blocked && amountBounds && (
         <Stack gap={2} style={{ marginTop: 8 }}>

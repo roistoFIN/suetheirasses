@@ -127,8 +127,8 @@ export function validateGameReady(data: unknown): GameReadyPayload {
  * Zod schema for the `game:submitDecisions` Socket.IO event payload.
  *
  * This only enforces structural sanity (types, lengths) — the actual game-balance
- * limits (max strategic/operational decisions, max lawsuits per turn) come from
- * game_config.json and are enforced by DecisionEngine.canDeploy / GameLoop's lawsuit
+ * limits (max strategic/operational/financial decisions, max lawsuits per turn) come from
+ * game_config.json and are enforced by GameLoop.processNewDecisions / GameLoop's lawsuit
  * filing step, not hardcoded here.
  */
 const decisionEntrySchema = z.object({
@@ -155,6 +155,7 @@ export const lawsuitEntrySchema = z.object({
 export const submitDecisionsSchema = z.object({
   strategic: z.array(decisionEntrySchema).max(20),
   operational: z.array(decisionEntrySchema).max(20),
+  financial: z.array(decisionEntrySchema).max(20),
   lawsuits: z.array(lawsuitEntrySchema).max(10),
 });
 
@@ -352,7 +353,7 @@ const legalRiskDefinitionSchema = z.object({
 /** Zod schema for one decision definition — the body of `POST`/`PUT /api/admin/decisions`. */
 export const decisionDefinitionSchema = z.object({
   decision: z.string().min(1).max(100),
-  level: z.enum(['Strategic', 'Operational']),
+  level: z.enum(['Strategic', 'Operational', 'Financial']),
   description: z.string().min(1),
   nature: z.enum(['Traditional', 'Grey Area', 'Dirty']),
   offensiveAction: z.boolean(),
@@ -391,6 +392,7 @@ const gameSettingsSchema = z.object({
   maxLawsuitsPerPlayerPerTurn: z.number(),
   maxStrategicDecisionsPerTurn: z.number(),
   maxOperationalDecisionsPerTurn: z.number(),
+  maxFinancialDecisionsPerTurn: z.number(),
   totalMarketVolumeTonnesPerYear: z.number(),
   marketFixed: z.boolean(),
   digDeeperCost: z.number(),

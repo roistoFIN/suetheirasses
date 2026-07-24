@@ -43,6 +43,7 @@ import type {
   IncomingAttackInfo,
   KpiSnapshotPoint,
   PlayerDerivedStats,
+  SharesBoughtEvent,
 } from '@suetheirasses/shared';
 import {
   applyDepreciation,
@@ -252,6 +253,14 @@ export interface ActiveDecisionSummary {
   elapsedYears: number;
 }
 
+/** The three `SubmittedDecisions` buckets a submission can carry decisions in — kept as
+ * one shared tuple/type so `entryKey`/`stampEntryTimestamps`/`processNewDecisions` never
+ * drift out of sync on which buckets exist (a `for (const bucket of ['strategic',
+ * 'operational'] as const)`-style hardcoded pair was the exact class of bug that missed
+ * `financial` the first time a third bucket was added). */
+const DECISION_BUCKETS = ['strategic', 'operational', 'financial'] as const;
+type DecisionBucket = (typeof DECISION_BUCKETS)[number];
+
 /**
  * A deployed Buy/Sell Shares instance queued for execution in Step 1b — collected by
  * `processNewDecisions` for exactly the entries it actually deployed
@@ -376,7 +385,7 @@ export class GameLoop {
 
   /** Stable per-entry key for FIFO timestamp tracking — see `submissionTimestamps`'s
    * doc comment for why this can't just be "the whole payload" or "the latest call". */
-  private entryKey(bucket: 'strategic' | 'operational', entry: { name: string; targetId?: string }): string {
+  private entryKey(bucket: DecisionBucket, entry: { name: string; targetId?: string }): string {
     return `${bucket}:${entry.name}:${entry.targetId ?? ''}`;
   }
 
@@ -390,13 +399,11 @@ export class GameLoop {
     const playerMap = roomMap.get(playerId)!;
 
     const now = Date.now();
-    for (const entry of decisions.strategic) {
-      const key = this.entryKey('strategic', entry);
-      if (!playerMap.has(key)) playerMap.set(key, now);
-    }
-    for (const entry of decisions.operational) {
-      const key = this.entryKey('operational', entry);
-      if (!playerMap.has(key)) playerMap.set(key, now);
+    for (const bucket of DECISION_BUCKETS) {
+      for (const entry of decisions[bucket]) {
+        const key = this.entryKey(bucket, entry);
+        if (!playerMap.has(key)) playerMap.set(key, now);
+      }
     }
   }
 
@@ -404,7 +411,7 @@ export class GameLoop {
    * somehow untracked (e.g. a call site that mutates `submittedDecisions` outside the
    * normal `submitDecisions` path) — never `undefined`, so FIFO sorting always has a
    * real number to compare. */
-  private entryTimestamp(roomId: string, playerId: string, bucket: 'strategic' | 'operational', entry: { name: string; targetId?: string }): number {
+  private entryTimestamp(roomId: string, playerId: string, bucket: DecisionBucket, entry: { name: string; targetId?: string }): number {
     return this.submissionTimestamps.get(roomId)?.get(playerId)?.get(this.entryKey(bucket, entry)) ?? Date.now();
   }
 
@@ -486,10 +493,27 @@ export class GameLoop {
       if (!byTarget.has(request.targetId)) byTarget.set(request.targetId, []);
       byTarget.get(request.targetId)!.push(request);
     }
+    // Every other player who bought a stake in a given target's company this turn —
+    // surfaced to that target as PlayerTurnResult.sharesBoughtThisTurn (a "somebody
+    // bought your shares" news item, see CLAUDE.md). Built here, at the exact point the
+    // trade executes, rather than reconstructed later from a shareOwnership diff — the
+    // diff approach can't disambiguate "this buyer's fractionBought" once dilution from
+    // other same-turn buyers/an existing prior stake is mixed in (see the FIFO-stacking
+    // section of CLAUDE.md's share-ownership notes), while the transaction itself already
+    // knows the exact number.
+    const sharesBoughtByTarget = new Map<string, SharesBoughtEvent[]>();
     for (const requests of byTarget.values()) {
       requests.sort((a, b) => a.submittedAt - b.submittedAt);
       for (const request of requests) {
-        this.applyShareTransaction(request, ctxs);
+        const fractionBought = this.applyShareTransaction(request, ctxs);
+        if (fractionBought !== undefined) {
+          if (!sharesBoughtByTarget.has(request.targetId)) sharesBoughtByTarget.set(request.targetId, []);
+          sharesBoughtByTarget.get(request.targetId)!.push({
+            buyerId: request.buyerId,
+            buyerName: ctxs.get(request.buyerId)?.playerName ?? '',
+            fractionBought,
+          });
+        }
       }
     }
 
@@ -1033,6 +1057,7 @@ export class GameLoop {
         legalCases: allCases.filter(c => c.plaintiffId === pid || c.defendantId === pid),
         riskGauge: riskMap.get(pid) ?? 0,
         incomingAttacks: this.buildIncomingAttacks(pid, ctxs, playersStillActive),
+        sharesBoughtThisTurn: sharesBoughtByTarget.get(pid) ?? [],
       });
     }
 
@@ -1133,6 +1158,7 @@ export class GameLoop {
         legalCases: [],
         riskGauge: calculateRiskGauge(vars, [], this.adminVars, this.formulas),
         incomingAttacks: [],
+        sharesBoughtThisTurn: [],
       });
     }
 
@@ -1712,23 +1738,31 @@ export class GameLoop {
    * other players ("shares can only be sold to the external market, never directly to
    * another player"). Capped at whatever the seller actually holds.
    */
-  private applyShareTransaction(request: ShareTransactionRequest, ctxs: Map<string, PlayerTurnContext>): void {
+  /**
+   * Returns the `fractionBought` for a genuine, other-player purchase (never a
+   * self-buyback — the buyer already knows about their own trade, so `fractionBought`
+   * is only returned when `request.buyerId !== request.targetId`), or `undefined` for
+   * every other case (a Sell, a no-op, or a self-buyback) — the caller (Step 1b) uses
+   * this to build `PlayerTurnResult.sharesBoughtThisTurn`, the target's own "somebody
+   * bought your shares" news item.
+   */
+  private applyShareTransaction(request: ShareTransactionRequest, ctxs: Map<string, PlayerTurnContext>): number | undefined {
     const buyerCtx = ctxs.get(request.buyerId);
     const targetCtx = ctxs.get(request.targetId);
-    if (!buyerCtx || !targetCtx) return;
+    if (!buyerCtx || !targetCtx) return undefined;
 
     const totalShares = targetCtx.vars.totalSharesOutstanding || 0;
-    if (totalShares <= 0) return;
+    if (totalShares <= 0) return undefined;
     const price = targetCtx.vars.stockValue ?? 0;
     const actorKey = request.buyerId === request.targetId ? SELF_OWNERSHIP_KEY : request.buyerId;
     const ownership: Record<string, number> = { ...(targetCtx.vars.shareOwnership ?? {}) };
 
     if (request.type === 'buy') {
       const spend = Math.min(request.amount, buyerCtx.vars.cash);
-      if (spend <= 0) return;
+      if (spend <= 0) return undefined;
       const sharesBought = price > 0 ? spend / price : totalShares;
       const fractionBought = Math.min(1, sharesBought / totalShares);
-      if (fractionBought <= 0) return;
+      if (fractionBought <= 0) return undefined;
 
       const instance = buyerCtx.engineState.activeDecisions.find(d => d.id === request.instanceId);
       if (instance) instance.acquisitionFraction = fractionBought;
@@ -1738,24 +1772,26 @@ export class GameLoop {
         ownership[key] = fraction * (1 - fractionBought);
         if (key === EXTERNAL_MARKET_KEY) continue; // absorbs its own dilution, no counterparty
         const ownerCtx = key === SELF_OWNERSHIP_KEY ? targetCtx : ctxs.get(key);
-        if (ownerCtx) ownerCtx.vars.cash += fraction * fractionBought * spend;
+        if (ownerCtx) ownerCtx.vars.cash += fraction * spend;
       }
       ownership[actorKey] = (ownership[actorKey] ?? 0) * (1 - fractionBought) + fractionBought;
 
       buyerCtx.vars.cash -= spend;
       targetCtx.vars.shareOwnership = renormalizeShareOwnership(ownership);
+      return request.buyerId !== request.targetId ? fractionBought : undefined;
     } else {
       const currentFraction = ownership[actorKey] ?? 0;
-      if (currentFraction <= 0) return;
+      if (currentFraction <= 0) return undefined;
       const holdingValue = currentFraction * totalShares * price;
       const proceeds = Math.min(request.amount, holdingValue);
-      if (proceeds <= 0) return;
+      if (proceeds <= 0) return undefined;
       const fractionSold = price > 0 ? Math.min(currentFraction, proceeds / price / totalShares) : currentFraction;
 
       ownership[actorKey] = currentFraction - fractionSold;
       ownership[EXTERNAL_MARKET_KEY] = (ownership[EXTERNAL_MARKET_KEY] ?? 0) + fractionSold;
       targetCtx.vars.shareOwnership = renormalizeShareOwnership(ownership);
       buyerCtx.vars.cash += proceeds;
+      return undefined;
     }
   }
 
@@ -1950,15 +1986,18 @@ export class GameLoop {
    * only the ones that actually deployed should ever execute a real trade). */
   private processNewDecisions(roomId: string, ctx: PlayerTurnContext, year: number): ShareTransactionRequest[] {
     const sub = ctx.submittedDecisions!;
-    const maxStrat = this.config.gameSettings.maxStrategicDecisionsPerTurn;
-    const maxOp = this.config.gameSettings.maxOperationalDecisionsPerTurn;
+    const maxForLevel: Record<DecisionBucket, number> = {
+      strategic: this.config.gameSettings.maxStrategicDecisionsPerTurn,
+      operational: this.config.gameSettings.maxOperationalDecisionsPerTurn,
+      financial: this.config.gameSettings.maxFinancialDecisionsPerTurn,
+    };
 
     // Track absolute deltas from newly deployed decisions on the same turn
     const newDecisionAbsDeltas: Array<{ revenueDelta: number; financeCostDelta: number; taxCostDelta: number; receivablesDelta: number; cashDelta: number }> = [];
     const shareTransactions: ShareTransactionRequest[] = [];
 
-    for (const bucket of ['strategic', 'operational'] as const) {
-      const maxForBucket = bucket === 'strategic' ? maxStrat : maxOp;
+    for (const bucket of DECISION_BUCKETS) {
+      const maxForBucket = maxForLevel[bucket];
       // This slice is the ONLY thing enforcing "at most maxForBucket decisions of this
       // level per turn" — canDeploy itself no longer takes a level/max-count and never
       // recomputes one from ctx.engineState.activeDecisions (a player's entire historical

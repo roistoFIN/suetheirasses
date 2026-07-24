@@ -826,8 +826,8 @@ describe('GameEngine', () => {
       await localEngine.markPlayerDisconnected('socket-1');
       expect(localPrisma.player.delete).not.toHaveBeenCalled();
 
-      // Past both the 10s heartbeat tick and the 60s grace period.
-      await vi.advanceTimersByTimeAsync(70_000);
+      // Past both the 10s heartbeat tick and the 120s grace period.
+      await vi.advanceTimersByTimeAsync(130_000);
 
       expect(localPrisma.player.delete).toHaveBeenCalled();
       expect(localEngine.getRoom(roomState.room.id)).toBeUndefined();
@@ -862,8 +862,8 @@ describe('GameEngine', () => {
       const result = await localEngine.rejoinRoom(roomState.room.id, playerId, 'socket-2');
       expect(result.success).toBe(true);
 
-      // Advance well past what would have been the original 60s deadline.
-      await vi.advanceTimersByTimeAsync(70_000);
+      // Advance well past what would have been the original 120s deadline.
+      await vi.advanceTimersByTimeAsync(130_000);
 
       expect(localPrisma.player.delete).not.toHaveBeenCalled();
       expect(localEngine.getRoom(roomState.room.id)).toBeDefined();
@@ -882,7 +882,7 @@ describe('GameEngine', () => {
       await localEngine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
 
       await localEngine.markPlayerDisconnected('socket-1'); // the host
-      await vi.advanceTimersByTimeAsync(70_000);
+      await vi.advanceTimersByTimeAsync(130_000);
 
       const bob = Array.from(roomState.players.values()).find((p) => p.name === 'Bob')!;
       expect(bob.isHost).toBe(true);
@@ -924,9 +924,9 @@ describe('GameEngine', () => {
 
       const turnPromise = localEngine.resolveGameTurn(roomState.room.id);
 
-      // Cross both the 10s heartbeat tick and the 60s grace-period deadline while
+      // Cross both the 10s heartbeat tick and the 120s grace-period deadline while
       // resolveGameTurn is still stuck mid-flight (advancingRooms still holds this room).
-      await vi.advanceTimersByTimeAsync(70_000);
+      await vi.advanceTimersByTimeAsync(130_000);
       expect(localPrisma.player.delete).not.toHaveBeenCalled();
 
       // Let resolveGameTurn finish and release the lock.
@@ -1887,7 +1887,7 @@ describe('GameEngine', () => {
       const roomState = await engine.createRoom(host);
       const playerId = Array.from(roomState.players.values())[0].id;
 
-      engine.submitDecisions(roomState.room.id, playerId, { strategic: [{ name: 'New Factory' }], operational: [] });
+      engine.submitDecisions(roomState.room.id, playerId, { strategic: [{ name: 'New Factory' }], operational: [], financial: [], lawsuits: [] });
 
       // No direct getter for submissions, but resolving the turn should not throw
       // and should reflect the submission was accepted without error.
@@ -1925,6 +1925,51 @@ describe('GameEngine', () => {
           where: { playerId_round: { playerId: expect.any(String), round: 1 } },
         }),
       );
+    });
+  });
+
+  describe('startGame', () => {
+    async function makeTwoPlayerWaitingRoom() {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      const joiner = { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' };
+      await engine.joinRoom(roomState.room.id, joiner);
+      return roomState;
+    }
+
+    it('enters GAME_PHASE round 1 and broadcasts the initial snapshot, ready update, and deck', async () => {
+      const roomState = await makeTwoPlayerWaitingRoom();
+
+      await engine.startGame(roomState.room.id);
+
+      expect(roomState.room.status).toBe(RoomStatus.GAME_PHASE);
+      expect(roomState.room.currentPhaseRound).toBe(1);
+      expect(roomState.readyPlayerIds.size).toBe(0);
+
+      const calls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
+      expect(calls.some((c) => c[0] === ServerEvents.TURN_RESOLVED)).toBe(true);
+      expect(calls.some((c) => c[0] === ServerEvents.PHASE_CHANGED)).toBe(true);
+      expect(calls.some((c) => c[0] === ServerEvents.GAME_READY_UPDATE)).toBe(true);
+      expect(calls.some((c) => c[0] === ServerEvents.GAME_DECK)).toBe(true);
+    });
+
+    it('broadcasts TURN_RESOLVED (the initial snapshot) BEFORE PHASE_CHANGED (regression — a fast client readying up on PHASE_CHANGED must never be able to race past the initial snapshot)', async () => {
+      const roomState = await makeTwoPlayerWaitingRoom();
+
+      await engine.startGame(roomState.room.id);
+
+      const calls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
+      const turnResolvedIndex = calls.findIndex((c) => c[0] === ServerEvents.TURN_RESOLVED);
+      const phaseChangedIndex = calls.findIndex((c) => c[0] === ServerEvents.PHASE_CHANGED);
+
+      expect(turnResolvedIndex).toBeGreaterThanOrEqual(0);
+      expect(phaseChangedIndex).toBeGreaterThanOrEqual(0);
+      expect(turnResolvedIndex).toBeLessThan(phaseChangedIndex);
+    });
+
+    it('is a no-op for a room id that does not exist', async () => {
+      await expect(engine.startGame('nonexistent-room')).resolves.toBeUndefined();
+      expect(mockIo.emit).not.toHaveBeenCalled();
     });
   });
 
@@ -2336,6 +2381,57 @@ describe('GameEngine', () => {
 
       expect(mockIo.to).toHaveBeenCalledWith(roomState.room.id);
       expect(mockIo.emit).toHaveBeenCalledWith('custom:event', { data: 'test' });
+    });
+  });
+
+  describe('sendChatMessage', () => {
+    // Regression coverage for expanding chat beyond the WAITING lobby (see CLAUDE.md) —
+    // this used to be gated behind `roomState.room.status !== RoomStatus.WAITING`
+    // directly in the `chat:message` handler; that whole status check is gone now, so
+    // chat must keep working identically across every room phase.
+    it.each([RoomStatus.WAITING, RoomStatus.GAME_PHASE, RoomStatus.AFTERMATH])(
+      'broadcasts a validated chat message to the room during %s',
+      async (status) => {
+        const player = {
+          id: '',
+          name: 'Alice',
+          roomId: '',
+          isHost: false,
+          bankrupt: false,
+          socketId: 'socket-1',
+        };
+        const roomState = await engine.createRoom(player);
+        const playerId = Array.from(roomState.players.keys())[0];
+        roomState.room.status = status;
+
+        engine.sendChatMessage('socket-1', { message: 'Hello!' });
+
+        expect(mockIo.to).toHaveBeenCalledWith(roomState.room.id);
+        expect(mockIo.emit).toHaveBeenCalledWith(
+          ServerEvents.CHAT_MESSAGE,
+          expect.objectContaining({ playerId, playerName: 'Alice', message: 'Hello!' }),
+        );
+      },
+    );
+
+    it('silently no-ops for a socket that cannot be resolved to a room', () => {
+      expect(() => engine.sendChatMessage('unknown-socket', { message: 'Hello!' })).not.toThrow();
+      expect(mockIo.emit).not.toHaveBeenCalled();
+    });
+
+    it('throws for an invalid payload, leaving the message unbroadcast', async () => {
+      const player = {
+        id: '',
+        name: 'Alice',
+        roomId: '',
+        isHost: false,
+        bankrupt: false,
+        socketId: 'socket-1',
+      };
+      await engine.createRoom(player);
+
+      expect(() => engine.sendChatMessage('socket-1', { message: '' })).toThrow();
+      expect(mockIo.emit).not.toHaveBeenCalled();
     });
   });
 

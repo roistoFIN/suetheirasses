@@ -92,45 +92,49 @@ describe('Validation Schemas', () => {
   });
 
   describe('submitDecisionsSchema (game:submitDecisions)', () => {
-    it('should validate a turn submission with strategic and operational decisions', () => {
+    it('should validate a turn submission with strategic, operational, and financial decisions', () => {
       const result = validateSubmitDecisions({
         strategic: [{ name: 'New Factory' }],
         operational: [{ name: 'Digital Marketing' }],
+        financial: [{ name: 'Buy Shares', targetId: 'rival-player-id', amount: 20000 }],
         lawsuits: [],
       });
       expect(result.strategic).toHaveLength(1);
       expect(result.operational).toHaveLength(1);
+      expect(result.financial).toHaveLength(1);
     });
 
     it('should validate an empty submission (player passes their turn)', () => {
-      const result = validateSubmitDecisions({ strategic: [], operational: [], lawsuits: [] });
+      const result = validateSubmitDecisions({ strategic: [], operational: [], financial: [], lawsuits: [] });
       expect(result.strategic).toEqual([]);
       expect(result.operational).toEqual([]);
+      expect(result.financial).toEqual([]);
     });
 
     it('should preserve targetId for targeted decisions (e.g. Buy Shares)', () => {
       const result = validateSubmitDecisions({
-        strategic: [{ name: 'Buy Shares', targetId: 'rival-player-id' }],
+        strategic: [],
         operational: [],
+        financial: [{ name: 'Buy Shares', targetId: 'rival-player-id' }],
         lawsuits: [],
       });
-      expect(result.strategic[0]).toEqual({ name: 'Buy Shares', targetId: 'rival-player-id' });
+      expect(result.financial[0]).toEqual({ name: 'Buy Shares', targetId: 'rival-player-id' });
     });
 
     it('should preserve a deliberate lawsuit filing citing a target decision and ground', () => {
       const result = validateSubmitDecisions({
-        strategic: [], operational: [],
+        strategic: [], operational: [], financial: [],
         lawsuits: [{ targetId: 'rival-player-id', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
       });
       expect(result.lawsuits).toHaveLength(1);
     });
 
-    it('should reject a payload missing the strategic/operational/lawsuits arrays', () => {
+    it('should reject a payload missing the strategic/operational/financial/lawsuits arrays', () => {
       expect(() => validateSubmitDecisions({})).toThrow();
     });
 
     it('should reject a decision entry with an empty name', () => {
-      expect(() => validateSubmitDecisions({ strategic: [{ name: '' }], operational: [], lawsuits: [] })).toThrow();
+      expect(() => validateSubmitDecisions({ strategic: [{ name: '' }], operational: [], financial: [], lawsuits: [] })).toThrow();
     });
   });
 });

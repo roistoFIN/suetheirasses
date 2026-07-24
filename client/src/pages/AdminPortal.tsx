@@ -459,6 +459,7 @@ function AiGeneratePanel({
             <option value="">Any level</option>
             <option value="Strategic">Strategic</option>
             <option value="Operational">Operational</option>
+            <option value="Financial">Financial</option>
           </select>
           <select value={nature} onChange={(e) => setNature(e.currentTarget.value)}>
             <option value="">Any nature</option>

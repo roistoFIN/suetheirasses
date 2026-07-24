@@ -52,7 +52,7 @@ export class GameEngine {
   // deleted) for this long, keyed by playerId since their old socketId is now dead.
   // Swept by the same heartbeat interval that cleans up stale rooms.
   private disconnectedPlayers: Map<string, { roomId: string; disconnectedAt: number }> = new Map();
-  private readonly RECONNECT_GRACE_PERIOD_MS = 60_000;
+  private readonly RECONNECT_GRACE_PERIOD_MS = 120_000;
   // Each room's last resolved turn (or round-1 starting snapshot) — re-sent to a
   // reconnecting player immediately instead of making them wait for the next turn.
   private lastTurnResults: Map<string, TurnResolutionResult> = new Map();
@@ -537,6 +537,62 @@ export class GameEngine {
   }
 
   /**
+   * Enters GAME_PHASE round 1 for a WAITING room — the `ROOM_START_GAME` handler's own
+   * state mutation/broadcast orchestration, pulled out as its own testable method (the
+   * handler itself keeps only the NOT_HOST/NOT_ENOUGH_PLAYERS validation, which needs
+   * direct `socket.emit` access) specifically so its broadcast ORDER has real regression
+   * coverage — see gameEngine.test.ts's 'startGame' describe block.
+   *
+   * **`broadcastInitialSnapshot` is deliberately awaited and broadcast BEFORE
+   * `PHASE_CHANGED`** — a real, reproduced race otherwise (found via a live Docker smoke
+   * test, not just code review): `PHASE_CHANGED` is what makes the client render the
+   * GamePhase screen and allows submitting/readying up, but `broadcastInitialSnapshot`'s
+   * own DB work (`loadActiveCompanyPlayers`, `persistKpiSnapshots`) takes real time. A
+   * client fast enough to submit and ready up (both players — e.g. an idle round-1 pass)
+   * the instant it sees `PHASE_CHANGED` could have its OWN real turn-1 resolution
+   * complete and broadcast `TURN_RESOLVED` FIRST, only for this always-empty initial
+   * snapshot to land moments later and silently stomp the real result with stale,
+   * zero-decisions data — reproduced live with two Socket.IO clients readying up
+   * immediately on `PHASE_CHANGED`, which received the empty snapshot as a SECOND,
+   * later `TURN_RESOLVED` overwriting the real one. Awaiting this call before
+   * `PHASE_CHANGED` broadcasts means no client can possibly act until after it's already
+   * landed, closing the race entirely.
+   */
+  async startGame(roomId: string): Promise<void> {
+    const roomState = this.rooms.get(roomId);
+    if (!roomState) return;
+
+    roomState.room.status = RoomStatus.GAME_PHASE;
+    roomState.room.currentPhaseRound = 1;
+    roomState.readyPlayerIds.clear();
+    await this.syncRoomToDB(roomId);
+
+    // Players land straight in the game room with real starting numbers — no blank
+    // "waiting for game data" screen for the whole first round. See this method's doc
+    // comment for why this must be awaited and broadcast before PHASE_CHANGED below.
+    await this.broadcastInitialSnapshot(roomId, 1);
+
+    this.startTimer(roomId, PHASE_TIMERS[RoomStatus.GAME_PHASE]);
+
+    this.broadcastRoomState(roomId, ServerEvents.PHASE_CHANGED, {
+      phase: RoomStatus.GAME_PHASE,
+      round: 1,
+      timeLimit: PHASE_TIMERS[RoomStatus.GAME_PHASE],
+    });
+    this.broadcastRoomState(roomId, ServerEvents.GAME_READY_UPDATE, {
+      readyPlayerIds: [],
+      activePlayerCount: Array.from(roomState.players.values()).filter((p) => !p.bankrupt).length,
+    });
+
+    // Send the decision library + per-turn limits once — it's static for the whole
+    // game, so the client can render the real Decision Deck immediately.
+    this.broadcastRoomState(roomId, ServerEvents.GAME_DECK, {
+      decisions: this.getDecisionsSnapshot(),
+      gameSettings: this.getGameConfigSnapshot().gameSettings,
+    });
+  }
+
+  /**
    * One `KpiSnapshot` row per player per round — the source of the KPI history graphs
    * (every KPI card/breakdown line item is clickable; see CLAUDE.md's "KPI history +
    * prediction graphs" section). `upsert`, not `create` — idempotent against a
@@ -868,6 +924,40 @@ export class GameEngine {
 
   getPlayerRoom(socketId: string): string | undefined {
     return this.playerToRoom.get(socketId);
+  }
+
+  /**
+   * Validates and broadcasts an in-room chat message from the given socket — usable in
+   * every room phase (WAITING, GAME_PHASE, AFTERMATH), not just the lobby; the client
+   * renders a chat surface throughout (Matchmaking.tsx's inline lobby box, GamePhase.tsx
+   * / GameTimelineView.tsx's floating ChatWidget). Pulled out of the `chat:message`
+   * handler into its own method so it's unit-testable the same way this class's other
+   * socket-driven logic is (gameEngine.test.ts calls methods directly rather than
+   * simulating raw Socket.IO events — see its own `sendChatMessage` describe block).
+   *
+   * Silently no-ops if the socket can't currently be resolved to a room/player — the
+   * same "nothing to do" cases the handler always had (an already-disconnected socket,
+   * a stale event, etc.); throws only for a genuinely invalid message payload, which the
+   * `chat:message` handler catches and turns into an `error` emit back to just that
+   * socket.
+   */
+  sendChatMessage(socketId: string, payload: unknown): void {
+    const roomId = this.getPlayerRoom(socketId);
+    if (!roomId) return;
+
+    const roomState = this.rooms.get(roomId);
+    if (!roomState) return;
+
+    const sender = Array.from(roomState.players.values()).find((p) => p.socketId === socketId);
+    if (!sender) return;
+
+    const { message } = validateChatMessage(payload);
+    this.broadcastRoomState(roomId, ServerEvents.CHAT_MESSAGE, {
+      playerId: sender.id,
+      playerName: sender.name,
+      message,
+      timestamp: new Date().toISOString(),
+    });
   }
 
   /**
@@ -2123,33 +2213,10 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
         return;
       }
 
-      // Start the game — enter GAME_PHASE
-      roomState.room.status = RoomStatus.GAME_PHASE;
-      roomState.room.currentPhaseRound = 1;
-      roomState.readyPlayerIds.clear();
-      await engine.syncRoomToDB(roomId);
-      engine.startTimer(roomId, PHASE_TIMERS[RoomStatus.GAME_PHASE]);
-
-      engine.broadcastRoomState(roomId, ServerEvents.PHASE_CHANGED, {
-        phase: RoomStatus.GAME_PHASE,
-        round: 1,
-        timeLimit: PHASE_TIMERS[RoomStatus.GAME_PHASE],
-      });
-      engine.broadcastRoomState(roomId, ServerEvents.GAME_READY_UPDATE, {
-        readyPlayerIds: [],
-        activePlayerCount: Array.from(roomState.players.values()).filter((p) => !p.bankrupt).length,
-      });
-
-      // Send the decision library + per-turn limits once — it's static for the
-      // whole game, so the client can render the real Decision Deck immediately.
-      engine.broadcastRoomState(roomId, ServerEvents.GAME_DECK, {
-        decisions: engine.getDecisionsSnapshot(),
-        gameSettings: engine.getGameConfigSnapshot().gameSettings,
-      });
-
-      // Players land straight in the game room with real starting numbers —
-      // no blank "waiting for game data" screen for the whole first round.
-      await engine.broadcastInitialSnapshot(roomId, 1);
+      // The actual state mutation + broadcast orchestration lives in GameEngine.startGame
+      // — see its own doc comment for why the initial snapshot must broadcast before
+      // PHASE_CHANGED.
+      await engine.startGame(roomId);
     });
 
     // Submit strategic/operational decisions for the current GAME_PHASE turn
@@ -2541,29 +2608,11 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
       }
     });
 
-    // In-room lobby chat — WAITING phase only (the client only ever renders the chat
-    // UI there). Ephemeral: broadcast-only, nothing persisted, no history replay for
-    // a newly-joined/rejoined player, matching this event's existing doc comment.
+    // In-room chat — see GameEngine.sendChatMessage's doc comment for what phases this
+    // covers and why the actual logic lives there rather than inline here.
     socket.on(ClientEvents.CHAT_MESSAGE, (payload: unknown) => {
-      const roomId = engine.getPlayerRoom(socket.id);
-      if (!roomId) return;
-
-      const roomState = engine.rooms.get(roomId);
-      if (!roomState || roomState.room.status !== RoomStatus.WAITING) return;
-
-      const sender = Array.from(roomState.players.values()).find(
-        (p: Player) => p.socketId === socket.id,
-      );
-      if (!sender) return;
-
       try {
-        const { message } = validateChatMessage(payload);
-        engine.broadcastRoomState(roomId, ServerEvents.CHAT_MESSAGE, {
-          playerId: sender.id,
-          playerName: sender.name,
-          message,
-          timestamp: new Date().toISOString(),
-        });
+        engine.sendChatMessage(socket.id, payload);
       } catch (error: any) {
         socket.emit(ServerEvents.ERROR, {
           code: 'INVALID_CHAT_MESSAGE',

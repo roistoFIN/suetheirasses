@@ -284,6 +284,7 @@ describe('Socket.IO Integration', () => {
       client.emit(ClientEvents.GAME_SUBMIT_DECISIONS, {
         strategic: [{ name: 'New Factory' }],
         operational: [{ name: 'Digital Marketing' }],
+        financial: [],
         lawsuits: [],
       });
 
@@ -296,8 +297,9 @@ describe('Socket.IO Integration', () => {
       const noErrorPromise = new Promise<'no-error'>((resolve) => setTimeout(() => resolve('no-error'), 200));
 
       client.emit(ClientEvents.GAME_SUBMIT_DECISIONS, {
-        strategic: [{ name: 'Buy Shares', targetId: 'rival-player-id' }],
+        strategic: [],
         operational: [],
+        financial: [{ name: 'Buy Shares', targetId: 'rival-player-id' }],
         lawsuits: [],
       });
 
@@ -310,7 +312,7 @@ describe('Socket.IO Integration', () => {
       const noErrorPromise = new Promise<'no-error'>((resolve) => setTimeout(() => resolve('no-error'), 200));
 
       client.emit(ClientEvents.GAME_SUBMIT_DECISIONS, {
-        strategic: [], operational: [],
+        strategic: [], operational: [], financial: [],
         lawsuits: [{ targetId: 'rival-player-id', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
       });
 
@@ -323,7 +325,7 @@ describe('Socket.IO Integration', () => {
         client.once(ServerEvents.ERROR, resolve);
       });
 
-      client.emit(ClientEvents.GAME_SUBMIT_DECISIONS, { strategic: [{ name: '' }], operational: [], lawsuits: [] });
+      client.emit(ClientEvents.GAME_SUBMIT_DECISIONS, { strategic: [{ name: '' }], operational: [], financial: [], lawsuits: [] });
       const data = await errorReceived;
 
       expect(data.code).toBe('INVALID_DECISIONS');

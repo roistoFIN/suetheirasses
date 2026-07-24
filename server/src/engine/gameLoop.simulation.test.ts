@@ -56,6 +56,7 @@ function needsTarget(def: DecisionDefinition): boolean {
 
 const strategicDecisions = decisions.filter((d) => d.level === 'Strategic');
 const operationalDecisions = decisions.filter((d) => d.level === 'Operational');
+const financialDecisions = decisions.filter((d) => d.level === 'Financial');
 const allGrounds: { decisionName: string; groundName: string }[] = decisions.flatMap(
   (d) => (d.legalRisks ?? []).map((r) => ({ decisionName: d.decision, groundName: r.name })),
 );
@@ -113,11 +114,13 @@ function simulateGame(seed: number, maxRounds: number): Violation[] {
 
     for (const id of activeIds) {
       const cash = state[id].cash;
-      const sub: SubmittedDecisions = { strategic: [], operational: [], lawsuits: [] };
+      const sub: SubmittedDecisions = { strategic: [], operational: [], financial: [], lawsuits: [] };
       const numDecisions = 1 + Math.floor(rng() * 2);
       for (let i = 0; i < numDecisions; i++) {
-        const wantStrategic = rng() < 0.35 && sub.strategic.length < (config.gameSettings.maxStrategicDecisionsPerTurn ?? 1);
-        const pool = wantStrategic ? strategicDecisions : operationalDecisions;
+        const roll = rng();
+        const wantStrategic = roll < 0.3 && sub.strategic.length < (config.gameSettings.maxStrategicDecisionsPerTurn ?? 1);
+        const wantFinancial = !wantStrategic && roll < 0.55 && sub.financial.length < (config.gameSettings.maxFinancialDecisionsPerTurn ?? 1);
+        const pool = wantStrategic ? strategicDecisions : wantFinancial ? financialDecisions : operationalDecisions;
         const def = pick(pool, rng);
         if (!def) continue;
         const yearOneCash = def.impacts.cash?.schedule?.[1] ?? def.impacts.cash?.schedule?.['default'] ?? 0;
@@ -130,6 +133,7 @@ function simulateGame(seed: number, maxRounds: number): Violation[] {
         }
         if (def.shareTransactionType) entry.amount = Math.max(5000, Math.floor(cash * (0.05 + rng() * 0.15)));
         if (def.level === 'Strategic') sub.strategic.push(entry);
+        else if (def.level === 'Financial') sub.financial.push(entry);
         else sub.operational.push(entry);
       }
 
@@ -199,8 +203,8 @@ describe('GameLoop — randomized 4-player simulation (regression, real decision
       { id: 'p1', name: 'Alice', company: { variables: {}, engineState: {} } },
       { id: 'p2', name: 'Bob', company: { variables: {}, engineState: {} } },
     ];
-    gameLoop.submitDecisions(roomId, 'p1', { strategic: [], operational: [{ name: 'Channel Stuffing' }], lawsuits: [] });
-    gameLoop.submitDecisions(roomId, 'p2', { strategic: [], operational: [], lawsuits: [] });
+    gameLoop.submitDecisions(roomId, 'p1', { strategic: [], operational: [{ name: 'Channel Stuffing' }], financial: [], lawsuits: [] });
+    gameLoop.submitDecisions(roomId, 'p2', { strategic: [], operational: [], financial: [], lawsuits: [] });
 
     const outcome = gameLoop.resolveTurn(roomId, 1, players);
     const alice = outcome.result.players.find((p) => p.playerId === 'p1')!;
@@ -217,8 +221,8 @@ describe('GameLoop — randomized 4-player simulation (regression, real decision
       { id: 'p1', name: 'Alice', company: { variables: { ...(config.playerStartingValues as any), scrutiny: -50 }, engineState: {} } },
       { id: 'p2', name: 'Bob', company: { variables: {}, engineState: {} } },
     ];
-    gameLoop.submitDecisions(roomId, 'p1', { strategic: [], operational: [], lawsuits: [] });
-    gameLoop.submitDecisions(roomId, 'p2', { strategic: [], operational: [], lawsuits: [] });
+    gameLoop.submitDecisions(roomId, 'p1', { strategic: [], operational: [], financial: [], lawsuits: [] });
+    gameLoop.submitDecisions(roomId, 'p2', { strategic: [], operational: [], financial: [], lawsuits: [] });
 
     const outcome = gameLoop.resolveTurn(roomId, 1, players);
     const alice = outcome.result.players.find((p) => p.playerId === 'p1')!;
@@ -243,8 +247,8 @@ describe('GameLoop — randomized 4-player simulation (regression, real decision
     };
 
     for (let round = 1; round <= 5; round++) {
-      gameLoop.submitDecisions(roomId, 'p1', { strategic: [], operational: [], lawsuits: [] });
-      gameLoop.submitDecisions(roomId, 'p2', { strategic: [], operational: [], lawsuits: [] });
+      gameLoop.submitDecisions(roomId, 'p1', { strategic: [], operational: [], financial: [], lawsuits: [] });
+      gameLoop.submitDecisions(roomId, 'p2', { strategic: [], operational: [], financial: [], lawsuits: [] });
       const players: EngineDataInput[] = ['p1', 'p2'].map((id) => ({
         id, name: id, company: { variables: state[id].variables, engineState: state[id].engineState },
       }));

@@ -395,7 +395,7 @@ describe('gameStore', () => {
         activeDecisions: [],
         legalCases: [],
         riskGauge: 15,
-        incomingAttacks: [],
+        incomingAttacks: [], sharesBoughtThisTurn: [],
       };
 
       const turnResult: TurnResolutionResult = {
@@ -435,7 +435,7 @@ describe('gameStore', () => {
       activeDecisions: [],
       legalCases: [],
       riskGauge: 15,
-      incomingAttacks: [{ attackId: 'attack-1', investigationLevel: 0, isIndirect: false }],
+      incomingAttacks: [{ attackId: 'attack-1', investigationLevel: 0, isIndirect: false }], sharesBoughtThisTurn: [],
       ...overrides,
     });
 
@@ -500,7 +500,7 @@ describe('gameStore', () => {
       activeDecisions: [],
       legalCases: [],
       riskGauge: 15,
-      incomingAttacks: [],
+      incomingAttacks: [], sharesBoughtThisTurn: [],
       ...overrides,
     });
 
@@ -552,7 +552,7 @@ describe('gameStore', () => {
       activeDecisions: [],
       legalCases: [],
       riskGauge: 15,
-      incomingAttacks: [],
+      incomingAttacks: [], sharesBoughtThisTurn: [],
       ...overrides,
     });
 

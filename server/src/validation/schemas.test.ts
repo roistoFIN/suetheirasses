@@ -137,32 +137,35 @@ describe('Validation Schemas', () => {
 
   describe('submitDecisionsSchema', () => {
     it('should validate an empty submission', () => {
-      const result = validateSubmitDecisions({ strategic: [], operational: [], lawsuits: [] });
+      const result = validateSubmitDecisions({ strategic: [], operational: [], financial: [], lawsuits: [] });
       expect(result.strategic).toEqual([]);
       expect(result.operational).toEqual([]);
+      expect(result.financial).toEqual([]);
       expect(result.lawsuits).toEqual([]);
     });
 
-    it('should validate a submission with strategic and operational decisions', () => {
+    it('should validate a submission with strategic, operational, and financial decisions', () => {
       const data = {
         strategic: [{ name: 'New Factory' }],
         operational: [{ name: 'Digital Marketing' }, { name: 'Aggressive Sale' }],
+        financial: [{ name: 'Buy Shares', targetId: 'player-2', amount: 20000 }],
         lawsuits: [],
       };
       const result = validateSubmitDecisions(data);
       expect(result.strategic).toHaveLength(1);
       expect(result.operational).toHaveLength(2);
+      expect(result.financial).toHaveLength(1);
     });
 
     it('should accept a decision with a targetId (targeted decisions like Buy Shares)', () => {
-      const data = { strategic: [{ name: 'Buy Shares', targetId: 'player-2' }], operational: [], lawsuits: [] };
+      const data = { strategic: [], operational: [], financial: [{ name: 'Buy Shares', targetId: 'player-2' }], lawsuits: [] };
       const result = validateSubmitDecisions(data);
-      expect(result.strategic[0].targetId).toBe('player-2');
+      expect(result.financial[0].targetId).toBe('player-2');
     });
 
     it('should accept a lawsuit filing citing a target decision and ground', () => {
       const data = {
-        strategic: [], operational: [],
+        strategic: [], operational: [], financial: [],
         lawsuits: [{ targetId: 'player-2', decisionName: 'Water Pumping', groundName: 'Environmental Violation' }],
       };
       const result = validateSubmitDecisions(data);
@@ -172,36 +175,42 @@ describe('Validation Schemas', () => {
 
     it('should reject a decision with an empty name', () => {
       expect(() =>
-        validateSubmitDecisions({ strategic: [{ name: '' }], operational: [], lawsuits: [] }),
+        validateSubmitDecisions({ strategic: [{ name: '' }], operational: [], financial: [], lawsuits: [] }),
       ).toThrow();
     });
 
     it('should reject a decision name exceeding 100 characters', () => {
       expect(() =>
-        validateSubmitDecisions({ strategic: [{ name: 'a'.repeat(101) }], operational: [], lawsuits: [] }),
+        validateSubmitDecisions({ strategic: [{ name: 'a'.repeat(101) }], operational: [], financial: [], lawsuits: [] }),
       ).toThrow();
     });
 
-    it('should reject missing strategic/operational/lawsuits arrays', () => {
+    it('should reject missing strategic/operational/financial/lawsuits arrays', () => {
       expect(() => validateSubmitDecisions({})).toThrow();
       expect(() => validateSubmitDecisions({ strategic: [] })).toThrow();
       expect(() => validateSubmitDecisions({ strategic: [], operational: [] })).toThrow();
+      expect(() => validateSubmitDecisions({ strategic: [], operational: [], financial: [] })).toThrow();
     });
 
     it('should reject a strategic array exceeding the structural cap of 20', () => {
       const strategic = Array.from({ length: 21 }, (_, i) => ({ name: `Decision ${i}` }));
-      expect(() => validateSubmitDecisions({ strategic, operational: [], lawsuits: [] })).toThrow();
+      expect(() => validateSubmitDecisions({ strategic, operational: [], financial: [], lawsuits: [] })).toThrow();
+    });
+
+    it('should reject a financial array exceeding the structural cap of 20', () => {
+      const financial = Array.from({ length: 21 }, (_, i) => ({ name: `Decision ${i}` }));
+      expect(() => validateSubmitDecisions({ strategic: [], operational: [], financial, lawsuits: [] })).toThrow();
     });
 
     it('should reject a lawsuits array exceeding the structural cap of 10', () => {
       const lawsuits = Array.from({ length: 11 }, (_, i) => ({ targetId: `p${i}`, decisionName: 'Water Pumping', groundName: 'Environmental Violation' }));
-      expect(() => validateSubmitDecisions({ strategic: [], operational: [], lawsuits })).toThrow();
+      expect(() => validateSubmitDecisions({ strategic: [], operational: [], financial: [], lawsuits })).toThrow();
     });
 
-    it('should not enforce game-balance limits (that is DecisionEngine.canDeploy\'s job)', () => {
+    it('should not enforce game-balance limits (that is GameLoop.processNewDecisions\'s job)', () => {
       // Structural validation allows more than maxStrategicDecisionsPerTurn (1) through —
       // the actual per-turn limit is enforced later using game_config.json, not hardcoded here.
-      const data = { strategic: [{ name: 'New Factory' }, { name: 'Vertical Integration' }], operational: [], lawsuits: [] };
+      const data = { strategic: [{ name: 'New Factory' }, { name: 'Vertical Integration' }], operational: [], financial: [], lawsuits: [] };
       expect(() => validateSubmitDecisions(data)).not.toThrow();
     });
   });
@@ -243,6 +252,10 @@ describe('Validation Schemas', () => {
       expect(() => validateDecisionDefinition({ ...validDecision, level: 'Bogus' })).toThrow();
     });
 
+    it('should accept the Financial level', () => {
+      expect(() => validateDecisionDefinition({ ...validDecision, level: 'Financial' })).not.toThrow();
+    });
+
     it('should reject a missing required field', () => {
       const { description, ...missingDescription } = validDecision;
       expect(() => validateDecisionDefinition(missingDescription)).toThrow();
@@ -263,6 +276,7 @@ describe('Validation Schemas', () => {
         maxLawsuitsPerPlayerPerTurn: 3,
         maxStrategicDecisionsPerTurn: 1,
         maxOperationalDecisionsPerTurn: 2,
+        maxFinancialDecisionsPerTurn: 2,
         totalMarketVolumeTonnesPerYear: 10000,
         marketFixed: true,
         digDeeperCost: 10000,

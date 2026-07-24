@@ -51,6 +51,7 @@ function needsTarget(def: DecisionDefinition): boolean {
 
 const strategicDecisions = decisions.filter((d) => d.level === 'Strategic');
 const operationalDecisions = decisions.filter((d) => d.level === 'Operational');
+const financialDecisions = decisions.filter((d) => d.level === 'Financial');
 
 interface Violation { round: number; playerId?: string; message: string }
 
@@ -117,7 +118,7 @@ function simulateSmartGame(seed: number, maxRounds: number): SmartGameResult {
     if (activeIds.length <= 1) break;
 
     for (const id of activeIds) {
-      const sub: SubmittedDecisions = { strategic: [], operational: [], lawsuits: [] };
+      const sub: SubmittedDecisions = { strategic: [], operational: [], financial: [], lawsuits: [] };
       let suitsThisTurn = 0;
 
       // Dig into up to 2 incoming attacks per turn, finishing an already-started
@@ -168,8 +169,10 @@ function simulateSmartGame(seed: number, maxRounds: number): SmartGameResult {
       const cash = state[id].cash;
       const numDecisions = 1 + Math.floor(rng() * 2);
       for (let i = 0; i < numDecisions; i++) {
-        const wantStrategic = rng() < 0.35 && sub.strategic.length < (config.gameSettings.maxStrategicDecisionsPerTurn ?? 1);
-        const pool = wantStrategic ? strategicDecisions : operationalDecisions;
+        const roll = rng();
+        const wantStrategic = roll < 0.3 && sub.strategic.length < (config.gameSettings.maxStrategicDecisionsPerTurn ?? 1);
+        const wantFinancial = !wantStrategic && roll < 0.55 && sub.financial.length < (config.gameSettings.maxFinancialDecisionsPerTurn ?? 1);
+        const pool = wantStrategic ? strategicDecisions : wantFinancial ? financialDecisions : operationalDecisions;
         const def = pick(pool, rng);
         if (!def) continue;
         const yearOneCash = def.impacts.cash?.schedule?.[1] ?? def.impacts.cash?.schedule?.['default'] ?? 0;
@@ -182,6 +185,7 @@ function simulateSmartGame(seed: number, maxRounds: number): SmartGameResult {
         }
         if (def.shareTransactionType) entry.amount = Math.max(5000, Math.floor(cash * (0.05 + rng() * 0.15)));
         if (def.level === 'Strategic') sub.strategic.push(entry);
+        else if (def.level === 'Financial') sub.financial.push(entry);
         else sub.operational.push(entry);
       }
 

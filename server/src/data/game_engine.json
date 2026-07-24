@@ -3249,7 +3249,7 @@
   },
   {
     "decision": "Buy Shares",
-    "level": "Strategic",
+    "level": "Financial",
     "nature": "Grey Area",
     "offensiveAction": true,
     "description": "Purchase a block of another company's shares directly from its capitalization table at the prevailing market price, without requiring the target's consent. The investment amount and the target company are chosen at the moment this action is taken; cash and share-ownership effects are computed dynamically rather than on a fixed schedule.",
@@ -3307,7 +3307,7 @@
   },
   {
     "decision": "Sell Shares",
-    "level": "Strategic",
+    "level": "Financial",
     "nature": "Traditional",
     "offensiveAction": false,
     "description": "Sell a portion of your held shares in any company (including your own) back to the external market at the prevailing market price, converting equity into cash. Shares can only be sold to the external market, never directly to another player.",

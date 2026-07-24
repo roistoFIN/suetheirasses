@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import { io, Socket } from 'socket.io-client';
-import { ClientEvents, ServerEvents, type RoomJoinedResponse, type RoomRejoinPayload, type RoomUpdatedResponse, type PhaseChangedResponse, type GameOverResponse, type ErrorResponse, type TurnResolutionResult, type GameDeckResponse, type DigDeeperResultPayload, type FileLawsuitResultPayload, type AnnualReportResultPayload, type LegalCaseUpdatePayload } from '@suetheirasses/shared';
+import { ClientEvents, ServerEvents, type RoomJoinedResponse, type RoomRejoinPayload, type RoomUpdatedResponse, type PhaseChangedResponse, type GameOverResponse, type ErrorResponse, type TurnResolutionResult, type GameDeckResponse, type DigDeeperResultPayload, type FileLawsuitResultPayload, type AnnualReportResultPayload, type LegalCaseUpdatePayload, type ChatMessageBroadcast } from '@suetheirasses/shared';
 import { useGameStore } from './gameStore';
+import { useChatStore } from './chatStore';
 
 interface SocketState {
   socket: Socket | null;
@@ -98,6 +99,10 @@ export const useSocketStore = create<SocketState>((set, get) => ({
       // same event for both, so this is also where a resumed session gets re-saved.
       saveSession(data.room.id, data.player.id);
       setIsRejoining(false);
+      // Chat history is per-room and continuous across phases (lobby → game → game
+      // over) within the same room — see chatStore.ts. Only actually clears if this is
+      // a genuinely different room than whatever chat history is currently held.
+      useChatStore.getState().resetForRoom(data.room.id);
     });
 
     socket.on(ServerEvents.ROOM_PLAYER_KICKED, (data: { kickedPlayerId: string; kickedPlayerName: string }) => {
@@ -265,6 +270,16 @@ export const useSocketStore = create<SocketState>((set, get) => ({
       console.log('Annual report result:', data.rivalPlayerId, data.entries.length, 'entries');
       const { applyAnnualReportResult } = useGameStore.getState();
       applyAnnualReportResult(data.rivalPlayerId, data.entries);
+    });
+
+    // In-room chat — one continuous history for the whole time this socket is in a
+    // room, spanning the WAITING lobby, GAME_PHASE, and AFTERMATH (see chatStore.ts's
+    // own doc comment). Registered globally here, not locally inside whichever page
+    // component currently renders a chat surface, since Matchmaking/GamePhase/
+    // GameTimelineView unmount/remount across phase transitions and a page-local
+    // listener would lose messages sent while a different page was mounted.
+    socket.on(ServerEvents.CHAT_MESSAGE, (data: ChatMessageBroadcast) => {
+      useChatStore.getState().addMessage(data);
     });
 
     socket.on(ServerEvents.GAME_LEFT, () => {

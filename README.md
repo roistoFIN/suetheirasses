@@ -75,11 +75,14 @@ The room list is dynamically updated via the `rooms:list` server event, showing:
   **About** button; clicking it opens a closeable modal with a plain-language rules
   summary (round flow, decisions, lawsuits, win condition), for players who land on the
   page without prior context.
-- **Room Lobby chat** — a simple text chat scoped to the WAITING-phase lobby (`chat:message`,
-  client → server payload `{ message }`, broadcast back to the room as
-  `{ playerId, playerName, message, timestamp }`). Ephemeral — nothing is persisted, and a
-  newly-joined/rejoined player gets no history replay, only messages sent while they're
-  actually in the room.
+- **Room Lobby chat** — a simple text chat, shown here as an always-visible inline box
+  (`chat:message`, client → server payload `{ message }`, broadcast back to the room as
+  `{ playerId, playerName, message, timestamp }`). No longer WAITING-only — the same
+  conversation continues into GAME_PHASE and AFTERMATH via a floating chat button on those
+  screens; see *In-Game & Game-Over Chat* further down. Ephemeral — nothing is persisted
+  server-side, and a newly-joined/rejoined player gets no history replay, only messages
+  sent while they're actually in the room (the client's own `chatStore` keeps a continuous
+  history across phases for the life of the browser tab — see that section for details).
 - **Kicked player redirect** — `room:playerKicked` for *your own* id now fully resets
   `gameStore` (room/player/turn state, not just your roster entry) and clears the saved
   session, landing you back on the plain landing page with a dismissible "You've been
@@ -184,20 +187,24 @@ suetheirasses/
 │   │       ├── lawsuit-lost.png     # "lawsuit verdict: lost" post-turn info window art
 │   │       ├── defender-won.png     # "lawsuit verdict: won as defendant" (case dismissed) News art
 │   │       ├── settlement-proposal.png # "case settled" post-turn info window art
+│   │       ├── shares-bought.png    # "shares bought" post-turn info window art
 │   │       ├── turn-change.png      # "turn change" post-turn info window art
 │   │       └── lost.png             # "lost" takeover art (bankrupt/forfeit)
 │   ├── src/
 │   │   ├── components/              # Reusable UI components
 │   │   │   ├── Timer.tsx            # Phase countdown timer
+│   │   │   ├── ChatWidget.tsx       # Floating in-game/game-over chat button + popup
 │   │   │   └── ...
 │   │   ├── pages/                   # Page components
-│   │   │   ├── Matchmaking.tsx      # Lobby: create/join/quick-play, invite links
+│   │   │   ├── Matchmaking.tsx      # Lobby: create/join/quick-play, invite links, inline chat
 │   │   │   ├── GamePhase.tsx        # The GAME_PHASE loop UI (KPIs, decisions, lawsuits)
 │   │   │   ├── GameOver.tsx         # AFTERMATH: winner + final standings
+│   │   │   ├── GameTimelineView.tsx # Civilization-style replay/live spectator view
 │   │   │   └── AdminPortal.tsx      # /admin — token-gated room monitoring + config view
 │   │   ├── stores/                  # Zustand state stores
 │   │   │   ├── gameStore.ts         # Game state (room, phase, timer, turn results)
-│   │   │   └── socketStore.ts       # Socket.IO connection & events
+│   │   │   ├── socketStore.ts       # Socket.IO connection & events
+│   │   │   └── chatStore.ts         # Room chat history, continuous across phases
 │   │   ├── App.tsx                  # Root component — renders phase/`/admin` directly,
 │   │   │                            # no path-based routing for game phases (see CLAUDE.md);
 │   │   │                            # also owns the global NotificationBanner and the
@@ -433,7 +440,7 @@ model LegalCaseHistory {
 | `room:leave` | — | Voluntarily leave the room lobby — WAITING phase only. Distinct from `game:leave`'s GAME_PHASE forfeit; this actually removes the player rather than marking them bankrupt. See *Lobby Features* above. |
 | `room:setInviteOnly` | `{ inviteOnly }` | Host toggles whether the room can be found via Quick Play / the Available Rooms list — WAITING phase only. Never blocks a direct room-code/invite-link join. |
 | `room:startGame` | — | Host starts the game (WAITING → GAME_PHASE, round 1) |
-| `game:submitDecisions` | `{ strategic: DecisionEntry[], operational: DecisionEntry[], lawsuits: LawsuitEntry[] }` | Full replacement of this turn's pending decisions (`{ name, targetId? }` each) *and* deliberate lawsuit filings (`{ targetId, decisionName, groundName }` each — see *Lawsuits* below). Structural validation only — per-turn limits (max 1 strategic / 2 operational / 3 lawsuits) come from `game_config.json` and are enforced by `DecisionEngine.canDeploy` / `GameLoop`'s lawsuit-filing step. |
+| `game:submitDecisions` | `{ strategic: DecisionEntry[], operational: DecisionEntry[], financial: DecisionEntry[], lawsuits: LawsuitEntry[] }` | Full replacement of this turn's pending decisions (`{ name, targetId?, amount? }` each) *and* deliberate lawsuit filings (`{ targetId, decisionName, groundName }` each — see *Lawsuits* below). `financial` is Buy Shares/Sell Shares' own decision-type category, capped independently of strategic/operational. Structural validation only — per-turn limits (max 1 strategic / 2 operational / 2 financial / 3 lawsuits) come from `game_config.json` and are enforced by `GameLoop.processNewDecisions` / `GameLoop`'s lawsuit-filing step. |
 | `game:digDeeper` | `{ attackId }` | Pay `gameSettings.digDeeperCost` ($10,000 by default) to reveal the next tier of intel on one incoming attack — instant, outside the turn-resolution cycle. See *Attack Awareness & Dig Deeper* below. |
 | `game:fileLawsuit` | `{ targetId, decisionName, groundName }` | Pay `gameSettings.lawsuitFilingCost` ($15,000 by default) the instant a lawsuit is actually filed — instant, outside the turn-resolution cycle, same pattern as `game:digDeeper`. The client still separately queues the same entry via `game:submitDecisions` for the case itself to be created at the next turn resolution. See *Lawsuits* below. |
 | `game:getAnnualReport` | `{ rivalPlayerId }` | Request AI-narrated "annual report" text for one rival's active decisions — on demand, outside the turn-resolution cycle. See *AI-Narrated Annual Reports* below. |
@@ -444,7 +451,7 @@ model LegalCaseHistory {
 | `game:getGameTimeline` | — | Request the whole room's game-timeline replay/spectator data (every player's KPI history, every decision deployed, every lawsuit filed/resolved) — no payload, unlike every other on-demand request here. Valid in both GAME_PHASE (a live-spectating eliminated player) and AFTERMATH (the finished-game replay). See *Game Timeline* below. |
 | `game:leave` | — | Voluntary forfeit — GAME_PHASE only. Instant bankruptcy for the requesting player; the game continues for everyone else. See *Leave Game* below. |
 | `game:ready` | `{ ready }` | Toggle ready status for the in-flight turn — GAME_PHASE only. Once every active player is ready, the turn resolves immediately. See *Ready-Up* below. |
-| `chat:message` | `{ message }` | Send a chat message to the room — WAITING phase only. See *Lobby Features* above. |
+| `chat:message` | `{ message }` | Send a chat message to the room — any room phase (WAITING, GAME_PHASE, AFTERMATH). See *Lobby Features* / *In-Game & Game-Over Chat* below. |
 
 #### Server → Client
 
@@ -623,6 +630,33 @@ reconnection (see *Reconnection & Session Resume* below):
 - `error` → Calls `gameStore.setError()`; a `REJOIN_FAILED` code additionally clears the
   saved session and `isRejoining`, so a stale/expired session self-heals into the normal
   landing page
+- `chat:message` → Calls `chatStore.addMessage()` — registered globally here rather than
+  inside whichever page currently renders a chat surface, since `chatStore`'s whole point
+  is surviving the unmount/remount every phase transition causes (see below)
+
+Also calls `chatStore.resetForRoom(data.room.id)` from its own `room:joined` handler, right
+alongside the session-persistence bookkeeping above — see `chatStore.ts` below for why.
+
+#### `chatStore.ts`
+
+Room chat history — a continuous conversation across the WAITING lobby, GAME_PHASE, and
+AFTERMATH, independent of which page component currently renders a chat surface (`gameStore`
+also swaps `room`/`currentPhase` across a phase change, but the chat message list living in
+its *own* store, not `gameStore`, is what lets it survive `App.tsx` unmounting one page
+component and mounting another off that same `currentPhase` switch — see *In-Game &
+Game-Over Chat* above). Both the lobby's inline chat box (`Matchmaking.tsx`) and every
+floating `ChatWidget` instance (`GamePhase.tsx`, `GameTimelineView.tsx`) read and write this
+one store.
+
+| Field / Method | Description |
+|--------|-------------|
+| `messages` | The room's chat history, in order — a plain `ChatMessageBroadcast[]` |
+| `isVisible` | True while a chat surface is currently on-screen and presumed being read (the lobby's inline box while mounted, or a popup while open) — gates whether `addMessage` counts an incoming message as unread |
+| `unreadCount` | How many messages have arrived since `isVisible` was last true — the number shown on `ChatWidget`'s floating button badge |
+| `addMessage(message)` | Appends to `messages`; increments `unreadCount` only if `isVisible` is false |
+| `show()` | Marks the chat surface visible and clears `unreadCount` — called when a `ChatWidget` popup opens, or while the lobby's inline box is mounted |
+| `hide()` | Marks the chat surface no longer visible — called when a popup closes/unmounts, or the lobby is left |
+| `resetForRoom(roomId)` | Clears `messages`/`unreadCount`/`isVisible` only if `roomId` is actually different from the room this store currently holds history for — a no-op for a same-room rejoin or an ordinary phase change, so history survives exactly the transitions it's meant to |
 
 ---
 
@@ -806,7 +840,7 @@ zero decisions applied and nothing persisted, so there's no blank "waiting" scre
 the first round's timer.
 
 The client renders the actual Decision Deck from `game:deck` — filterable by level
-(Strategic/Operational) and nature (Traditional/Grey Area/Dirty), each its own row of
+(Strategic/Operational/Financial) and nature (Traditional/Grey Area/Dirty), each its own row of
 filter chips (two independent filters, not one combined chip group), one card per decision
 with its description, an **EFFECTS** panel, and a DEPLOY button. The effects panel
 answers "what does this do, when does it start, how long does it last": a maturity
@@ -828,7 +862,7 @@ modal" shape the **SUE THEIR ASSES** button already uses for the Sue modal. What
 queued this turn shows up in the **Active Decisions** box directly too, not just inside
 that modal — a red `QUEUED` badge alongside the already-active decisions, with its own
 **Cancel** link right there (no need to reopen the deck just to back out of a pick). The
-box's header count (`"X strategic and Y operational"`) includes both active and queued
+box's header count (`"X strategic, Y operational, and Z financial"`) includes both active and queued
 decisions together. The same goes for a filed-but-not-yet-created lawsuit in the **Open
 Lawsuits** box: it appears as a `QUEUED` entry with a **Remove** link there — the
 `SUE THEIR ASSES` modal itself shows only a queued-count line (not its own duplicate
@@ -863,10 +897,12 @@ description and a collapsible **SHOW DETAILS** toggle, the same **EFFECTS** time
 legal-risk line the deck's own cards render, so confirming what a still-maturing or
 queued pick actually does never requires reopening the deck.
 
-Each 120s GAME_PHASE round, every player submits up to 1 strategic + 2 operational
-decision from a shared library of 45 decisions — spanning `Traditional`, `Grey Area`,
-and `Dirty` in nature. When the timer expires, `GameLoop` resolves the turn for all
-players simultaneously:
+Each 120s GAME_PHASE round, every player submits up to 1 strategic + 2 operational +
+2 financial decision from a shared library of 45 decisions — spanning `Traditional`,
+`Grey Area`, and `Dirty` in nature. `Financial` is a decision-type category of its own
+(currently just Buy Shares/Sell Shares), capped independently of strategic/operational
+by `gameSettings.maxFinancialDecisionsPerTurn` — see *Share Ownership & Takeover* below.
+When the timer expires, `GameLoop` resolves the turn for all players simultaneously:
 
 1. Apply active decisions' impacts (additive relative stacking across matured instances)
 1b. Buy/Sell Shares trades execute — see *Share Ownership & Takeover* below
@@ -918,10 +954,13 @@ cross-stake.
 existing holder proportionally — the new shares land 100% in `EXTERNAL_MARKET` until
 someone buys them.
 
-**Buy Shares** (`requiresTarget: true`, `variableAmount: true`) is a real trade, not a fixed
-schedule: pick a target company (any player, **including your own** — a self-buyback lets
-you reclaim stake previously diluted out to `EXTERNAL_MARKET`) and a dollar investment
-amount at deploy time. Priced off the target's **stockValue as of the start of the turn**
+**Buy Shares** (`level: 'Financial'`, `requiresTarget: true`, `variableAmount: true`) is a
+real trade, not a fixed schedule: pick a target company (any player, **including your
+own** — a self-buyback lets you reclaim stake previously diluted out to
+`EXTERNAL_MARKET`) and a dollar investment amount at deploy time. The client labels this
+picker "COMPANY," not "TARGET" — it's choosing whose cap table the trade acts on, not a
+counterparty; a purchase never requires the other side's consent and a sale (below) never
+goes to another player directly. Priced off the target's **stockValue as of the start of the turn**
 (last turn's close — trades don't wait for this turn's not-yet-computed balance sheet).
 Every existing holder of the target — including `EXTERNAL_MARKET` — is diluted pro-rata by
 the fraction bought; the buyer's own stake grows by that same fraction. The buyer's cash
@@ -933,9 +972,11 @@ Disclosure) — but only above a configurable minimum single-transaction size
 (`legalRiskConditions.minPercentAcquiredInSingleTransaction`, 5% by default): a token
 purchase is never suable.
 
-**Sell Shares** converts a held stake back to cash at the current price, always returning
-the shares to `EXTERNAL_MARKET` specifically — never pro-rata to other players, and capped
-by whatever you actually hold.
+**Sell Shares** (`level: 'Financial'`) converts a held stake back to cash at the current
+price, always returning the shares to `EXTERNAL_MARKET` specifically — never pro-rata to
+other players, and capped by whatever you actually hold. Its own "COMPANY" picker chooses
+*which* company's shares you're liquidating (your own, or any rival's you've bought into)
+— not a buyer, since a sale always goes to the external market regardless.
 
 **Simultaneous purchases against the same target** (two players buying into the same
 company the same turn) resolve in strict server-arrival order (FIFO) — the first purchase's
@@ -1306,7 +1347,9 @@ A raw socket disconnect — a network hiccup, an accidental browser back button,
 refresh — never deletes a player anymore. `GameEngine.markPlayerDisconnected` clears their
 live socket association but leaves them in the room; their still-open decisions/lawsuits
 keep resolving normally on schedule, exactly like an AFK player who simply didn't submit
-that turn. They have `RECONNECT_GRACE_PERIOD_MS` (60s by default) to reconnect before the
+that turn. They have `RECONNECT_GRACE_PERIOD_MS` (120s by default — widened from the
+original 60s to give mobile players, whose connections drop more readily on backgrounding
+or a network handoff, a realistic window to come back) to reconnect before the
 same heartbeat interval that sweeps stale empty rooms (`STALE_ROOM_THRESHOLD`) also calls
 `finalizePlayerRemoval` — the original immediate-delete behavior, just deferred. Because
 the player is never removed from the room during the grace window, **the rest of the room
@@ -1344,8 +1387,10 @@ timed out, both still land normally, no refresh required.
 
 ### Leave Game (Voluntary Forfeit)
 
-A red **Leave Game** button in the GAME_PHASE header (confirmation modal first — it's
-irreversible) emits `game:leave`. `GameEngine.forfeitGame` marks the requesting player
+A red **Leave Game** button, fixed floating in the GAME_PHASE screen's bottom-left corner
+(confirmation modal first — it's irreversible) — paired with the floating **Chat** button
+in the opposite (bottom-right) corner, see *In-Game & Game-Over Chat* below — emits
+`game:leave`. `GameEngine.forfeitGame` marks the requesting player
 bankrupt immediately — same DB write shape as a natural cash<0 elimination — and, if that
 leaves at most one active player, ends the game exactly like a normal turn's post-resolution
 win check would. The game continues uninterrupted for everyone else.
@@ -1387,6 +1432,44 @@ gets (re)pointed at a room (`createRoom`/`joinRoom`/`rejoinRoom`): it leaves wha
 that socket was previously mapped to before attaching it to the new one. See CLAUDE.md's
 *"A socket that starts a second game without reloading kept receiving its first game's
 broadcasts"* for the full root-cause writeup.
+
+### In-Game & Game-Over Chat
+
+Room chat (`chat:message`, see *Lobby Features* above for the wire payload shape) is no
+longer scoped to the WAITING lobby — the server-side phase gate that used to reject a
+`chat:message` outside `WAITING` is gone, so the same in-room chat now works throughout
+GAME_PHASE and AFTERMATH too, not just while waiting for the game to start.
+
+The lobby keeps its existing always-visible inline **Lobby Chat** box, unchanged. GAME_PHASE
+and AFTERMATH (both live spectating and the finished-game replay — see *Game Timeline*
+below) instead get a floating **Chat** button, fixed in the screen's bottom-right corner —
+paired with the floating **Leave Game** button in the bottom-left (see *Leave Game* above),
+the two are a deliberate pair of fixed-position controls, one per corner. Clicking it opens
+a small popup window, styled to match the app's "Courtroom Ink" parchment/gold theme, with
+the same message list + input box shape as the lobby's inline chat.
+
+**One continuous conversation, not three separate ones.** The client's `chatStore` (a
+dedicated Zustand store, `client/src/stores/chatStore.ts`) holds chat history independently
+of which page component is currently mounted, so a message sent in the lobby is still
+visible once the game starts and after it ends — the lobby's inline box and every
+in-game/game-over `ChatWidget` instance all read from and write to this same store. History
+resets only when the client actually joins a *different* room (`chatStore.resetForRoom`,
+called from `socketStore`'s `room:joined` handler) — a phase change within the same room
+never clears it. Chat itself stays ephemeral server-side exactly as before (broadcast-only,
+nothing persisted, no history replay on rejoin — a page reload starts empty).
+
+**The chat button's icon shows an unread badge** (a small numeric count) whenever a message
+arrives while the popup is closed — `chatStore.isVisible` tracks whether a chat surface
+(the lobby's inline box while mounted, or the popup while open) is currently on-screen and
+presumed being read; opening the popup clears the count. The lobby's inline box marks
+itself visible for as long as it's mounted (so messages read there don't later show up as
+unread once the game starts), matching how the popup marks itself visible only while open.
+
+See `client/src/components/ChatWidget.tsx` and CLAUDE.md for the full implementation notes,
+including why the unread-badge positioning needed the fixed-position styling to live on a
+wrapper `Box` rather than directly on the button (Mantine's `Indicator` badge positions
+relative to its child's normal-flow box, which collapses to nothing if that child is itself
+taken out of flow via `position: fixed`).
 
 ### AI-Narrated Annual Reports
 
@@ -1593,15 +1676,17 @@ the `bankrupt: true` flag. Skipping this left a bankrupted player's `cash` colum
 whatever positive value it had from their last still-active turn — including on the Game
 Over / Final Standings screen, which read the DB straight through `buildGameOverPayload`.
 
-### News (sued / lawsuit verdict / settlement / turn change)
+### News (sued / lawsuit verdict / settlement / shares bought / turn change)
 
-Four things generate a News item after a turn resolves: getting sued, one of your own
+Five things generate a News item after a turn resolves: getting sued, one of your own
 lawsuits reaching a trial verdict, one of your own cases settling by negotiation instead,
-and the round simply advancing. Unlike earlier versions of this feature, **none of these
-interrupt play** — each one just appends a row to the **News** box (right under the KPI
-cards), and the player clicks a row whenever they like to see the same info window this
-used to pop up automatically. Rows show a short topic ("You have been sued", "Case won",
-"Case settled", "Next turn") and which turn they're from; a brand-new row flashes red a
+another player buying a stake in your own company via Buy Shares, and the round simply
+advancing. Unlike earlier versions of this feature, **none of these interrupt play** —
+each one just appends a row to the **News** box (right under the KPI cards), and the
+player clicks a row whenever they like to see the same info window this used to pop up
+automatically. Rows show a short topic ("You have been sued", "Case won", "Case settled",
+"Your shares were bought", "Next turn") and which turn they're from; a brand-new row
+flashes red a
 few times so it doesn't go unnoticed, without demanding an immediate response the way an
 auto-popping modal did. The list appends newest-at-the-bottom and auto-scrolls to follow,
 but only while you're already scrolled near the bottom — scroll up to reread older news
@@ -1627,12 +1712,24 @@ and a new arrival won't yank you back down.
   — see *Lawsuits* above; not `'cancelled'`, the bankruptcy-waterfall outcome, which isn't
   a settlement either side negotiated). Shows who paid whom the settled amount, same
   role-aware framing as the verdict item.
+- **Shares bought** (`shares-bought.png`) — `GameLoop` itself already knows, at the exact
+  moment each Buy Shares trade executes, who bought and what fraction of the whole company
+  changed hands (`PlayerTurnResult.sharesBoughtThisTurn`), so this one needs no client-side
+  diffing against last turn — only the *target* of a purchase gets the item, and only for a
+  genuine other-player purchase (a self-buyback, reclaiming your own previously-diluted
+  stake, is your own action and isn't news to yourself). Shows who bought and what
+  percentage of the total shares was sold, e.g. "Bob bought 20% of your company's shares."
+  Two different buyers purchasing a stake in the same turn produce two separate items, same
+  "one thing per event, never a batch" rule every other News item follows.
 - **Next turn** (`turn-change.png`) — every round after the first (round 1 is the
   initial game start, not a change from anything) gets one of these the moment the
   round number advances.
 
-All three detection functions are pure and unit-tested independently of any live turn
-cycle (`GamePhase.utils.test.ts`), and the effect that drives them is guarded against
+All three legal-case detection functions are pure and unit-tested independently of any
+live turn cycle (`GamePhase.utils.test.ts`); Shares Bought's own coverage lives
+server-side, in `gameLoop.test.ts`'s Buy/Sell Shares suite, since the server already
+computes exactly what happened that turn (see CLAUDE.md). The effect that drives all of
+this is guarded against
 React 18 StrictMode's dev-only double-invocation via a `useRef` — see CLAUDE.md for why
 that guard exists and what broke before it did.
 
@@ -1681,7 +1778,7 @@ All client inputs are validated server-side using Zod schemas before processing:
 | | `roomName` | Optional, max 40 characters (covers UUID v4 invite-link codes, 36 chars) |
 | | `searchForRoom` | Optional boolean — triggers Quick Play search |
 | `chatMessageSchema` | `message` | Required, 1-500 characters |
-| `submitDecisionsSchema` | `strategic`, `operational` | Arrays of `{ name, targetId? }`, max 20 entries each — structural sanity only; the real per-turn limits come from `game_config.json` via `DecisionEngine.canDeploy` |
+| `submitDecisionsSchema` | `strategic`, `operational`, `financial` | Arrays of `{ name, targetId?, amount? }`, max 20 entries each — structural sanity only; the real per-turn limits come from `game_config.json` and are enforced by `GameLoop.processNewDecisions` |
 | | `lawsuits` | Array of `{ targetId, decisionName, groundName }`, max 10 entries — structural cap only; the real limit (`maxLawsuitsPerPlayerPerTurn`, 3) and the "target actually deployed this" check happen in `LegalEngine.fileLawsuit` |
 | `digDeeperSchema` | `attackId` | Required, 1-100 characters |
 | `gameReadySchema` | `ready` | Required boolean |
@@ -1729,7 +1826,7 @@ only place that touches Prisma or Socket.IO for turn resolution:
 | `getFormulasSnapshot()` | In-memory read backing `GET /api/admin/formulas` |
 | `updateFormula(key, expression, description)` | Writes one formula row (404 if the key is unknown — no create), then calls `GameLoop.loadFormulas()` again so the change is live for the next turn resolved anywhere. Validation (syntax + variable whitelist) happens in `validateFormulaUpdate` before this is ever called. |
 | `loadActiveCompanyPlayers(roomId)` *(private)* | Shared DB fetch (`player.findMany` with `company` included, `bankrupt: false`) feeding `resolveGameTurn`, `broadcastInitialSnapshot`, and `digDeeper` |
-| `startHeartbeatCleanup()` *(private)* | One 10s `setInterval` sweeping two things: rooms empty for over `STALE_ROOM_THRESHOLD` (60s), and disconnected players past `RECONNECT_GRACE_PERIOD_MS` (60s) → `finalizePlayerRemoval`, skipped for a room whose turn is currently resolving (`advancingRooms`) and retried on the next tick instead — see *Reconnection & Session Resume* above. Extend this interval for new periodic sweeps rather than adding a second one. |
+| `startHeartbeatCleanup()` *(private)* | One 10s `setInterval` sweeping two things: rooms empty for over `STALE_ROOM_THRESHOLD` (60s), and disconnected players past `RECONNECT_GRACE_PERIOD_MS` (120s) → `finalizePlayerRemoval`, skipped for a room whose turn is currently resolving (`advancingRooms`) and retried on the next tick instead — see *Reconnection & Session Resume* above. Extend this interval for new periodic sweeps rather than adding a second one. |
 
 **`GameLoop`** (`server/src/engine/gameLoop.ts`) — the authoritative turn-resolution
 engine, loaded via `GameEngine.loadGameData()` (decisions/config now come from the

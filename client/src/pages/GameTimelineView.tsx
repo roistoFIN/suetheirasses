@@ -6,6 +6,7 @@ import { LineChart } from '@mantine/charts';
 import { IconPlayerPlay, IconPlayerPause } from '@tabler/icons-react';
 import { useGameStore } from '../stores/gameStore';
 import { useSocketStore } from '../stores/socketStore';
+import ChatWidget from '../components/ChatWidget';
 import {
   ServerEvents, ClientEvents,
   type GameTimelineResponse, type TimelineDecisionEvent, type TimelineLawsuitEvent,
@@ -240,8 +241,18 @@ export default function GameTimelineView({ mode }: GameTimelineViewProps) {
   const winner = data.players.find((p) => p.playerId === data.winnerId);
 
   return (
-    <Container size="lg" py="xl">
-      <Paper p="xl" style={{ background: 'var(--ink-parchment)', backgroundImage: 'var(--paper-texture)', border: '1px solid #cbb888', borderRadius: 4, boxShadow: '6px 8px 0 rgba(0,0,0,0.45)' }}>
+    <>
+      {/* Floating Chat button (bottom-right) — same shared history as the room lobby's
+          inline chat box and the in-game screen's own ChatWidget instance (see
+          chatStore.ts); mounted here for both the live spectator view and the finished-
+          game replay (GameOver.tsx), matching this component's own dual-mode usage.
+          This screen has no floating Leave button of its own to pair with (its
+          mode==='live' "Leave & Return to Start" stays an inline header button, and
+          mode==='finished' has no Leave action at all) — see CLAUDE.md for why the
+          floating-Leave treatment was deliberately kept scoped to the in-game screen. */}
+      <ChatWidget />
+      <Container size="lg" py="xl">
+        <Paper p="xl" style={{ background: 'var(--ink-parchment)', backgroundImage: 'var(--paper-texture)', border: '1px solid #cbb888', borderRadius: 4, boxShadow: '6px 8px 0 rgba(0,0,0,0.45)' }}>
         <Flex justify="space-between" align="center" mb="md">
           <Title order={2} style={{ fontFamily: "'Rye', Georgia, serif", fontWeight: 400, color: 'var(--ink-text)' }}>
             {mode === 'live' ? '👀 Spectating' : '🏆 Game Over!'}
@@ -381,6 +392,7 @@ export default function GameTimelineView({ mode }: GameTimelineViewProps) {
           </Center>
         )}
       </Paper>
-    </Container>
+      </Container>
+    </>
   );
 }

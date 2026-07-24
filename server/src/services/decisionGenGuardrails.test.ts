@@ -223,6 +223,13 @@ describe('clampDecisionCandidate', () => {
     expect(decision.level).toBe('Operational');
     expect(decision.nature).toBe('Traditional');
   });
+
+  it('accepts the Financial level without defaulting it away', () => {
+    const candidate = baseCandidate({ level: 'Financial' });
+    const { decision, warnings } = clampDecisionCandidate(candidate, []);
+    expect(decision.level).toBe('Financial');
+    expect(warnings.some((w) => w.path === 'level')).toBe(false);
+  });
 });
 
 describe('isViableCandidate', () => {

@@ -31,7 +31,7 @@ const MAX_ATTEMPTS = 3;
 export interface DecisionGenRequest {
   /** Free-text theme/prompt hint, e.g. "supply chain sabotage" or "a green PR stunt". */
   theme?: string;
-  level?: 'Strategic' | 'Operational';
+  level?: 'Strategic' | 'Operational' | 'Financial';
   nature?: 'Traditional' | 'Grey Area' | 'Dirty';
   /** Hint that this should be a `target.*`-bearing attack on a chosen opponent. */
   offensive?: boolean;
@@ -80,7 +80,7 @@ export function buildDecisionGenPrompt(
 Required JSON shape:
 {
   "decision": string (a short, punchy name, not already used),
-  "level": "Strategic" | "Operational",
+  "level": "Strategic" | "Operational" | "Financial",
   "description": string (1-2 sentences, plain language),
   "nature": "Traditional" | "Grey Area" | "Dirty",
   "offensiveAction": boolean,
@@ -97,6 +97,7 @@ Rules:
 - "type": "absolute" means the number is added directly every year it applies. "relative" means the field is multiplied by (1 + number) — so 0.2 is +20%, -0.15 is -15%.
 - Schedule keys are the string "1" (year 1 of having this decision active), optionally "2", and "default" (every year after that). Every impacts entry needs at least a "default" value.
 - "legalRisks": 1 to 3 grounds another player could sue this decision over. "Traditional" nature should have 0-1 mild ground; "Grey Area" 1-2; "Dirty" 2-3 real ones. Each ground's "impact.target" must be "cash" (use "absolute") or "equity"/"revenue" (use "relative" — a fraction of the SUED PLAYER's own current value, always negative).
+- "level": "Financial" is a separate per-turn budget from "Strategic"/"Operational", used for share-ownership/investment-flavored moves (e.g. hedging, financing, dividend-style plays) — only use it if asked to, or if the decision is clearly about trading/financial engineering rather than day-to-day operations or company strategy.
 ${FIELD_CHEATSHEET}
 
 Example of the exact shape (do not copy this decision, invent a different one):

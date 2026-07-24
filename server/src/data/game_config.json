@@ -6,6 +6,7 @@
     "maxLawsuitsPerPlayerPerTurn": 3,
     "maxStrategicDecisionsPerTurn": 1,
     "maxOperationalDecisionsPerTurn": 2,
+    "maxFinancialDecisionsPerTurn": 2,
     "totalMarketVolumeTonnesPerYear": 10000,
     "marketFixed": true,
     "digDeeperCost": 10000,

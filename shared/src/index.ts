@@ -191,7 +191,7 @@ export interface AnnualReportRequestPayload {
   rivalPlayerId: string;
 }
 
-/** Payload for `chat:message` (client → server) — in-room chat, currently used in the WAITING-phase lobby. */
+/** Payload for `chat:message` (client → server) — in-room chat, usable in every room phase (WAITING lobby, GAME_PHASE, AFTERMATH). */
 export interface ChatMessagePayload {
   message: string;
 }

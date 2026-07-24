@@ -20,11 +20,13 @@ import {
   Image,
   Modal,
   List,
+  Table,
 } from '@mantine/core';
-import { IconCheck, IconCopy, IconInfoCircle } from '@tabler/icons-react';
+import { IconCheck, IconCopy, IconInfoCircle, IconShieldLock } from '@tabler/icons-react';
 import { useSocketStore } from '../stores/socketStore';
 import { useGameStore } from '../stores/gameStore';
-import { ClientEvents, ServerEvents, type RoomInfo, type ChatMessageBroadcast } from '@suetheirasses/shared';
+import { useChatStore } from '../stores/chatStore';
+import { ClientEvents, ServerEvents, type RoomInfo } from '@suetheirasses/shared';
 
 /** localStorage key for remembering the player's name across visits — see `Matchmaking`'s name-entry section. */
 const NAME_STORAGE_KEY = 'stita_player_name';
@@ -103,12 +105,13 @@ const Matchmaking: React.FC = () => {
   const [isCreating, setIsCreating] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [availableRooms, setAvailableRooms] = useState<RoomInfo[]>([]);
-  const [chatMessages, setChatMessages] = useState<ChatMessageBroadcast[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [privacyOpen, setPrivacyOpen] = useState(false);
   const chatViewportRef = useRef<HTMLDivElement>(null);
-  const { send, on, socket } = useSocketStore();
+  const { send, on } = useSocketStore();
   const { room, player, error, setError } = useGameStore();
+  const { messages: chatMessages, show: showChat, hide: hideChat } = useChatStore();
 
   /** A failed join/create attempt (name taken, room full, kicked, etc.) shouldn't leave
    * the loading overlay stuck forever — there's nothing else that resets these on error. */
@@ -135,23 +138,19 @@ const Matchmaking: React.FC = () => {
     }
   }, [playerName]);
 
-  /** Chat history is per-room — Matchmaking never unmounts across a leave/kick/rejoin, so
-   * without this, messages from a room you've since left would linger into the next one. */
+  /** Chat messages/history now live in chatStore (shared with GamePhase/GameTimelineView's
+   * floating ChatWidget, so the same conversation carries through from the lobby into the
+   * game and game-over screens — see chatStore.ts's own doc comment) rather than local
+   * state here. This lobby view still renders it as an always-visible inline box, unlike
+   * the floating popup those other screens use — so it marks the chat "visible" for as
+   * long as the lobby itself is showing, meaning a message that arrives while a player is
+   * sitting in the lobby is treated as already read, not queued up as unread for when they
+   * later land on the in-game floating widget. */
   useEffect(() => {
-    setChatMessages([]);
-  }, [room?.id]);
-
-  /** Lobby chat (WAITING phase only) — listens while a room is joined, resets on unmount. */
-  useEffect(() => {
-    if (!socket || !room) return;
-    const handler = (data: ChatMessageBroadcast) => {
-      setChatMessages((prev) => [...prev, data]);
-    };
-    socket.on(ServerEvents.CHAT_MESSAGE, handler);
-    return () => {
-      socket.off(ServerEvents.CHAT_MESSAGE, handler);
-    };
-  }, [socket, room]);
+    if (!room) return;
+    showChat();
+    return () => hideChat();
+  }, [room, showChat, hideChat]);
 
   useEffect(() => {
     chatViewportRef.current?.scrollTo({ top: chatViewportRef.current.scrollHeight });
@@ -396,6 +395,14 @@ const Matchmaking: React.FC = () => {
           >
             About
           </Button>
+          <Button
+            variant="subtle"
+            color="dark"
+            leftSection={<IconShieldLock size={16} />}
+            onClick={() => setPrivacyOpen(true)}
+          >
+            Privacy Policy
+          </Button>
         </Group>
 
         <Stack>
@@ -552,6 +559,150 @@ const Matchmaking: React.FC = () => {
             tycoon standing.
           </Text>
           <Button onClick={() => setAboutOpen(false)} style={mmStyles.primaryBtn}>Got it</Button>
+        </Stack>
+      </Modal>
+
+      <Modal
+        opened={privacyOpen}
+        onClose={() => setPrivacyOpen(false)}
+        title={<Text component="span" style={{ ...mmStyles.title, fontSize: '1.3rem' }}>⚖️ Privacy Policy</Text>}
+        centered
+        size="lg"
+      >
+        <Stack gap="md">
+          <Text size="sm" fs="italic" style={{ color: 'var(--ink-text-soft)' }}>Last Updated: July 23, 2026</Text>
+
+          <Text size="sm">
+            This Privacy Policy describes how Sue Their Asses ("we", "us", or "our")
+            collects, uses, and protects your personal data when you play our web game at
+            suetheirasses.org. We are committed to respecting your privacy and complying
+            with applicable data protection laws, including the EU General Data Protection
+            Regulation (GDPR) and Finnish data protection laws.
+          </Text>
+
+          <Title order={4} style={mmStyles.title}>1. Data Controller</Title>
+          <Text size="sm">The data controller responsible for your personal data is:</Text>
+          <List size="sm" spacing={2}>
+            <List.Item><b>Name / Data Controller:</b> Risto Paavola</List.Item>
+            <List.Item><b>Location:</b> Finland</List.Item>
+            <List.Item><b>Contact Email:</b> risto.paavola@gmail.com</List.Item>
+          </List>
+
+          <Title order={4} style={mmStyles.title}>2. Information We Collect</Title>
+          <Text size="sm">
+            We only collect the minimal amount of data necessary to provide and secure the
+            game, as well as to run analytics and advertisements.
+          </Text>
+          <Text size="sm" fw={700}>Player Identification &amp; Gameplay Data:</Text>
+          <List size="sm" spacing={2}>
+            <List.Item>A uniquely generated Player ID assigned to your browser session.</List.Item>
+            <List.Item>Optional username chosen by you.</List.Item>
+            <List.Item>In-game action logs and gameplay progress associated with your Player ID.</List.Item>
+          </List>
+          <Text size="sm" fw={700}>Technical &amp; Network Data:</Text>
+          <List size="sm" spacing={2}>
+            <List.Item>IP address.</List.Item>
+            <List.Item>Technical logs (server access logs, request timestamps, error logs).</List.Item>
+          </List>
+          <Text size="sm" fw={700}>Cookies and Tracking Technologies:</Text>
+          <List size="sm" spacing={2}>
+            <List.Item>Essential cookies or local storage keys required to maintain your game session.</List.Item>
+            <List.Item>Third-party cookies and tracking scripts provided by Google (see Section 5).</List.Item>
+          </List>
+
+          <Title order={4} style={mmStyles.title}>3. Legal Grounds and Purposes of Processing</Title>
+          <Text size="sm">We process your data for the following purposes and legal bases:</Text>
+          <Table striped withTableBorder withColumnBorders fz="sm">
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>Purpose</Table.Th>
+                <Table.Th>Collected Data</Table.Th>
+                <Table.Th>Legal Basis (GDPR)</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              <Table.Tr>
+                <Table.Td>Game Operation</Table.Td>
+                <Table.Td>Player ID, optional username, gameplay logs, essential cookies</Table.Td>
+                <Table.Td><b>Contract:</b> Necessary to provide the web game service to you.</Table.Td>
+              </Table.Tr>
+              <Table.Tr>
+                <Table.Td>Security &amp; Stability</Table.Td>
+                <Table.Td>IP addresses, server logs, action logs</Table.Td>
+                <Table.Td><b>Legitimate Interest:</b> To ensure network security, prevent abuse/cheating, and fix technical bugs.</Table.Td>
+              </Table.Tr>
+              <Table.Tr>
+                <Table.Td>Analytics &amp; Advertising</Table.Td>
+                <Table.Td>Device/browser data, cookie identifiers, interaction data</Table.Td>
+                <Table.Td><b>Consent:</b> Required before loading Google Analytics and Google Ads scripts via our Consent Banner.</Table.Td>
+              </Table.Tr>
+            </Table.Tbody>
+          </Table>
+
+          <Title order={4} style={mmStyles.title}>4. Data Storage, Location, and Retention</Title>
+          <List size="sm" spacing={2}>
+            <List.Item><b>Server Location:</b> Our game servers are hosted on a Hetzner Cloud VPS located in Finland (EU/EEA).</List.Item>
+            <List.Item><b>Retention Period:</b> All IP addresses, server logs, player IDs, usernames, and in-game action logs are automatically and permanently deleted after 90 days.</List.Item>
+          </List>
+
+          <Title order={4} style={mmStyles.title}>5. Third-Party Services and Analytics</Title>
+          <Text size="sm">
+            We use third-party services provided by Google LLC / Google Ireland Limited to
+            analyze website traffic and display advertisements:
+          </Text>
+          <List size="sm" spacing={2}>
+            <List.Item><b>Google Analytics:</b> Used to collect aggregated statistical information about how players interact with the game.</List.Item>
+            <List.Item><b>Google Advertising (Ads / AdSense):</b> Used to display advertisements to users.</List.Item>
+          </List>
+          <Text size="sm" fw={700}>Consent Management</Text>
+          <Text size="sm">
+            Non-essential third-party scripts (Google Analytics and Advertising) are
+            blocked by default and will only load if you explicitly grant permission
+            through our Consent Management Banner on your first visit. You may update or
+            revoke your cookie consent at any time using the cookie settings link
+            available on our website.
+          </Text>
+          <Text size="sm" fw={700}>International Data Transfers</Text>
+          <Text size="sm">
+            Google may process data outside the European Economic Area (EEA), including in
+            the United States. Data transfers to Google LLC in the US are based on the
+            EU-U.S. Data Privacy Framework.
+          </Text>
+
+          <Title order={4} style={mmStyles.title}>6. Your Data Rights Under GDPR</Title>
+          <Text size="sm">Under the GDPR, you have the following rights regarding your personal data:</Text>
+          <List size="sm" spacing={2}>
+            <List.Item><b>Right of Access:</b> You can request a copy of the personal data we hold about you.</List.Item>
+            <List.Item><b>Right to Erasure ("Right to be Forgotten"):</b> You can request that we delete your personal data.</List.Item>
+            <List.Item><b>Right to Object / Restrict Processing:</b> You can object to or request restrictions on processing under certain conditions.</List.Item>
+            <List.Item><b>Right to Withdraw Consent:</b> Where processing is based on consent (analytics/advertising), you can withdraw your consent at any time.</List.Item>
+          </List>
+          <Text size="sm">
+            <b>Note on Data Identification:</b> Because we do not require account
+            registration or email addresses, your data is linked only to your Player ID or
+            IP Address. To exercise your rights regarding specific gameplay data, you must
+            provide us with your assigned Player ID.
+          </Text>
+          <Text size="sm">
+            To exercise any of these rights, please contact us at{' '}
+            <a href="mailto:risto.paavola@gmail.com" style={{ color: 'var(--ink-text)' }}>risto.paavola@gmail.com</a>.
+          </Text>
+          <Text size="sm" fw={700}>Right to Lodge a Complaint</Text>
+          <Text size="sm">
+            If you believe that our processing of your personal data violates data
+            protection laws, you have the right to lodge a complaint with a supervisory
+            authority. In Finland, the competent authority is the Office of the Data
+            Protection Ombudsman (Tietosuojavaltuutetun toimisto, tietosuoja.fi).
+          </Text>
+
+          <Title order={4} style={mmStyles.title}>7. Changes to This Privacy Policy</Title>
+          <Text size="sm">
+            We may update this Privacy Policy from time to time to reflect changes in
+            legal requirements or operational practices. The updated version will be
+            indicated by the "Last Updated" date at the top of this document.
+          </Text>
+
+          <Button onClick={() => setPrivacyOpen(false)} style={mmStyles.primaryBtn}>Got it</Button>
         </Stack>
       </Modal>
     </Container>

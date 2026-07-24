@@ -6,7 +6,7 @@
  * server/src/data/game_engine.json, editable live via /admin. */
 export interface DecisionDefinition {
   decision: string;
-  level: 'Strategic' | 'Operational';
+  level: 'Strategic' | 'Operational' | 'Financial';
   description: string;
   nature: 'Traditional' | 'Grey Area' | 'Dirty';
   offensiveAction: boolean;
@@ -55,6 +55,9 @@ export interface GameSettings {
   maxLawsuitsPerPlayerPerTurn: number;
   maxStrategicDecisionsPerTurn: number;
   maxOperationalDecisionsPerTurn: number;
+  /** Buy Shares / Sell Shares — a decision-type category of its own (`level: 'Financial'`),
+   * capped independently of the strategic/operational per-turn budgets. */
+  maxFinancialDecisionsPerTurn: number;
   totalMarketVolumeTonnesPerYear: number;
   marketFixed: boolean;
   /** Cash cost of one "Dig Deeper" investigation click — deducted instantly, outside turn resolution. */
@@ -274,6 +277,9 @@ export interface SubmittedLawsuitEntry {
 export interface SubmittedDecisions {
   strategic: SubmittedDecisionEntry[];
   operational: SubmittedDecisionEntry[];
+  /** `level: 'Financial'` decisions (Buy Shares / Sell Shares) — a bucket of its own,
+   * capped by `gameSettings.maxFinancialDecisionsPerTurn`, independent of strategic/operational. */
+  financial: SubmittedDecisionEntry[];
   lawsuits: SubmittedLawsuitEntry[];
 }
 
@@ -434,6 +440,18 @@ export interface PlayerDerivedStats {
   competitiveness: number;
 }
 
+/** One other player buying a stake in THIS player's own company this turn, via Buy
+ * Shares — see `PlayerTurnResult.sharesBoughtThisTurn`. Never includes a self-buyback
+ * (buying back your own previously-diluted stake isn't news to yourself). */
+export interface SharesBoughtEvent {
+  buyerId: string;
+  buyerName: string;
+  /** The fraction of the WHOLE company that changed hands in this one purchase
+   * (`acquisitionFraction` — same value `DeployedDecision.acquisitionFraction` stamps on
+   * the buyer's own instance), not the buyer's resulting total stake. */
+  fractionBought: number;
+}
+
 export interface PlayerTurnResult {
   playerId: string;
   playerName: string;
@@ -444,6 +462,8 @@ export interface PlayerTurnResult {
   riskGauge: number;
   /** Offensive decisions currently targeting this player — see `IncomingAttackInfo`. */
   incomingAttacks: IncomingAttackInfo[];
+  /** Every OTHER player who bought a stake in this player's own company this turn — see `SharesBoughtEvent`. */
+  sharesBoughtThisTurn: SharesBoughtEvent[];
 }
 
 export interface TurnResolutionResult {
