@@ -686,7 +686,7 @@ export default function GamePhase() {
       {/* ── Header ─────────────────────────────────────── */}
       <Flex justify="space-between" align="center" wrap="wrap" gap="sm" style={gpStyles.header}>
         <Text style={gpStyles.title}>{myData.playerName}</Text>
-        <Flex align="center" gap="sm">
+        <Flex align="center" wrap="wrap" gap="sm">
           <RiskGaugeBar value={riskGauge} trend={computeTrend(riskGauge, prevData?.riskGauge)} onClick={() => setDrillDown({ type: 'threat', data: myData })} />
           <TurnBox
             round={round}
