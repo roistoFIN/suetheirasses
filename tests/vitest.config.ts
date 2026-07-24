@@ -7,12 +7,13 @@ export default defineConfig({
     include: ['api/**/*.test.ts'],
     teardownTimeout: 10_000,
     testTimeout: 30_000,
-    // test-setup.ts's setupTestDatabase() memoizes its Prisma client/test-db
-    // creation at module scope, assuming one shared process — but each test
-    // FILE gets its own worker (and thus its own module instance) unless
-    // parallelism is disabled, so multiple files were independently racing
-    // to create+migrate the same test_db_test database. A file that lost
-    // that race ran its tests against a database with no tables yet.
+    // See global-setup.ts: it creates/migrates the shared test_db_test
+    // database exactly once before any test file's own worker starts,
+    // which is what actually eliminates the race (see its doc comment).
+    // fileParallelism: false is kept as a cheap second guard — it makes
+    // any accidental future duplicate-setup-style race far less likely to
+    // manifest, at a small cost in wall-clock time for this small suite.
+    globalSetup: './global-setup.ts',
     fileParallelism: false,
   },
 });

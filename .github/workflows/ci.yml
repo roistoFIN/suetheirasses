@@ -230,7 +230,7 @@ jobs:
           echo "Backend did not become reachable in time" && cat server.log && exit 1
 
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps
 
       - name: Run E2E tests
         run: npm run test:e2e
