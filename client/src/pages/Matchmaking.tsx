@@ -29,6 +29,43 @@ import { ClientEvents, ServerEvents, type RoomInfo, type ChatMessageBroadcast } 
 /** localStorage key for remembering the player's name across visits — see `Matchmaking`'s name-entry section. */
 const NAME_STORAGE_KEY = 'stita_player_name';
 
+// "Courtroom Ink" tokens — same tokens as GamePhase.tsx's gpStyles, defined locally
+// since this is a separate file; the underlying CSS custom properties live once in
+// theme.css. Kept small (this page has far less surface than the in-game dashboard).
+const mmStyles = {
+  paper: {
+    background: 'var(--ink-parchment)',
+    backgroundImage: 'var(--paper-texture)',
+    border: '1px solid #cbb888',
+    borderRadius: 4,
+    boxShadow: '6px 8px 0 rgba(0,0,0,0.45)',
+  } as React.CSSProperties,
+  title: {
+    fontFamily: "'Rye', Georgia, serif",
+    fontWeight: 400,
+    color: 'var(--ink-text)',
+  } as React.CSSProperties,
+  label: {
+    fontFamily: "'Courier Prime', 'Courier New', monospace",
+    fontWeight: 700,
+    letterSpacing: '0.02em',
+    color: 'var(--ink-text)',
+  } as React.CSSProperties,
+  listedRoom: {
+    background: '#f6efd9',
+    backgroundImage: 'var(--paper-texture)',
+    border: '1px solid #cbb888',
+    borderRadius: 3,
+  } as React.CSSProperties,
+  primaryBtn: {
+    fontFamily: "'Rye', Georgia, serif",
+    letterSpacing: '0.02em',
+    background: 'var(--ink-text)',
+    color: 'var(--ink-parchment)',
+    border: '2px solid var(--ink-gold)',
+  } as React.CSSProperties,
+};
+
 function loadSavedName(): string {
   try {
     return localStorage.getItem(NAME_STORAGE_KEY) || '';
@@ -206,18 +243,18 @@ const Matchmaking: React.FC = () => {
 
     return (
       <Container size="sm" py="xl">
-        <Paper withBorder p="xl" shadow="lg">
+        <Paper p="xl" style={mmStyles.paper}>
           <Flex justify="space-between" align="center" mb="md">
-            <Title order={2}>🏢 Room Lobby</Title>
+            <Title order={2} style={mmStyles.title}>🏢 Room Lobby</Title>
             <Badge color={room.inviteOnly ? 'orange' : 'gray'} size="sm">
               {room.inviteOnly ? '🔒 Invite Only' : '🔓 Public'}
             </Badge>
           </Flex>
           <Stack>
-            <Text fw={500}>Players ({room.players.length}/{room.maxPlayers}):</Text>
+            <Text fw={700} style={{ color: 'var(--ink-text)' }}>Players ({room.players.length}/{room.maxPlayers}):</Text>
             {room.players.map((p) => (
               <Flex key={p.id} justify="space-between" align="center">
-                <Text>
+                <Text style={{ color: 'var(--ink-text)' }}>
                   {p.name} {p.id === player.id && '(You)'}
                 </Text>
                 {isHost && p.id !== player.id ? (
@@ -237,18 +274,18 @@ const Matchmaking: React.FC = () => {
               </Flex>
             ))}
           </Stack>
-          <Divider my="md" />
+          <Divider my="md" color="#cbb888" />
           <Stack gap="xs" mb="md">
-            <Text fw={500}>Lobby Chat:</Text>
-            <ScrollArea h={160} viewportRef={chatViewportRef} type="auto">
+            <Text fw={700} style={{ color: 'var(--ink-text)' }}>Lobby Chat:</Text>
+            <ScrollArea h={160} viewportRef={chatViewportRef} type="auto" style={{ background: '#f6efd9', border: '1px solid #cbb888', borderRadius: 3 }}>
               <Stack gap={4} p={4}>
                 {chatMessages.length === 0 && (
-                  <Text c="dimmed" size="sm">
+                  <Text size="sm" style={{ color: 'var(--ink-text-soft)' }}>
                     No messages yet — say hi.
                   </Text>
                 )}
                 {chatMessages.map((m, i) => (
-                  <Text key={i} size="sm">
+                  <Text key={i} size="sm" style={{ color: 'var(--ink-text)' }}>
                     <Text span fw={600}>
                       {m.playerId === player.id ? 'You' : m.playerName}:
                     </Text>{' '}
@@ -273,11 +310,11 @@ const Matchmaking: React.FC = () => {
               </Button>
             </Group>
           </Stack>
-          <Divider my="md" />
+          <Divider my="md" color="#cbb888" />
           {isHost && (
             <Stack gap="sm">
               <Group justify="space-between">
-                <Text fw={500}>Room Invite Link:</Text>
+                <Text fw={700} style={{ color: 'var(--ink-text)' }}>Room Invite Link:</Text>
                 <CopyButton value={window.location.origin + `?room=${room.id}`}>
                   {({ copied, copy }) => (
                     <ActionIcon
@@ -293,7 +330,7 @@ const Matchmaking: React.FC = () => {
                 </CopyButton>
               </Group>
               <Group justify="space-between">
-                <Text fw={500}>Room Visibility:</Text>
+                <Text fw={700} style={{ color: 'var(--ink-text)' }}>Room Visibility:</Text>
                 <Button
                   size="xs"
                   variant={room.inviteOnly ? 'filled' : 'outline'}
@@ -307,7 +344,7 @@ const Matchmaking: React.FC = () => {
               <Group justify="center">
                 <Button
                   size="lg"
-                  color="green"
+                  style={{ ...mmStyles.primaryBtn, background: 'var(--ink-forest)', borderColor: 'var(--ink-forest)' }}
                   onClick={() => send(ClientEvents.ROOM_START_GAME, null)}
                   disabled={room.players.length < 2}
                   title={room.players.length < 2 ? 'Waiting for at least one more player to join' : undefined}
@@ -318,11 +355,15 @@ const Matchmaking: React.FC = () => {
             </Stack>
           )}
           {!isHost && (
-            <Alert variant="filled" color="blue">
+            <Alert
+              variant="filled"
+              color="dark"
+              styles={{ root: { background: 'var(--ink-text)', border: '2px solid var(--ink-gold)' } }}
+            >
               Waiting for the host to start the game...
             </Alert>
           )}
-          <Divider my="md" />
+          <Divider my="md" color="#cbb888" />
           <Button
             fullWidth
             variant="outline"
@@ -338,7 +379,7 @@ const Matchmaking: React.FC = () => {
 
   return (
     <Container size="sm" py="xl">
-      <Paper withBorder p="xl" shadow="lg" pos="relative">
+      <Paper p="xl" pos="relative" style={mmStyles.paper}>
         <LoadingOverlay visible={isCreating || isSearching} />
         <Image
           src="/images/hero.png"
@@ -360,7 +401,7 @@ const Matchmaking: React.FC = () => {
         <Stack>
           <Group align="flex-end" gap="xs">
             <TextInput
-              label="Your Name"
+              label={<span style={mmStyles.label}>Your Name</span>}
               placeholder="Enter your name"
               value={playerName}
               onChange={(e) => setPlayerName(e.target.value)}
@@ -370,6 +411,7 @@ const Matchmaking: React.FC = () => {
             />
             <Button
               variant="outline"
+              color="dark"
               disabled={isCreating || isSearching || !isNameLocked}
               onClick={() => setIsNameLocked(false)}
             >
@@ -383,29 +425,29 @@ const Matchmaking: React.FC = () => {
             </Alert>
           )}
 
-          <Divider my="sm" />
+          <Divider my="sm" color="#cbb888" />
 
           {/* Show Quick Play + Create Room when NOT invited via link */}
           {!searchParams.has('room') && (
             <>
-              <Title order={3}>Quick Play</Title>
+              <Title order={3} style={mmStyles.title}>Quick Play</Title>
               <Button
                 fullWidth
                 onClick={handleSearchForRoom}
                 disabled={!playerName.trim() || isSearching}
-                variant="gradient"
-                gradient={{ from: 'blue', to: 'cyan' }}
+                style={mmStyles.primaryBtn}
               >
                 {isSearching ? 'Searching for a room...' : 'Search for Available Room'}
               </Button>
 
-              <Divider my="sm" />
+              <Divider my="sm" color="#cbb888" />
 
-              <Title order={3}>Create a Room</Title>
+              <Title order={3} style={mmStyles.title}>Create a Room</Title>
               <Button
                 fullWidth
                 onClick={handleCreateRoom}
                 disabled={!playerName.trim() || isCreating}
+                style={{ ...mmStyles.primaryBtn, background: 'var(--ink-blood)', borderColor: 'var(--ink-blood)', color: '#f4e9d0' }}
               >
                 {isCreating ? 'Creating...' : 'Create New Room'}
               </Button>
@@ -415,13 +457,18 @@ const Matchmaking: React.FC = () => {
           {/* Show Join a Room ONLY when invited via direct link */}
           {searchParams.has('room') && (
             <>
-              <Alert variant="filled" color="blue" mb="sm">
+              <Alert
+                variant="filled"
+                color="dark"
+                mb="sm"
+                styles={{ root: { background: 'var(--ink-text)', border: '2px solid var(--ink-gold)' } }}
+              >
                 You were invited to join a room. Enter your name below and click Join.
               </Alert>
 
-              <Title order={3}>Join a Room</Title>
+              <Title order={3} style={mmStyles.title}>Join a Room</Title>
               <TextInput
-                label="Room Code"
+                label={<span style={mmStyles.label}>Room Code</span>}
                 placeholder="Enter room code"
                 value={roomName}
                 onChange={(e) => setRoomName(e.target.value)}
@@ -430,6 +477,7 @@ const Matchmaking: React.FC = () => {
               <Button
                 fullWidth
                 variant="outline"
+                color="dark"
                 onClick={handleJoinRoom}
                 disabled={!playerName.trim() || !roomName.trim() || isCreating || isSearching}
               >
@@ -441,17 +489,18 @@ const Matchmaking: React.FC = () => {
           {/* Always show available rooms for quick play discovery */}
           {!searchParams.has('room') && availableRooms.length > 0 && (
             <>
-              <Divider my="sm" />
-              <Title order={3}>Available Rooms</Title>
+              <Divider my="sm" color="#cbb888" />
+              <Title order={3} style={mmStyles.title}>Available Rooms</Title>
               <Stack>
                 {availableRooms.map((roomInfo) => (
-                  <Paper key={roomInfo.id} p="sm" withBorder radius="md">
+                  <Paper key={roomInfo.id} p="sm" style={mmStyles.listedRoom}>
                     <Flex justify="space-between" align="center">
-                      <Text>
+                      <Text style={{ color: 'var(--ink-text)' }}>
                         Room {roomInfo.id.slice(0, 8)}... ({roomInfo.playerCount}/4 players)
                       </Text>
                       <Button
                         size="sm"
+                        color="dark"
                         onClick={() => handleJoinListedRoom(roomInfo.id)}
                         disabled={!playerName.trim()}
                       >
@@ -466,7 +515,10 @@ const Matchmaking: React.FC = () => {
         </Stack>
       </Paper>
 
-      <Modal opened={aboutOpen} onClose={() => setAboutOpen(false)} title={<Title order={3}>⚖️🐔 Sue Their Asses</Title>} centered size="md">
+      {/* Modal's own `title` prop already renders inside an <h2> — passing a Mantine
+          <Title order={3}> (an <h3>) here nested an h3 inside an h2, an invalid-HTML
+          hydration warning. Plain styled text avoids the nested heading entirely. */}
+      <Modal opened={aboutOpen} onClose={() => setAboutOpen(false)} title={<Text component="span" style={{ ...mmStyles.title, fontSize: '1.3rem' }}>⚖️🐔 Sue Their Asses</Text>} centered size="md">
         <Stack gap="md">
           <Text size="sm">
             Welcome to the cutthroat, deep-fried underbelly of industrial poultry. You and
@@ -499,7 +551,7 @@ const Matchmaking: React.FC = () => {
             Outlast, outlawyer, or out-acquire every other company to become the last chicken
             tycoon standing.
           </Text>
-          <Button onClick={() => setAboutOpen(false)}>Got it</Button>
+          <Button onClick={() => setAboutOpen(false)} style={mmStyles.primaryBtn}>Got it</Button>
         </Stack>
       </Modal>
     </Container>

@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { GameLoop, type EngineDataInput } from './gameLoop';
 import { DEFAULT_FORMULA_SEEDS } from './defaultFormulas';
-import { SELF_OWNERSHIP_KEY, EXTERNAL_MARKET_KEY, calculateRiskGauge } from './calcEngine';
-import { buildFormulaSet } from './formulaEngine';
+import { SELF_OWNERSHIP_KEY, EXTERNAL_MARKET_KEY } from './calcEngine';
 import type { GameConfig, PlayerVariables, LegalCaseData } from '@suetheirasses/shared';
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -116,7 +115,6 @@ function makeConfig(overrides: Partial<GameConfig> = {}): GameConfig {
         riskWeightScrutiny_w2: 0.2,
         riskWeightOutrage_w3: 0.25,
         riskWeightOwnership_w4: 0,
-        riskWeightSolvency_w5: 0,
       },
       ownership: {
         takeoverThresholdPercent: 0.5,
@@ -779,52 +777,6 @@ describe('GameLoop', () => {
       expect(outcome.result.players[0].riskGauge).toBeLessThanOrEqual(100);
     });
 
-    // Regression for the risk gauge's 5th term (solvency risk, see CLAUDE.md's "Risk
-    // Gauge solvency term"): resolveTurn must feed the real ctx.prevCash (this player's
-    // cash BEFORE this turn's own P&L moved it) into calculateRiskGauge, not silently
-    // fall back to its "assume no trend" default (prevCash = post-turn cash). Isolates
-    // the gauge to only w5 weighted, so the whole result is this one term.
-    it('threads a real cash trend (via ctx.prevCash) into the solvency-risk term, not the "no trend" default', () => {
-      gameLoop.updateConfig({
-        ...config,
-        adminVariables: {
-          ...config.adminVariables,
-          riskGauge: { riskWeightLegalExposure_w1: 0, riskWeightScrutiny_w2: 0, riskWeightOutrage_w3: 0, riskWeightOwnership_w4: 0, riskWeightSolvency_w5: 1 },
-        },
-      });
-
-      const openCase: LegalCaseData = {
-        id: 'case-1', roomId: 'room-1', plaintiffId: 'player-2', defendantId: 'player-1',
-        decisionName: 'Water Pumping', groundName: 'Environmental Violation', description: 'x',
-        baseProbability: 0.5, adjustedProbability: 0.5, plaintiffFullyInvestigated: false,
-        defendantInvestigated: false, stakes: 100000, status: 'negotiating', offers: [], turnsNegotiating: 0,
-        verdict: undefined, createdAt: new Date('2024-01-01'), resolvedAt: undefined,
-      };
-      // No revenue (installedCapacity/capacityUtilization: 0) — cash this turn moves only
-      // by fixed costs, a real, predictable DECLINE, so prevCash > post-turn cash.
-      const targetVars = makeVars({ cash: 200000, installedCapacity: 0, capacityUtilization: 0 });
-
-      const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
-        { id: 'player-1', name: 'Alice', variables: targetVars, engineState: { legalCases: [openCase] } },
-        { id: 'player-2', name: 'Bob', variables: makeVars({ installedCapacity: 0, capacityUtilization: 0 }), engineState: { legalCases: [openCase] } },
-      ]));
-
-      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
-      const realGauge = alice.riskGauge;
-
-      // What the "no trend assumed" default (prevCash defaulted to post-turn cash) would
-      // have produced for these exact same post-turn variables/case — computed directly
-      // against the same admin config/formulas resolveTurn just used.
-      const formulas = buildFormulaSet(DEFAULT_FORMULA_SEEDS);
-      const postTurnVars: PlayerVariables = { ...targetVars, cash: alice.variables.cash, legalExposureRatio: alice.variables.legalExposureRatio };
-      const openCases = [{ probability: 0.5, stakes: 100000 }];
-      const noTrendAssumedGauge = calculateRiskGauge(postTurnVars, openCases, config.adminVariables, formulas);
-
-      // A real decline this turn must read as MORE dangerous than assuming no trend at
-      // all — if resolveTurn had silently used the default instead of ctx.prevCash, these
-      // two numbers would be identical.
-      expect(realGauge).toBeGreaterThan(noTrendAssumedGauge);
-    });
   });
 
   describe('resolveTurn — legal risks (deliberate filing only)', () => {

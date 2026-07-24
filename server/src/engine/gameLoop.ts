@@ -913,7 +913,7 @@ export class GameLoop {
           marketShare: ctx.vars.marketShare || 0,
           competitiveness: ctx.vars.competitiveness || 0,
         },
-        finalRiskGauge: calculateRiskGauge(ctx.vars, openCases, this.adminVars, this.formulas, ctx.prevCash),
+        finalRiskGauge: calculateRiskGauge(ctx.vars, openCases, this.adminVars, this.formulas),
       };
     };
 
@@ -967,11 +967,7 @@ export class GameLoop {
       const openCases = allCases
         .filter(c => c.defendantId === pid && c.status !== 'resolved')
         .map(c => ({ probability: c.adjustedProbability ?? c.baseProbability, stakes: c.stakes }));
-      // ctx.prevCash — cash at the start of THIS turn, before this turn's own P&L/
-      // balance-sheet movement — feeds the solvency-risk term's one-turn-ahead cash
-      // projection (predictNextTurnCashLinear). Same field the bankruptcy waterfall
-      // pool below already reuses for an unrelated purpose.
-      riskMap.set(pid, calculateRiskGauge(ctx.vars, openCases, this.adminVars, this.formulas, ctx.prevCash));
+      riskMap.set(pid, calculateRiskGauge(ctx.vars, openCases, this.adminVars, this.formulas));
     }
 
     // ── Step 12 — Collect Company persistence updates (all engine state in JSONB) ──

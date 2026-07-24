@@ -1338,6 +1338,19 @@ export class GameEngine {
 
         const gameOverPayload = await this.buildGameOverPayload(roomId, stillActive[0]?.id);
         this.io.to(roomId).emit(ServerEvents.GAME_OVER, gameOverPayload);
+        // getGameTimeline() reads winnerId from this same cache, normally kept current by
+        // every resolveGameTurn call — a forfeit that itself ends the game never goes
+        // through resolveGameTurn at all, so without this the cache stays stale (whatever
+        // it last was, e.g. round 1's winnerId-less initial snapshot) and the finished-game
+        // replay's win badge/art never appears for a forfeit-ended game specifically. A
+        // real, reproduced gap — found while verifying the Game Over screen's new art.
+        const existingCache = this.lastTurnResults.get(roomId);
+        this.lastTurnResults.set(roomId, {
+          round: existingCache?.round ?? roomState.room.currentPhaseRound,
+          players: existingCache?.players ?? [],
+          gameOver: true,
+          winnerId: stillActive[0]?.id,
+        });
         this.broadcastRoomState(roomId, ServerEvents.PHASE_CHANGED, {
           phase: RoomStatus.AFTERMATH,
           round: roomState.room.currentPhaseRound,

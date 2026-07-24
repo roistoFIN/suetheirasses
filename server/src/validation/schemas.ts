@@ -451,7 +451,6 @@ const adminVariablesSchema = z.object({
     riskWeightScrutiny_w2: z.number(),
     riskWeightOutrage_w3: z.number(),
     riskWeightOwnership_w4: z.number(),
-    riskWeightSolvency_w5: z.number(),
   }),
   ownership: z.object({
     takeoverThresholdPercent: z.number(),
@@ -526,7 +525,7 @@ export const FORMULA_VARIABLES: Record<string, string[]> = {
   stockValue: ['marketEquity', 'totalSharesOutstanding'],
   adjustedProbability: ['baseProbability', 'scrutinyLegalRiskMultiplier', 'defendantScrutiny', 'defendantLegalExposureRatio'],
   legalExposureRatio: ['legalExposureRatioCap', 'legalExposure', 'cash'],
-  riskGauge: ['w1', 'w2', 'w3', 'w4', 'w5', 'legalExposureRatio', 'legalExposureRatioCap', 'scrutiny', 'absOutrage', 'ownershipRisk', 'solvencyRisk'],
+  riskGauge: ['w1', 'w2', 'w3', 'w4', 'legalExposureRatio', 'legalExposureRatioCap', 'scrutiny', 'absOutrage', 'ownershipRisk'],
 };
 
 /** Zod schema for the body of `PUT /api/admin/formulas/:key`. */

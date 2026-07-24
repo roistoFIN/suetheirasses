@@ -46,8 +46,8 @@ const OWN_KPI_DRILLDOWN_FIELD: Record<string, { field: string; label: string }> 
 // Styles hook usage helper
 // ============================================================
 
-const DISPLAY = { fontFamily: "'Arial Black', Impact, 'Helvetica Neue', sans-serif" as const };
-const boldStyle = { ...DISPLAY, fontWeight: 900 };
+const DISPLAY = { fontFamily: "'Courier Prime', 'Courier New', monospace" as const };
+const boldStyle = { ...DISPLAY, fontWeight: 700 };
 
 // ============================================================
 // Utility functions
@@ -87,22 +87,22 @@ function computeTrend(current: number, previous: number | undefined, epsilon = 0
 function TrendIcon({ trend, invert, size = 14 }: { trend?: Trend; invert?: boolean; size?: number }) {
   if (!trend) return null;
   if (trend === 'same') {
-    return <IconMinus size={size} style={{ color: '#9ca3af' }} title="No change since last turn" />;
+    return <IconMinus size={size} style={{ color: 'var(--ink-text-soft)' }} title="No change since last turn" />;
   }
   const isGood = trend === 'up' ? !invert : invert;
-  const color = isGood ? '#16a34a' : '#dc2626';
+  const color = isGood ? '#4c5f3f' : '#9c2b22';
   return trend === 'up'
     ? <IconTrendingUp size={size} style={{ color }} title="Up since last turn" />
     : <IconTrendingDown size={size} style={{ color }} title="Down since last turn" />;
 }
 
 const semColors: Record<string, { bg: string; chipBg: string; chipBorder: string; textColor: string }> = {
-  green: { bg: '#22c55e', chipBg: '#dcfce7', chipBorder: '#22c55e', textColor: '#15803d' },
-  yellow: { bg: '#fbbf24', chipBg: '#fef3c7', chipBorder: '#f59e0b', textColor: '#b45309' },
-  red: { bg: '#ef4444', chipBg: '#fee2e2', chipBorder: '#ef4444', textColor: '#b91c1c' },
+  green: { bg: '#4c5f3f', chipBg: '#e3e8da', chipBorder: '#4c5f3f', textColor: '#3a4a30' },
+  yellow: { bg: '#c68a2e', chipBg: '#f3e6cc', chipBorder: '#c68a2e', textColor: '#8f631f' },
+  red: { bg: '#9c2b22', chipBg: '#f0dcd8', chipBorder: '#9c2b22', textColor: '#7a2119' },
   /** A plaintiff never sees their own filed case's real probability — the semaphore
    * chip's "unknown" state, styled the same as the real thing but gray and unclickable. */
-  gray: { bg: '#9ca3af', chipBg: '#f3f4f6', chipBorder: '#9ca3af', textColor: '#4b5563' },
+  gray: { bg: '#8a7d63', chipBg: '#e4ddc9', chipBorder: '#8a7d63', textColor: '#5c5240' },
 };
 
 /** Determine the viewing player's role in a case — 'role'/'opponent' are view
@@ -251,15 +251,22 @@ function newsTopic(event: PostTurnEvent): string {
 // the established convention — Mantine v7 dropped @mantine/styles/createStyles).
 // ============================================================
 
-const DISPLAY_FONT = "'Arial Black', Impact, 'Helvetica Neue', sans-serif";
+const DISPLAY_FONT = "'Rye', Georgia, serif";
+
+const MONO_FONT = "'Courier Prime', 'Courier New', monospace";
+
+/** Threat Level and Turn boxes sit side by side in the header and must read as a
+ * matched pair — both sized off this single constant rather than left to size
+ * themselves off their own (different-shaped) content. */
+const HEADER_BOX_SIZE = { width: 170, height: 90 };
 
 const gpStyles = {
   dashboard: {
-    background: 'var(--mantine-color-gray-0)',
+    background: 'var(--ink-bg)',
     borderRadius: 'var(--mantine-radius-md)',
     overflow: 'hidden',
     maxWidth: '100%',
-    fontFamily: "'Helvetica Neue', Arial, sans-serif",
+    fontFamily: "'Vollkorn', Georgia, serif",
   } as React.CSSProperties,
 
   loadingOverlay: {
@@ -267,20 +274,26 @@ const gpStyles = {
     alignItems: 'center',
     justifyContent: 'center',
     minHeight: 300,
-    background: 'var(--mantine-color-gray-0)',
+    background: 'var(--ink-bg)',
+    color: 'var(--ink-text-on-dark-soft)',
   } as React.CSSProperties,
 
   header: {
-    borderBottom: '3px solid var(--mantine-color-dark-4)',
-    background: '#fff',
+    borderBottom: '3px solid var(--ink-gold)',
+    background: 'var(--ink-bg)',
     padding: 'var(--mantine-spacing-sm) var(--mantine-spacing-md)',
   } as React.CSSProperties,
 
+  // The player's name sits directly on the dark ink header, not on a parchment card —
+  // it needs the light on-dark text color, not the dark ink-text meant for parchment
+  // surfaces (a real contrast bug: near-black text was rendering on a near-black
+  // background here until this was split out).
   title: {
     fontFamily: DISPLAY_FONT,
-    fontSize: '1.25rem',
-    fontWeight: 900,
-    color: 'var(--mantine-color-dark-8)',
+    fontSize: '1.5rem',
+    fontWeight: 400,
+    color: 'var(--ink-parchment)',
+    letterSpacing: '0.01em',
   } as React.CSSProperties,
 
   kpiGrid: {
@@ -289,66 +302,73 @@ const gpStyles = {
 
   kpiCard: {
     flex: '1 1 160px',
-    background: '#fff',
-    border: '2px solid var(--mantine-color-dark-4)',
-    borderRadius: 'var(--mantine-radius-sm)',
+    background: 'var(--ink-parchment)',
+    backgroundImage: 'var(--paper-texture)',
+    border: '1px solid #cbb888',
+    borderRadius: 3,
     padding: 'var(--mantine-spacing-md)',
+    boxShadow: '3px 4px 0 rgba(0,0,0,0.35)',
     cursor: 'pointer',
   } as React.CSSProperties,
 
   kpiLabel: {
-    fontFamily: DISPLAY_FONT,
+    fontFamily: MONO_FONT,
     fontSize: '0.7rem',
-    letterSpacing: '0.02em',
-    color: 'var(--mantine-color-dark-6)',
+    fontWeight: 700,
+    letterSpacing: '0.05em',
+    textTransform: 'uppercase',
+    color: 'var(--ink-text-soft)',
     marginBottom: 4,
   } as React.CSSProperties,
 
   sectionCard: {
-    background: '#fff',
-    border: '3px solid var(--mantine-color-dark-4)',
-    borderRadius: 'var(--mantine-radius-md)',
+    background: 'var(--ink-parchment)',
+    backgroundImage: 'var(--paper-texture)',
+    border: '1px solid #cbb888',
+    borderRadius: 3,
     padding: 'var(--mantine-spacing-md)',
-    boxShadow: '8px 8px 0 0 var(--mantine-color-dark-5)',
+    boxShadow: '5px 6px 0 rgba(0,0,0,0.35)',
   } as React.CSSProperties,
 
   sectionTitle: {
     fontFamily: DISPLAY_FONT,
-    fontSize: '0.85rem',
-    fontWeight: 900,
-    letterSpacing: '0.02em',
-    color: 'var(--mantine-color-dark-8)',
+    fontSize: '1.1rem',
+    fontWeight: 400,
+    letterSpacing: '0.01em',
+    color: 'var(--ink-text)',
     marginBottom: 'var(--mantine-spacing-sm)',
   } as React.CSSProperties,
 
   caseCard: {
-    borderRadius: 'var(--mantine-radius-lg)',
-    border: '3px solid var(--mantine-color-dark-4)',
-    background: '#fff',
+    borderRadius: 3,
+    border: '1px solid #cbb888',
+    background: '#f6efd9',
+    backgroundImage: 'var(--paper-texture)',
     padding: 'var(--mantine-spacing-md)',
-    boxShadow: '4px 4px 0 0 var(--mantine-color-dark-5)',
+    boxShadow: '3px 3px 0 rgba(0,0,0,0.25)',
   } as React.CSSProperties,
 
   activeDecisionCard: {
-    borderRadius: 'var(--mantine-radius-sm)',
-    border: '3px solid var(--mantine-color-dark-4)',
-    background: '#fff',
+    borderRadius: 3,
+    border: '1px solid #cbb888',
+    background: '#f6efd9',
+    backgroundImage: 'var(--paper-texture)',
     padding: 'var(--mantine-spacing-sm) var(--mantine-spacing-md)',
   } as React.CSSProperties,
 
   filterChip: (active: boolean): React.CSSProperties => ({
     cursor: 'pointer',
-    fontFamily: DISPLAY_FONT,
+    fontFamily: MONO_FONT,
     fontSize: '0.65rem',
-    fontWeight: 900,
+    fontWeight: 700,
     letterSpacing: '0.03em',
     textTransform: 'uppercase',
     padding: '4px var(--mantine-spacing-sm)',
-    borderRadius: 9999,
+    borderRadius: 3,
     border: '2px solid',
-    borderColor: active ? 'var(--mantine-color-dark-8)' : 'var(--mantine-color-gray-4)',
-    background: active ? 'var(--mantine-color-dark-8)' : '#fff',
-    color: active ? '#fff' : 'var(--mantine-color-dark-6)',
+    borderColor: active ? 'var(--ink-text)' : '#cbb888',
+    background: active ? 'var(--ink-text)' : 'transparent',
+    color: active ? 'var(--ink-parchment)' : 'var(--ink-text-soft)',
   }),
 
   semaphoreChip: (level: string, clickable = true): React.CSSProperties => {
@@ -358,7 +378,7 @@ const gpStyles = {
       alignItems: 'center',
       gap: 4,
       padding: '4px 10px',
-      borderRadius: 9999,
+      borderRadius: 3,
       border: `2px solid ${colors.chipBorder}`,
       background: colors.chipBg,
       cursor: clickable ? 'pointer' : 'default',
@@ -367,21 +387,21 @@ const gpStyles = {
   },
 
   sliderContainer: {
-    border: '2px solid var(--mantine-color-dark-4)',
-    borderRadius: 'var(--mantine-radius-md)',
+    border: '1px solid #cbb888',
+    borderRadius: 3,
     padding: 'var(--mantine-spacing-sm)',
-    background: 'var(--mantine-color-gray-0)',
+    background: '#f6efd9',
   } as React.CSSProperties,
 
   rivalSection: {
-    borderTop: '2px solid var(--mantine-color-gray-3)',
+    borderTop: '2px solid #cbb888',
     paddingTop: 4,
   } as React.CSSProperties,
 
   rivalMiniStat: {
-    background: 'var(--mantine-color-gray-1)',
-    border: '1px solid var(--mantine-color-gray-4)',
-    borderRadius: 'var(--mantine-radius-sm)',
+    background: '#e8dcb8',
+    border: '1px solid #cbb888',
+    borderRadius: 3,
     padding: 'var(--mantine-spacing-xs) var(--mantine-spacing-sm)',
     cursor: 'pointer',
   } as React.CSSProperties,
@@ -395,8 +415,8 @@ const gpStyles = {
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: 'var(--mantine-spacing-xs) 0',
-    borderBottom: '1px solid var(--mantine-color-gray-2)',
-    color: tone === 'minus' ? '#dc2626' : tone === 'plus' ? '#16a34a' : 'var(--mantine-color-dark-8)',
+    borderBottom: '1px solid #d8c79a',
+    color: tone === 'minus' ? 'var(--ink-blood)' : tone === 'plus' ? 'var(--ink-forest)' : 'var(--ink-text)',
     fontWeight: 500,
   }),
 
@@ -405,7 +425,7 @@ const gpStyles = {
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingTop: 'var(--mantine-spacing-sm)',
-    borderTop: '2px solid var(--mantine-color-dark-4)',
+    borderTop: '2px solid var(--ink-text)',
     marginTop: 4,
   } as React.CSSProperties,
 
@@ -413,18 +433,23 @@ const gpStyles = {
     display: 'flex',
     alignItems: 'center',
     gap: 8,
-    border: '2px solid var(--mantine-color-dark-4)',
-    borderRadius: 'var(--mantine-radius-sm)',
-    padding: 'var(--mantine-spacing-xs) var(--mantine-spacing-sm)',
-    background: '#fff',
+    border: '1px solid #cbb888',
+    borderRadius: 3,
+    // Mantine's TextInput already carries its own ~36px-tall input box internally —
+    // this wrapper's own padding used to stack another 10px/side on top of that
+    // (60px total), reading as an oversized search field. Kept just enough padding
+    // to keep the icon from touching the border; size="xs" on the TextInput itself
+    // (at both call sites) does the rest of the height reduction.
+    padding: '4px var(--mantine-spacing-sm)',
+    background: '#fffdf6',
   } as React.CSSProperties,
 
   groundsItem: (selected: boolean): React.CSSProperties => ({
     cursor: 'pointer',
     padding: 'var(--mantine-spacing-sm)',
-    borderRadius: 'var(--mantine-radius-md)',
-    border: selected ? '3px solid #dc2626' : '2px solid var(--mantine-color-gray-3)',
-    background: selected ? '#fef2f2' : '#fff',
+    borderRadius: 3,
+    border: selected ? '3px solid var(--ink-blood)' : '2px solid #d8c79a',
+    background: selected ? '#f0dcd8' : '#fffdf6',
   }),
 
   // Mantine's Badge sets a fixed height/line-height from its own stylesheet (tied to its
@@ -441,14 +466,14 @@ const gpStyles = {
     height: 'auto',
     lineHeight: 1,
     border: '3px solid',
-    borderColor: tone === 'green' ? '#16a34a' : tone === 'yellow' ? '#f59e0b' : tone === 'red' ? '#dc2626' : tone === 'gray' ? '#6b7280' : 'var(--mantine-color-dark-8)',
-    color: tone === 'green' ? '#15803d' : tone === 'yellow' ? '#b45309' : tone === 'red' ? '#b91c1c' : tone === 'gray' ? '#374151' : 'var(--mantine-color-dark-8)',
-    background: tone === 'black' ? '#fff' : tone === 'green' ? '#f0fdf4' : tone === 'yellow' ? '#fefce8' : tone === 'gray' ? '#f3f4f6' : '#fef2f2',
-    borderRadius: 4,
+    borderColor: tone === 'green' ? '#4c5f3f' : tone === 'yellow' ? '#c68a2e' : tone === 'red' ? '#9c2b22' : tone === 'gray' ? '#8a7d63' : 'var(--ink-text)',
+    color: tone === 'green' ? '#3a4a30' : tone === 'yellow' ? '#8f631f' : tone === 'red' ? '#7a2119' : tone === 'gray' ? '#5c5240' : 'var(--ink-text)',
+    background: tone === 'black' ? '#fffdf6' : tone === 'green' ? '#e3e8da' : tone === 'yellow' ? '#f3e6cc' : tone === 'gray' ? '#e4ddc9' : '#f0dcd8',
+    borderRadius: 3,
     padding: '2px 8px',
     fontSize: '0.65rem',
-    fontFamily: DISPLAY_FONT,
-    fontWeight: 900,
+    fontFamily: MONO_FONT,
+    fontWeight: 700,
     letterSpacing: '0.03em',
   }),
 };
@@ -683,6 +708,27 @@ export default function GamePhase() {
 
   return (
     <div style={gpStyles.dashboard}>
+      {/* Leave Game — a fixed floating button in the page's bottom-right corner rather
+          than a header item, so it stays reachable regardless of scroll position and
+          no longer competes with the Threat/Turn boxes for header space. */}
+      <Button
+        size="xs"
+        color="red"
+        variant="outline"
+        leftSection={<IconDoorExit size={14} />}
+        onClick={() => setLeaveConfirmOpen(true)}
+        style={{
+          position: 'fixed',
+          bottom: 20,
+          right: 20,
+          zIndex: 100,
+          background: 'var(--ink-parchment)',
+          boxShadow: '3px 4px 0 rgba(0,0,0,0.45)',
+        }}
+      >
+        Leave Game
+      </Button>
+
       {/* ── Header ─────────────────────────────────────── */}
       <Flex justify="space-between" align="center" wrap="wrap" gap="sm" style={gpStyles.header}>
         <Text style={gpStyles.title}>{myData.playerName}</Text>
@@ -697,103 +743,109 @@ export default function GamePhase() {
             activePlayerCount={activePlayerCount}
             onToggleReady={handleToggleReady}
           />
-          <Button
-            size="xs"
-            color="red"
-            variant="outline"
-            leftSection={<IconDoorExit size={14} />}
-            onClick={() => setLeaveConfirmOpen(true)}
-          >
-            Leave Game
-          </Button>
         </Flex>
       </Flex>
 
-      {/* ── KPI Cards ──────────────────────────────────── */}
-      <Flex wrap="wrap" gap="sm" style={gpStyles.kpiGrid}>
-        <KpiCard label="CASH" value={fmt(vars.cash)} negative={vars.cash < 0} trend={computeTrend(vars.cash, prevData?.variables.cash)} onClick={() => setDrillDown({ type: 'cash', data: myData })} />
-        <KpiCard label="EQUITY" value={fmt(derived.equity)} trend={computeTrend(derived.equity, prevData?.derived.equity)} onClick={() => setDrillDown({ type: 'equity', data: myData })} />
-        <KpiCard label="REVENUE" value={fmt(derived.revenue)} trend={computeTrend(derived.revenue, prevData?.derived.revenue)} onClick={() => setDrillDown({ type: 'revenue', data: myData })} />
-        <KpiCard label="STOCK VALUE" value={fmt(derived.stockValue)} trend={computeTrend(derived.stockValue, prevData?.derived.stockValue)} onClick={() => setDrillDown({ type: 'shares', data: myData })} />
-      </Flex>
+      {/* KPI row, News, and the two-column layout below were plain siblings with no
+          spacing between them at all (0px, confirmed by measuring in-browser) — the
+          heavier borders/box-shadow the dashboard used to have partly disguised this;
+          the thinner Courtroom Ink card treatment made the boxes read as touching.
+          Stack gap="md" matches the spacing convention already used for the two
+          columns underneath. */}
+      <Stack gap="md">
+        {/* ── KPI Cards ──────────────────────────────────── */}
+        <Flex wrap="wrap" gap="sm" style={gpStyles.kpiGrid}>
+          <KpiCard label="CASH" value={fmt(vars.cash)} negative={vars.cash < 0} trend={computeTrend(vars.cash, prevData?.variables.cash)} onClick={() => setDrillDown({ type: 'cash', data: myData })} />
+          <KpiCard label="EQUITY" value={fmt(derived.equity)} trend={computeTrend(derived.equity, prevData?.derived.equity)} onClick={() => setDrillDown({ type: 'equity', data: myData })} />
+          <KpiCard label="REVENUE" value={fmt(derived.revenue)} trend={computeTrend(derived.revenue, prevData?.derived.revenue)} onClick={() => setDrillDown({ type: 'revenue', data: myData })} />
+          <KpiCard label="STOCK VALUE" value={fmt(derived.stockValue)} trend={computeTrend(derived.stockValue, prevData?.derived.stockValue)} onClick={() => setDrillDown({ type: 'shares', data: myData })} />
+        </Flex>
 
-      {/* ── News ───────────────────────────────────────── */}
-      <NewsBox items={newsItems} onSelect={setNewsModalItem} />
-
-      {/* ── Two-column layout: Decisions | Legal ──────── */}
-      <Flex wrap="wrap" gap="md">
-        {/* Left column */}
-        <Stack gap="md" style={{ flex: 1, minWidth: 320 }}>
-          <SectionCard title={`Active Decisions (${activeStrategicCount} strategic and ${activeOperationalCount} operational)`}>
-            <ActiveDecisionsBox
-              pending={pending}
-              activeDecisions={myData.activeDecisions}
-              decisions={decisions}
-              playerNames={playerNames}
-              statuteOfLimitationsYears={gameSettings?.statuteOfLimitationsYears}
-              round={round}
-              onSubmitPending={submitPending}
-              onOpenDeck={() => setDecisionDeckModalOpen(true)}
-            />
-          </SectionCard>
-        </Stack>
-
-        {/* Right column */}
-        <Stack gap="md" style={{ flex: 1, minWidth: 320 }}>
-          <SectionCard title={`Open Lawsuits (${myLegalCases.filter((c) => c.status !== 'resolved').length + pending.lawsuits.length})`}>
-            <Stack gap="sm">
-              <IncomingAttackHints
-                attacks={myData.incomingAttacks}
-                cash={vars.cash}
-                digDeeperCost={gameSettings?.digDeeperCost ?? 10000}
-                socket={socket}
-                onSueNow={(targetId, decisionName, groundName) => {
-                  setSueSuggestion({ targetId, decisionName, groundName });
-                  setSueModalOpen(true);
-                }}
-                pendingLawsuits={pending.lawsuits}
-                myLegalCases={myLegalCases}
-              />
-              <Button variant="filled" color="red" onClick={() => setSueModalOpen(true)} style={{ ...boldStyle }}>
-                SUE THEIR ASSES (${(gameSettings?.lawsuitFilingCost ?? 0).toLocaleString()})
-              </Button>
-              <Stack gap="sm">
-                {pending.lawsuits.map((entry, i) => (
-                  <QueuedLawsuitCard
-                    key={`pending-lawsuit-${i}`}
-                    entry={entry}
-                    targetName={competitors.find((c) => c.playerId === entry.targetId)?.playerName ?? entry.targetId}
-                    onRemove={() => submitPending({ ...pending, lawsuits: pending.lawsuits.filter((_, j) => j !== i) })}
-                  />
-                ))}
-                {myLegalCases
-                  .filter((c) => c.status !== 'resolved')
-                  .map((c) => (
-                    <CaseCard
-                      key={c.id}
-                      caseData={c}
-                      myPlayerId={myData.playerId}
-                      playerNames={playerNames}
-                      negotiationPeriodTurns={gameSettings?.negotiationPeriodTurns}
-                      socket={socket}
-                      onRiskInfo={(caseItem) => setRiskInfoCase(caseItem)}
-                      cash={vars.cash}
-                      digDeeperCost={gameSettings?.digDeeperCost ?? 10000}
-                      semaphoreGreenMax={gameSettings?.semaphoreGreenMax}
-                      semaphoreYellowMax={gameSettings?.semaphoreYellowMax}
-                    />
-                  ))}
-              </Stack>
-            </Stack>
-          </SectionCard>
+        {/* ── Row 1: News | Competitor Intel ──────────────
+            Same flex:1/minWidth:320 column pattern as row 2 below, so both boxes
+            get equal width — and, via flexbox's default align-items: stretch on
+            the row, equal height too, with no hardcoded height needed. */}
+        <Flex wrap="wrap" gap="md">
+          <Stack gap="md" style={{ flex: 1, minWidth: 320 }}>
+            <NewsBox items={newsItems} onSelect={setNewsModalItem} />
+          </Stack>
 
           {competitors.length > 0 && (
-            <SectionCard title="Competitor Intel">
-              <RivalList rivals={competitors} prevRivals={prevCompetitors} onFullReport={(r) => setDrillDown({ type: 'rival', data: r })} onFieldClick={(r, t) => setDrillDown({ type: 'rival-field', data: r, field: t.field, label: t.label })} />
-            </SectionCard>
+            <Stack gap="md" style={{ flex: 1, minWidth: 320 }}>
+              <SectionCard title="Competitor Intel">
+                <RivalList rivals={competitors} prevRivals={prevCompetitors} onFullReport={(r) => setDrillDown({ type: 'rival', data: r })} onFieldClick={(r, t) => setDrillDown({ type: 'rival-field', data: r, field: t.field, label: t.label })} />
+              </SectionCard>
+            </Stack>
           )}
-        </Stack>
-      </Flex>
+        </Flex>
+
+        {/* ── Row 2: Active Decisions | Open Lawsuits ─────── */}
+        <Flex wrap="wrap" gap="md">
+          <Stack gap="md" style={{ flex: 1, minWidth: 320 }}>
+            <SectionCard title={`Active Decisions (${activeStrategicCount} strategic and ${activeOperationalCount} operational)`}>
+              <ActiveDecisionsBox
+                pending={pending}
+                activeDecisions={myData.activeDecisions}
+                decisions={decisions}
+                playerNames={playerNames}
+                statuteOfLimitationsYears={gameSettings?.statuteOfLimitationsYears}
+                round={round}
+                onSubmitPending={submitPending}
+                onOpenDeck={() => setDecisionDeckModalOpen(true)}
+              />
+            </SectionCard>
+          </Stack>
+
+          <Stack gap="md" style={{ flex: 1, minWidth: 320 }}>
+            <SectionCard title={`Open Lawsuits (${myLegalCases.filter((c) => c.status !== 'resolved').length + pending.lawsuits.length})`}>
+              <Stack gap="sm">
+                <IncomingAttackHints
+                  attacks={myData.incomingAttacks}
+                  cash={vars.cash}
+                  digDeeperCost={gameSettings?.digDeeperCost ?? 10000}
+                  socket={socket}
+                  onSueNow={(targetId, decisionName, groundName) => {
+                    setSueSuggestion({ targetId, decisionName, groundName });
+                    setSueModalOpen(true);
+                  }}
+                  pendingLawsuits={pending.lawsuits}
+                  myLegalCases={myLegalCases}
+                />
+                <Button variant="filled" color="red" onClick={() => setSueModalOpen(true)} style={{ ...boldStyle }}>
+                  SUE THEIR ASSES (${(gameSettings?.lawsuitFilingCost ?? 0).toLocaleString()})
+                </Button>
+                <Stack gap="sm">
+                  {pending.lawsuits.map((entry, i) => (
+                    <QueuedLawsuitCard
+                      key={`pending-lawsuit-${i}`}
+                      entry={entry}
+                      targetName={competitors.find((c) => c.playerId === entry.targetId)?.playerName ?? entry.targetId}
+                      onRemove={() => submitPending({ ...pending, lawsuits: pending.lawsuits.filter((_, j) => j !== i) })}
+                    />
+                  ))}
+                  {myLegalCases
+                    .filter((c) => c.status !== 'resolved')
+                    .map((c) => (
+                      <CaseCard
+                        key={c.id}
+                        caseData={c}
+                        myPlayerId={myData.playerId}
+                        playerNames={playerNames}
+                        negotiationPeriodTurns={gameSettings?.negotiationPeriodTurns}
+                        socket={socket}
+                        onRiskInfo={(caseItem) => setRiskInfoCase(caseItem)}
+                        cash={vars.cash}
+                        digDeeperCost={gameSettings?.digDeeperCost ?? 10000}
+                        semaphoreGreenMax={gameSettings?.semaphoreGreenMax}
+                        semaphoreYellowMax={gameSettings?.semaphoreYellowMax}
+                      />
+                    ))}
+                </Stack>
+              </Stack>
+            </SectionCard>
+          </Stack>
+        </Flex>
+      </Stack>
 
       {/* ── Modals ─────────────────────────────────────── */}
       <Modal opened={drillDown !== null} onClose={() => setDrillDown(null)} size="lg" centered overlayProps={{ opacity: 0.55, color: 'var(--mantine-color-dark-9)' }}>
@@ -844,7 +896,22 @@ export default function GamePhase() {
         />
       </Modal>
 
-      <Modal opened={decisionDeckModalOpen} onClose={() => setDecisionDeckModalOpen(false)} size="lg" centered title={<Text style={{ ...boldStyle, fontSize: '0.9rem' }}>📋 MAKE IMPORTANT DECISIONS</Text>}>
+      {/* Capped + flexed so the modal shell itself never scrolls — only the card list
+          does. Without this, the modal's own content section AND the card list's own
+          maxHeight:60vh both independently overflowed, producing two visible scrollbars
+          (confirmed live: outer content 884px of content in an 806px box, inner list
+          8600+px in a 540px box) — a real, reported bug, not a hypothetical. */}
+      <Modal
+        opened={decisionDeckModalOpen}
+        onClose={() => setDecisionDeckModalOpen(false)}
+        size="lg"
+        centered
+        title={<Text style={{ ...boldStyle, fontSize: '0.9rem' }}>📋 MAKE IMPORTANT DECISIONS</Text>}
+        styles={{
+          content: { display: 'flex', flexDirection: 'column', maxHeight: '85vh' },
+          body: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 },
+        }}
+      >
         <DecisionDeckView decisions={decisions} gameSettings={gameSettings} myData={myData} competitors={competitors} pending={pending} onSubmitPending={submitPending} />
       </Modal>
 
@@ -1000,7 +1067,7 @@ interface KpiCardProps {
 }
 
 function KpiCard({ label, value, trend, negative, onClick }: KpiCardProps) {
-  const color = negative ? '#dc2626' : undefined;
+  const color = negative ? 'var(--ink-blood)' : undefined;
   return (
     <Box style={gpStyles.kpiCard} onClick={onClick}>
       <Text style={gpStyles.kpiLabel}>{label}</Text>
@@ -1116,17 +1183,28 @@ interface RiskGaugeBarProps {
 function RiskGaugeBar({ value, trend, onClick }: RiskGaugeBarProps) {
   const pctVal = Math.max(0, Math.min(100, value));
   const critical = pctVal >= 70;
-  const color = pctVal < 35 ? '#22c55e' : pctVal < 70 ? '#fbbf24' : '#ef4444';
+  const color = pctVal < 35 ? 'var(--ink-forest)' : pctVal < 70 ? 'var(--ink-amber)' : 'var(--ink-blood)';
 
   return (
-    <Box style={{ ...gpStyles.sectionCard, cursor: 'pointer', maxWidth: 280 }} onClick={onClick}>
-      <Flex align="center" gap="sm">
-        <IconShield size={20} style={{ color: '#333' }} />
-        <Stack gap={0}>
-          <Text style={{ ...boldStyle, fontSize: '0.65rem', letterSpacing: '0.03em', color: '#444' }}>
+    <Box
+      style={{
+        ...gpStyles.sectionCard,
+        cursor: 'pointer',
+        width: HEADER_BOX_SIZE.width,
+        height: HEADER_BOX_SIZE.height,
+        boxSizing: 'border-box',
+        display: 'flex',
+        alignItems: 'center',
+      }}
+      onClick={onClick}
+    >
+      <Flex align="center" gap="sm" style={{ width: '100%' }}>
+        <IconShield size={20} style={{ color: 'var(--ink-text)', flexShrink: 0 }} />
+        <Stack gap={0} style={{ flex: 1, minWidth: 0 }}>
+          <Text style={{ fontFamily: MONO_FONT, fontWeight: 700, fontSize: '0.65rem', letterSpacing: '0.03em', color: 'var(--ink-text-soft)' }}>
             {critical ? 'THREAT — ALERT' : 'THREAT LEVEL'}
           </Text>
-          <Box h={12} style={{ background: '#fff', border: '3px solid #333', borderRadius: 9999, overflow: 'hidden', width: 200 }}>
+          <Box h={12} style={{ background: '#fffdf6', border: '2px solid var(--ink-text)', borderRadius: 9999, overflow: 'hidden', width: '100%' }}>
             <Box h="100%" style={{ background: color, width: `${pctVal}%`, transition: 'width 0.5s ease' }} />
           </Box>
         </Stack>
@@ -1152,9 +1230,19 @@ interface TurnBoxProps {
 
 function TurnBox({ round, seconds, urgent, isReady, readyCount, activePlayerCount, onToggleReady }: TurnBoxProps) {
   return (
-    <Box style={{ ...gpStyles.sectionCard, maxWidth: 220 }}>
+    <Box
+      style={{
+        ...gpStyles.sectionCard,
+        width: HEADER_BOX_SIZE.width,
+        height: HEADER_BOX_SIZE.height,
+        boxSizing: 'border-box',
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'center',
+      }}
+    >
       <Flex justify="space-between" align="center" gap="sm">
-        <Text style={{ ...boldStyle, fontSize: '0.65rem', letterSpacing: '0.03em', color: '#444' }}>
+        <Text style={{ fontFamily: MONO_FONT, fontWeight: 700, fontSize: '0.65rem', letterSpacing: '0.03em', color: 'var(--ink-text-soft)' }}>
           TURN {round}
         </Text>
         <Badge variant="light" color={urgent ? 'red' : 'dark'} style={{ ...boldStyle, ...(urgent && { animation: 'pulse 1s infinite' }) }}>
@@ -1222,13 +1310,13 @@ function DecisionDetails({ def }: { def?: DecisionDefinition }) {
       <Text size="xs" c="dimmed" style={{ marginTop: 6, lineHeight: 1.4 }}>{def.description}</Text>
       {hasDetails && (
         <Flex align="center" gap={6} style={{ marginTop: 6, cursor: 'pointer' }} onClick={() => setExpanded((e) => !e)}>
-          <Text size="xs" style={{ ...boldStyle, color: '#4b5563' }}>{expanded ? 'HIDE DETAILS' : 'SHOW DETAILS'}</Text>
-          <IconChevronDown size={12} style={{ color: '#6b7280', transform: expanded ? 'rotate(180deg)' : undefined, transition: 'transform 0.2s ease' }} />
+          <Text size="xs" style={{ ...boldStyle, color: 'var(--ink-text)' }}>{expanded ? 'HIDE DETAILS' : 'SHOW DETAILS'}</Text>
+          <IconChevronDown size={12} style={{ color: 'var(--ink-text-soft)', transform: expanded ? 'rotate(180deg)' : undefined, transition: 'transform 0.2s ease' }} />
         </Flex>
       )}
       {expanded && effects.length > 0 && (
-        <div style={{ marginTop: 8, padding: 8, background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 6 }}>
-          <Text size="xs" style={{ ...boldStyle, color: '#4b5563', marginBottom: 4 }}>EFFECTS</Text>
+        <div style={{ marginTop: 8, padding: 8, background: '#fffdf6', border: '1px solid #ddcda0', borderRadius: 6 }}>
+          <Text size="xs" style={{ ...boldStyle, color: 'var(--ink-text)', marginBottom: 4 }}>EFFECTS</Text>
           <Stack gap={2}>
             {effects.map((line) => (
               <Flex key={line.field} justify="space-between" gap="xs">
@@ -1313,7 +1401,7 @@ function ActiveDecisionCard({ decision, def, statuteOfLimitationsYears, targetNa
       </Flex>
       {/* Progress bar */}
       {!decision.isMatured && (
-        <Box mt="sm" h={6} style={{ background: '#e5e7eb', borderRadius: 3 }}>
+        <Box mt="sm" h={6} style={{ background: '#ddcda0', borderRadius: 3 }}>
           <Box h="100%" style={{ width: `${progress}%`, background: '#fbbf24', borderRadius: 3, transition: 'width 0.3s ease' }} />
         </Box>
       )}
@@ -1722,7 +1810,7 @@ function DecisionDeckView({ decisions, gameSettings, myData, competitors, pendin
   };
 
   return (
-    <Stack gap="md">
+    <Stack gap="md" style={{ height: '100%', minHeight: 0 }}>
       {/* Filter chips — level (Strategic/Operational) and nature (Traditional/Grey Area/
           Dirty) are two independent filters, so each gets its own row rather than
           wrapping together into one line as if they were a single chip group. */}
@@ -1743,41 +1831,46 @@ function DecisionDeckView({ decisions, gameSettings, myData, competitors, pendin
         </Flex>
       </Stack>
 
-      {/* Search — same shape as SueModal's "SEARCH GROUNDS" field, matching by decision
-          name or description. */}
-      <Stack gap={4}>
-        <Text style={{ ...boldStyle, fontSize: '0.7rem', color: '#6b7280' }}>SEARCH DECISIONS</Text>
-        <div style={gpStyles.searchInput}>
-          <IconSearch size={16} style={{ color: '#9ca3af' }} />
-          <TextInput flex={1} placeholder="e.g. factory, water pumping, outrage…" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} style={{ border: 'none', outline: 'none', background: 'transparent' }} />
-        </div>
-      </Stack>
+      {/* Search + Sort share a row (each collapses to its own line on narrow phone
+          widths via wrap) — two independent controls, not related, but neither needs
+          the modal's full width to itself. */}
+      <Flex gap="md" wrap="wrap" align="flex-start">
+        {/* Search — same shape as SueModal's "SEARCH GROUNDS" field, matching by decision
+            name or description. */}
+        <Stack gap={4} style={{ flex: '1 1 220px' }}>
+          <Text style={{ ...boldStyle, fontSize: '0.7rem', color: 'var(--ink-text-soft)' }}>SEARCH DECISIONS</Text>
+          <div style={gpStyles.searchInput}>
+            <IconSearch size={16} style={{ color: 'var(--ink-text-soft)' }} />
+            <TextInput flex={1} size="xs" placeholder="e.g. factory, water pumping, outrage…" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} style={{ border: 'none', outline: 'none', background: 'transparent' }} />
+          </div>
+        </Stack>
 
-      {/* Sort by KPI — any field a decision in the library can affect via its own impacts
-          (excluding target-routed or competitor fields), ranked by that decision's
-          deployment-year effect on the chosen field. Direction chips only appear once a
-          KPI is actually chosen. */}
-      <Stack gap={4}>
-        <Text style={{ ...boldStyle, fontSize: '0.7rem', color: '#6b7280' }}>SORT BY KPI</Text>
-        <Flex gap="xs" wrap="wrap" align="center">
-          <select
-            value={sortField}
-            onChange={(e) => setSortField(e.target.value)}
-            style={{ padding: '8px 10px', border: '2px solid var(--mantine-color-dark-4)', borderRadius: 8, fontSize: '0.8rem' }}
-          >
-            <option value="">No sorting</option>
-            {sortableFields.map((field) => (
-              <option key={field} value={field}>{formatFieldLabel(field)}</option>
-            ))}
-          </select>
-          {sortField && (
-            <Flex gap="xs">
-              <Badge style={gpStyles.filterChip(sortDirection === 'desc')} onClick={() => setSortDirection('desc')}>Highest → Lowest</Badge>
-              <Badge style={gpStyles.filterChip(sortDirection === 'asc')} onClick={() => setSortDirection('asc')}>Lowest → Highest</Badge>
-            </Flex>
-          )}
-        </Flex>
-      </Stack>
+        {/* Sort by KPI — any field a decision in the library can affect via its own impacts
+            (excluding target-routed or competitor fields), ranked by that decision's
+            deployment-year effect on the chosen field. Direction chips only appear once a
+            KPI is actually chosen. */}
+        <Stack gap={4} style={{ flex: '1 1 220px' }}>
+          <Text style={{ ...boldStyle, fontSize: '0.7rem', color: 'var(--ink-text-soft)' }}>SORT BY KPI</Text>
+          <Flex gap="xs" wrap="wrap" align="center">
+            <select
+              value={sortField}
+              onChange={(e) => setSortField(e.target.value)}
+              style={{ padding: '8px 10px', border: '2px solid var(--mantine-color-dark-4)', borderRadius: 8, fontSize: '0.8rem' }}
+            >
+              <option value="">No sorting</option>
+              {sortableFields.map((field) => (
+                <option key={field} value={field}>{formatFieldLabel(field)}</option>
+              ))}
+            </select>
+            {sortField && (
+              <Flex gap="xs">
+                <Badge style={gpStyles.filterChip(sortDirection === 'desc')} onClick={() => setSortDirection('desc')}>Highest → Lowest</Badge>
+                <Badge style={gpStyles.filterChip(sortDirection === 'asc')} onClick={() => setSortDirection('asc')}>Lowest → Highest</Badge>
+              </Flex>
+            )}
+          </Flex>
+        </Stack>
+      </Flex>
 
       {gameSettings && (
         <Text size="xs" c="dimmed" style={boldStyle}>
@@ -1790,7 +1883,7 @@ function DecisionDeckView({ decisions, gameSettings, myData, competitors, pendin
       ) : filtered.length === 0 ? (
         <Text c="dimmed" size="xs" style={{ fontStyle: 'italic' }}>No decisions match these filters/search.</Text>
       ) : (
-        <Stack gap="sm" style={{ maxHeight: '60vh', overflowY: 'auto', paddingRight: 4 }}>
+        <Stack gap="sm" style={{ flex: 1, minHeight: 0, overflowY: 'auto', paddingRight: 4 }}>
           {filtered.map((def) => {
             const bucket = def.level === 'Strategic' ? 'strategic' : 'operational';
             const isPending = pending[bucket].some((e) => e.name === def.decision);
@@ -1892,8 +1985,8 @@ function DecisionCard({ def, isPending, blocked, disabledByLimit, competitors, m
       {/* Collapsed by default — expand to see the effects timeline + legal risk */}
       {hasDetails && (
         <Flex align="center" gap={6} style={{ marginTop: 6, cursor: 'pointer' }} onClick={() => setExpanded((e) => !e)}>
-          <Text size="xs" style={{ ...boldStyle, color: '#4b5563' }}>{expanded ? 'HIDE DETAILS' : 'SHOW DETAILS'}</Text>
-          <IconChevronDown size={12} style={{ color: '#6b7280', transform: expanded ? 'rotate(180deg)' : undefined, transition: 'transform 0.2s ease' }} />
+          <Text size="xs" style={{ ...boldStyle, color: 'var(--ink-text)' }}>{expanded ? 'HIDE DETAILS' : 'SHOW DETAILS'}</Text>
+          <IconChevronDown size={12} style={{ color: 'var(--ink-text-soft)', transform: expanded ? 'rotate(180deg)' : undefined, transition: 'transform 0.2s ease' }} />
           {!expanded && (
             <Flex gap={4} align="center" style={{ marginLeft: 'auto' }}>
               <Badge style={gpStyles.stamp(maturityYears === 0 ? 'green' : 'yellow')}>{maturityYears === 0 ? 'INSTANT' : `${maturityYears}T`}</Badge>
@@ -1904,9 +1997,9 @@ function DecisionCard({ def, isPending, blocked, disabledByLimit, competitors, m
       )}
 
       {expanded && effects.length > 0 && (
-        <div style={{ marginTop: 8, padding: 8, background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 6 }}>
+        <div style={{ marginTop: 8, padding: 8, background: '#fffdf6', border: '1px solid #ddcda0', borderRadius: 6 }}>
           <Flex justify="space-between" align="center" style={{ marginBottom: 4 }}>
-            <Text size="xs" style={{ ...boldStyle, color: '#4b5563' }}>EFFECTS</Text>
+            <Text size="xs" style={{ ...boldStyle, color: 'var(--ink-text)' }}>EFFECTS</Text>
             <Badge style={gpStyles.stamp(maturityYears === 0 ? 'green' : 'yellow')}>
               {maturityYears === 0 ? 'INSTANT' : `MATURES IN ${maturityYears}T`}
             </Badge>
@@ -1937,7 +2030,7 @@ function DecisionCard({ def, isPending, blocked, disabledByLimit, competitors, m
       )}
       {needsAmount && !isPending && !blocked.blocked && amountBounds && (
         <Stack gap={2} style={{ marginTop: 8 }}>
-          <Text size="xs" style={{ ...boldStyle, color: '#4b5563' }}>
+          <Text size="xs" style={{ ...boldStyle, color: 'var(--ink-text)' }}>
             {def.shareTransactionType === 'sell' ? 'AMOUNT TO SELL' : 'INVESTMENT AMOUNT'}: {fmt(clampedAmount ?? 0)}
           </Text>
           <Slider
@@ -2072,8 +2165,8 @@ function CaseCard({ caseData, myPlayerId, playerNames, onRiskInfo, negotiationPe
       </Text>
 
       {/* Stakes */}
-      <Flex align="center" justify="space-between" mt="sm" p="sm" style={{ background: '#f3f4f6', border: '2px solid #333', borderRadius: 'var(--mantine-radius-sm)' }}>
-        <Text style={{ ...boldStyle, fontSize: '0.7rem', color: '#4b5563' }}>STAKES</Text>
+      <Flex align="center" justify="space-between" mt="sm" p="sm" style={{ background: '#f6efd9', border: '2px solid #333', borderRadius: 'var(--mantine-radius-sm)' }}>
+        <Text style={{ ...boldStyle, fontSize: '0.7rem', color: 'var(--ink-text)' }}>STAKES</Text>
         <Text style={{ ...boldStyle, fontSize: '0.85rem' }}>{fmt(caseData.stakes)}</Text>
       </Flex>
 
@@ -2099,7 +2192,7 @@ function CaseCard({ caseData, myPlayerId, playerNames, onRiskInfo, negotiationPe
 
       {/* Status / Negotiation */}
       {caseData.status === 'awaiting_trial' ? (
-        <Flex align="center" gap={6} mt="sm" p="sm" style={{ background: '#f3f4f6', border: '2px dashed #9ca3af', borderRadius: 'var(--mantine-radius-sm)' }}>
+        <Flex align="center" gap={6} mt="sm" p="sm" style={{ background: '#f6efd9', border: '2px dashed var(--ink-text-soft)', borderRadius: 'var(--mantine-radius-sm)' }}>
           <IconLock size={13} /> Awaiting verdict — resolves when the turn ends
         </Flex>
       ) : caseData.status === 'negotiating' && (
@@ -2240,11 +2333,11 @@ function NegotiationPanel({ caseData, myPlayerId, socket }: NegotiationPanelProp
       {isMyTurnToRespond ? (
         <>
           <div style={gpStyles.sliderContainer}>
-            <Text style={{ ...boldStyle, fontSize: '0.7rem', color: '#6b7280', marginBottom: 8 }}>
+            <Text style={{ ...boldStyle, fontSize: '0.7rem', color: 'var(--ink-text-soft)', marginBottom: 8 }}>
               {lastOffer ? 'YOUR COUNTER' : 'YOUR OPENING OFFER'}
             </Text>
             <Flex align="center" gap="sm">
-              <Slider flex={1} min={offerMin} max={offerMax} step={500} value={amount} onChange={setAmount} color="#dc2626" disabled={submitting !== null} />
+              <Slider flex={1} min={offerMin} max={offerMax} step={500} value={amount} onChange={setAmount} color="var(--ink-blood)" disabled={submitting !== null} />
               <Text style={{ ...boldStyle, fontSize: '0.8rem', minWidth: 70, textAlign: 'right' }}>{fmt(amount)}</Text>
             </Flex>
             <Text size="xs" c="dimmed" style={{ fontStyle: 'italic', marginTop: 4 }}>
@@ -2509,7 +2602,7 @@ function RivalDossier({ rival, prevRival, expanded, onToggle, onFullReport, onFi
     <div style={gpStyles.rivalSection}>
       <Flex justify="space-between" align="center" onClick={onToggle} style={{ cursor: 'pointer' }}>
         <Text style={{ ...boldStyle, fontSize: '0.8rem' }}>{rival.playerName}</Text>
-        <IconChevronDown size={14} style={{ color: '#6b7280', transform: expanded ? 'rotate(180deg)' : undefined, transition: 'transform 0.2s ease' }} />
+        <IconChevronDown size={14} style={{ color: 'var(--ink-text-soft)', transform: expanded ? 'rotate(180deg)' : undefined, transition: 'transform 0.2s ease' }} />
       </Flex>
       {expanded && (
         <Stack gap="sm" mt="xs">
@@ -2542,7 +2635,7 @@ interface MiniStatButtonProps {
 function MiniStatButton({ label, value, trend, invert, onClick }: MiniStatButtonProps) {
   return (
     <Box style={gpStyles.rivalMiniStat} onClick={onClick}>
-      <Text style={{ fontSize: '0.65rem', color: '#6b7280' }}>{label}</Text>
+      <Text style={{ fontSize: '0.65rem', color: 'var(--ink-text-soft)' }}>{label}</Text>
       <Flex align="center" gap={4}>
         <Text style={{ ...boldStyle, fontSize: '0.75rem' }}>{value}</Text>
         <TrendIcon trend={trend} invert={invert} size={12} />
@@ -2917,13 +3010,13 @@ function buildCapTable(target: PlayerTurnResult, viewerId: string, allPlayers: P
       if (key === SELF_OWNERSHIP_KEY) {
         const isViewer = target.playerId === viewerId;
         name = isViewer ? 'You' : target.playerName;
-        color = isViewer ? '#dc2626' : '#9ca3af';
+        color = isViewer ? 'var(--ink-blood)' : 'var(--ink-text-soft)';
       } else if (key === EXTERNAL_MARKET_KEY) {
         name = 'Public Market';
-        color = '#d1d5db';
+        color = '#cbb888';
       } else if (key === viewerId) {
         name = 'You';
-        color = '#dc2626';
+        color = 'var(--ink-blood)';
       } else {
         name = allPlayers.find((p) => p.playerId === key)?.playerName ?? 'Former Shareholder';
         color = OTHER_HOLDER_COLORS[otherColorIdx++ % OTHER_HOLDER_COLORS.length];
@@ -2956,7 +3049,7 @@ function CapTableSection({ target, viewerId, allPlayers }: CapTableSectionProps)
         <Text style={{ ...boldStyle, fontSize: '0.7rem' }}>OWNERSHIP (CAP TABLE)</Text>
         <Text size="xs" c="dimmed">{new Intl.NumberFormat('en-US').format(Math.round(totalShares))} shares total</Text>
       </Flex>
-      <Flex h={12} style={{ borderRadius: 6, overflow: 'hidden', background: '#e5e7eb' }}>
+      <Flex h={12} style={{ borderRadius: 6, overflow: 'hidden', background: '#ddcda0' }}>
         {rows.map((r) => (
           <Box key={r.key} h="100%" style={{ width: `${r.fraction * 100}%`, background: r.color }} />
         ))}
@@ -3021,7 +3114,7 @@ function ShareView({ data, rivals, prevData, prevRivals, onFieldClick }: ShareVi
             title="Click for history + prediction"
             onClick={() => onFieldClick({ field: f.field, label: f.label })}
           >
-            <Text style={{ fontSize: '0.65rem', color: '#6b7280' }}>{f.label}</Text>
+            <Text style={{ fontSize: '0.65rem', color: 'var(--ink-text-soft)' }}>{f.label}</Text>
             <Flex align="center" gap={4}>
               <Text style={{ ...boldStyle, fontSize: '0.8rem', textDecoration: 'underline', textDecorationStyle: 'dotted', textUnderlineOffset: 3 }}>{f.value}</Text>
               <TrendIcon trend={f.trend} invert={f.invert} size={12} />
@@ -3051,17 +3144,17 @@ function ShareView({ data, rivals, prevData, prevRivals, onFieldClick }: ShareVi
       {/* Market share bar */}
       <div style={{ padding: '12px', background: 'var(--mantine-color-gray-1)', border: '1px solid var(--mantine-color-gray-3)', borderRadius: 'var(--mantine-radius-sm)' }}>
         <Text style={{ ...boldStyle, fontSize: '0.7rem', marginBottom: 8 }}>YOUR SHARE VS RIVALS</Text>
-        <Flex h={12} style={{ borderRadius: 6, overflow: 'hidden', background: '#e5e7eb' }}>
+        <Flex h={12} style={{ borderRadius: 6, overflow: 'hidden', background: '#ddcda0' }}>
           {allPlayers.map((p, i) => {
             const share = (p.derived.marketShare || 0) / totalMarketShare;
-            const color = i === 0 ? '#dc2626' : i === 1 ? '#9ca3af' : '#d1d5db';
+            const color = i === 0 ? 'var(--ink-blood)' : i === 1 ? 'var(--ink-text-soft)' : '#cbb888';
             return <Box key={p.playerId} h="100%" style={{ width: `${share * 100}%`, background: color }} />;
           })}
         </Flex>
         <Flex wrap="wrap" gap="xs" mt="xs">
           {allPlayers.map((p, i) => {
             const share = (p.derived.marketShare || 0) / totalMarketShare;
-            const color = i === 0 ? '#dc2626' : i === 1 ? '#9ca3af' : '#d1d5db';
+            const color = i === 0 ? 'var(--ink-blood)' : i === 1 ? 'var(--ink-text-soft)' : '#cbb888';
             // Only my own entry (index 0) is clickable — this is "player's own KPIs," not a rival comparison.
             // The trend arrow, unlike the click, is shown for every player — it's a quick
             // read of "who's gaining/losing share," not a graph-opening affordance.
@@ -3136,10 +3229,9 @@ interface ThreatViewProps {
 // — they'll silently drift from an admin's live /admin edit, same pre-existing
 // limitation those already have; the server's own riskGauge number (shown on the KPI
 // card itself) is always the authoritative one, this is only the breakdown explaining it.
-const THREAT_W1 = 0.32, THREAT_W2 = 0.16, THREAT_W3 = 0.16, THREAT_W4 = 0.16, THREAT_W5 = 0.2;
+const THREAT_W1 = 0.4, THREAT_W2 = 0.2, THREAT_W3 = 0.2, THREAT_W4 = 0.2;
 const THREAT_LEGAL_EXPOSURE_RATIO_CAP = 0.8;
 const THREAT_TAKEOVER_THRESHOLD_PERCENT = 0.5;
-const THREAT_SOLVENCY_CASH_FLOOR = 1;
 
 /** Mirrors calcEngine.ts's calculateOwnershipRisk — the largest real-player (non-`self`,
  * non-`EXTERNAL_MARKET`) stake relative to the takeover threshold, scaled 0-1. Deliberately
@@ -3156,48 +3248,14 @@ function computeOwnershipRisk(shareOwnership: Record<string, number> | undefined
   return Math.min(1, maxExternalStake / THREAT_TAKEOVER_THRESHOLD_PERCENT);
 }
 
-/** Mirrors calcEngine.ts's predictNextTurnCashLinear — a naive one-turn-ahead cash
- * projection (this turn's own net cash movement extrapolated forward), not the real
- * sandboxed prediction engine (`predictFutureKpis`) the KPI history graphs use. Client-
- * side this doubles as a genuine accuracy win over a from-scratch reimplementation: it
- * needs no new data at all, since `prevCash` here is just `prevData.variables.cash` —
- * the one-turn-back snapshot `GamePhase.tsx`'s trend arrows already keep in state. */
-function predictNextTurnCashLinear(cashAfterThisTurn: number, cashBeforeThisTurn: number): number {
-  return cashAfterThisTurn + (cashAfterThisTurn - cashBeforeThisTurn);
-}
-
-/** Mirrors calcEngine.ts's calculateSolvencyRisk — probability-weighted open-case
- * exposure against a projected next-turn cash, distinct from the legal-exposure-ratio
- * term (w1), which uses *current* cash and feeds adjustedProbability's snowball effect instead. */
-function computeSolvencyRisk(legalExposure: number, predictedNextCash: number): number {
-  if (legalExposure <= 0) return 0;
-  return Math.min(1, legalExposure / Math.max(predictedNextCash, THREAT_SOLVENCY_CASH_FLOOR));
-}
-
-/** Mirrors gameLoop.ts's Step 11 openCases aggregation — every still-open (non-
- * `'resolved'`) case where `myPlayerId` is the defendant, probability-weighted the same
- * way (`adjustedProbability` if the case has one, else `baseProbability`). Deliberately
- * NOT reverse-derived from `legalExposureRatio` (which is already capped against current
- * cash by `legalExposureRatioCap` server-side) — a capped ratio would silently understate
- * exposure for exactly the players this term cares most about (already deep in legal
- * trouble), so this recomputes the same raw sum from `legalCases` instead, which the
- * client already has in full. */
-function computeOpenLegalExposure(myPlayerId: string, legalCases: LegalCaseData[]): number {
-  return legalCases
-    .filter((c) => c.defendantId === myPlayerId && c.status !== 'resolved')
-    .reduce((sum, c) => sum + (c.adjustedProbability ?? c.baseProbability) * c.stakes, 0);
-}
-
-/** The five weighted terms behind the Threat Level gauge — shared by ThreatView's
+/** The four weighted terms behind the Threat Level gauge — shared by ThreatView's
  * current- and previous-turn calls so the total's trend arrow is diffed against the same
- * formula rather than a persisted field. `prevCash` is the cash this player had BEFORE
- * the turn `data` reflects — for the current turn that's `prevData.variables.cash` (the
- * one-turn-back snapshot already in state); for the previous turn's own point (used only
- * to diff against, for the row's trend arrow) there is no snapshot further back than that
- * in client state, so it falls back to assuming no trend for that historical point —
- * the same "no real prior data, assume flat" default `calculateRiskGauge`'s own
- * `prevCash = vars.cash` parameter default uses server-side. */
-function computeThreatTerms(data: PlayerTurnResult, prevCash: number) {
+ * formula rather than a persisted field. A 5th term (legal-solvency risk, weighing open
+ * cases against a projected next-turn cash) existed briefly and was removed by explicit
+ * product decision — it read as near-duplicate information next to the legal-exposure-
+ * ratio term below (both driven by the same open-case exposure), and its weight (0.2) was
+ * folded back into w1-w4 proportionally, restoring the pre-solvency-term weights. */
+function computeThreatTerms(data: PlayerTurnResult) {
   const v = data.variables;
   const ler = v.legalExposureRatio ?? 0;
   const legalTerm = THREAT_W1 * (ler / THREAT_LEGAL_EXPOSURE_RATIO_CAP) * 100;
@@ -3212,43 +3270,30 @@ function computeThreatTerms(data: PlayerTurnResult, prevCash: number) {
   const outrageTerm = THREAT_W3 * Math.min(1, Math.abs(v.outrage) / 100) * 100;
   const ownershipRisk = computeOwnershipRisk(v.shareOwnership);
   const ownershipTerm = THREAT_W4 * ownershipRisk * 100;
-  const legalExposure = computeOpenLegalExposure(data.playerId, data.legalCases);
-  const predictedNextCash = predictNextTurnCashLinear(v.cash, prevCash);
-  const solvencyRisk = computeSolvencyRisk(legalExposure, predictedNextCash);
-  const solvencyTerm = THREAT_W5 * solvencyRisk * 100;
-  return { ler, legalTerm, scrutinyTerm, outrageTerm, ownershipRisk, ownershipTerm, predictedNextCash, solvencyRisk, solvencyTerm };
+  return { ler, legalTerm, scrutinyTerm, outrageTerm, ownershipRisk, ownershipTerm };
 }
 
 function ThreatView({ data, prevData, onFieldClick }: ThreatViewProps) {
-  const { variables: v } = data;
-  const cur = computeThreatTerms(data, prevData?.variables.cash ?? v.cash);
-  const prev = prevData ? computeThreatTerms(prevData, prevData.variables.cash) : undefined;
-  const total = cur.legalTerm + cur.scrutinyTerm + cur.outrageTerm + cur.ownershipTerm + cur.solvencyTerm;
-  const prevTotal = prev ? prev.legalTerm + prev.scrutinyTerm + prev.outrageTerm + prev.ownershipTerm + prev.solvencyTerm : undefined;
+  const cur = computeThreatTerms(data);
+  const prev = prevData ? computeThreatTerms(prevData) : undefined;
+  const total = cur.legalTerm + cur.scrutinyTerm + cur.outrageTerm + cur.ownershipTerm;
+  const prevTotal = prev ? prev.legalTerm + prev.scrutinyTerm + prev.outrageTerm + prev.ownershipTerm : undefined;
 
   return (
     <Stack gap={0} style={gpStyles.modalContent}>
       <Text style={{ ...boldStyle, fontSize: '0.8rem', marginBottom: 12 }}>GLOBAL RISK GAUGE BREAKDOWN</Text>
-      <ClickableStatRow label={`Legal exposure ratio (${(cur.ler * 100).toFixed(0)}%, weight 0.32)`} value={cur.legalTerm.toFixed(1)} trend={computeTrend(cur.legalTerm, prev?.legalTerm)} invert onClick={() => onFieldClick({ field: 'variables.legalExposureRatio', label: 'Legal exposure ratio' })} />
-      <ClickableStatRow label="Scrutiny (weight 0.16)" value={cur.scrutinyTerm.toFixed(1)} trend={computeTrend(cur.scrutinyTerm, prev?.scrutinyTerm)} invert onClick={() => onFieldClick({ field: 'variables.scrutiny', label: 'Scrutiny' })} />
-      <ClickableStatRow label="Outrage (weight 0.16)" value={cur.outrageTerm.toFixed(1)} trend={computeTrend(cur.outrageTerm, prev?.outrageTerm)} invert onClick={() => onFieldClick({ field: 'variables.outrage', label: 'Outrage' })} />
-      {/* Both rows below are computed-only, no onFieldClick — neither "largest external
-          shareholder's stake" nor "predicted next-turn cash" is a single persisted
-          numeric field to open a history graph for, same "derived-of-derived, not a
-          tracked field" treatment CashWaterfallView's COGS/EBITDA/etc. rows already get
-          (see CLAUDE.md's KPI history section). */}
+      <ClickableStatRow label={`Legal exposure ratio (open lawsuits' weighted stakes are ${(cur.ler * 100).toFixed(0)}% of your cash, capped at 80%, weight 0.4)`} value={cur.legalTerm.toFixed(1)} trend={computeTrend(cur.legalTerm, prev?.legalTerm)} invert onClick={() => onFieldClick({ field: 'variables.legalExposureRatio', label: 'Legal exposure ratio' })} />
+      <ClickableStatRow label={`Scrutiny (${(cur.scrutinyTerm / THREAT_W2).toFixed(0)}% of its max before weighting, weight 0.2) — raises how likely lawsuits against you are to succeed`} value={cur.scrutinyTerm.toFixed(1)} trend={computeTrend(cur.scrutinyTerm, prev?.scrutinyTerm)} invert onClick={() => onFieldClick({ field: 'variables.scrutiny', label: 'Scrutiny' })} />
+      <ClickableStatRow label={`Outrage (${(cur.outrageTerm / THREAT_W3).toFixed(0)}% of its max before weighting, weight 0.2) — lowers your competitiveness and demand`} value={cur.outrageTerm.toFixed(1)} trend={computeTrend(cur.outrageTerm, prev?.outrageTerm)} invert onClick={() => onFieldClick({ field: 'variables.outrage', label: 'Outrage' })} />
+      {/* Computed-only, no onFieldClick — "largest external shareholder's stake" isn't a
+          single persisted numeric field to open a history graph for, same "derived-of-
+          derived, not a tracked field" treatment CashWaterfallView's COGS/EBITDA/etc. rows
+          already get (see CLAUDE.md's KPI history section). */}
       <Flex justify="space-between" align="center" style={gpStyles.statRow()}>
-        <Text size="sm">Ownership / takeover risk ({(cur.ownershipRisk * 100).toFixed(0)}% of the way to a takeover, weight 0.16)</Text>
+        <Text size="sm">Ownership / takeover risk ({(cur.ownershipRisk * 100).toFixed(0)}% of the way to a takeover, weight 0.2)</Text>
         <Flex align="center" gap={4}>
           <Text style={{ ...boldStyle, fontSize: '0.85rem' }}>{cur.ownershipTerm.toFixed(1)}</Text>
           <TrendIcon trend={computeTrend(cur.ownershipTerm, prev?.ownershipTerm)} invert size={13} />
-        </Flex>
-      </Flex>
-      <Flex justify="space-between" align="center" style={gpStyles.statRow()}>
-        <Text size="sm">Legal solvency risk (open cases would consume {(cur.solvencyRisk * 100).toFixed(0)}% of predicted next-turn cash, weight 0.2)</Text>
-        <Flex align="center" gap={4}>
-          <Text style={{ ...boldStyle, fontSize: '0.85rem' }}>{cur.solvencyTerm.toFixed(1)}</Text>
-          <TrendIcon trend={computeTrend(cur.solvencyTerm, prev?.solvencyTerm)} invert size={13} />
         </Flex>
       </Flex>
 
@@ -3262,7 +3307,7 @@ function ThreatView({ data, prevData, onFieldClick }: ThreatViewProps) {
       </Flex>
 
       <Text size="xs" c="dimmed" style={{ fontStyle: 'italic', marginTop: 8 }}>
-        Legal exposure carries the most weight — it's also the one thing that snowballs, since it makes every open case more likely to succeed too. Ownership risk tracks the single largest outside stake in your company against the 50% takeover line — see OWNERSHIP (CAP TABLE) under STOCK VALUE for who actually holds it. Solvency risk is forward-looking: it projects next turn's cash from this turn's own trend and asks whether your open cases could actually break you.
+        Legal exposure carries the most weight — it's also the one thing that snowballs, since it makes every open case more likely to succeed too. Scrutiny does the same in miniature: the more regulatory attention you've drawn, the likelier any lawsuit against you is to succeed. Outrage doesn't touch legal risk at all — instead it cuts straight into your competitiveness, lowering demand and market share. Ownership risk tracks the single largest outside stake in your company against the 50% takeover line — see OWNERSHIP (CAP TABLE) under STOCK VALUE for who actually holds it.
       </Text>
     </Stack>
   );
@@ -3397,7 +3442,7 @@ function RivalFullReportView({ rival, prevRival, decisions, myData, competitors,
   return (
     <Stack gap="lg" style={gpStyles.modalContent}>
       <Stack gap={0}>
-        <Text style={{ ...boldStyle, fontSize: '0.75rem', color: '#6b7280', marginBottom: 8 }}>FINANCIAL STATEMENT — {rival.playerName}</Text>
+        <Text style={{ ...boldStyle, fontSize: '0.75rem', color: 'var(--ink-text-soft)', marginBottom: 8 }}>FINANCIAL STATEMENT — {rival.playerName}</Text>
         {rows.map((row) => (
           <ClickableStatRow
             key={row.label}
@@ -3412,7 +3457,7 @@ function RivalFullReportView({ rival, prevRival, decisions, myData, competitors,
       </Stack>
       <CapTableSection target={rival} viewerId={myData.playerId} allPlayers={[myData, ...competitors]} />
       <Stack gap={0}>
-        <Text style={{ ...boldStyle, fontSize: '0.75rem', color: '#6b7280', marginBottom: 8 }}>ANNUAL REPORTS</Text>
+        <Text style={{ ...boldStyle, fontSize: '0.75rem', color: 'var(--ink-text-soft)', marginBottom: 8 }}>ANNUAL REPORTS</Text>
         {annualReport.length === 0 ? (
           <Text size="xs" c="dimmed" style={{ fontStyle: 'italic' }}>No filings yet — {rival.playerName} hasn't deployed any strategies.</Text>
         ) : (
@@ -3588,7 +3633,7 @@ function SueModal({ competitors, decisions, gameSettings, pending, onSubmitPendi
 
       {/* Target selection */}
       <Stack gap={4}>
-        <Text style={{ ...boldStyle, fontSize: '0.7rem', color: '#6b7280' }}>TARGET</Text>
+        <Text style={{ ...boldStyle, fontSize: '0.7rem', color: 'var(--ink-text-soft)' }}>TARGET</Text>
         <select value={targetRival} onChange={(e) => { setTargetRival(e.target.value); setSelectedGround(null); setFileError(null); }} style={{ width: '100%', padding: '10px 12px', border: '3px solid #333', borderRadius: 8, fontSize: '0.85rem' }}>
           <option value="">Select opponent...</option>
           {competitors.map((c) => (<option key={c.playerId} value={c.playerId}>{c.playerName}</option>))}
@@ -3599,10 +3644,10 @@ function SueModal({ competitors, decisions, gameSettings, pending, onSubmitPendi
         <>
           {/* Search grounds */}
           <Stack gap={4}>
-            <Text style={{ ...boldStyle, fontSize: '0.7rem', color: '#6b7280' }}>SEARCH GROUNDS</Text>
+            <Text style={{ ...boldStyle, fontSize: '0.7rem', color: 'var(--ink-text-soft)' }}>SEARCH GROUNDS</Text>
             <div style={gpStyles.searchInput}>
-              <IconSearch size={16} style={{ color: '#9ca3af' }} />
-              <TextInput flex={1} placeholder="e.g. weight fraud, patent, disclosure…" value={query} onChange={(e) => setQuery(e.target.value)} style={{ border: 'none', outline: 'none', background: 'transparent' }} />
+              <IconSearch size={16} style={{ color: 'var(--ink-text-soft)' }} />
+              <TextInput flex={1} size="xs" placeholder="e.g. weight fraud, patent, disclosure…" value={query} onChange={(e) => setQuery(e.target.value)} style={{ border: 'none', outline: 'none', background: 'transparent' }} />
             </div>
           </Stack>
           <Text size="xs" c="dimmed">
@@ -3632,7 +3677,7 @@ function SueModal({ competitors, decisions, gameSettings, pending, onSubmitPendi
       )}
 
       {selectedGround && (
-        <div style={{ padding: 12, border: '3px solid #333', borderRadius: 8, background: '#f9fafb' }}>
+        <div style={{ padding: 12, border: '3px solid #333', borderRadius: 8, background: '#fffdf6' }}>
           <Flex justify="space-between" align="center" gap="sm">
             <Text style={{ ...boldStyle, fontSize: '0.8rem' }}>{selectedGround.groundName}</Text>
             <Text size="xs" c="dimmed" style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={() => { setSelectedGround(null); setFileError(null); }}>CHANGE</Text>

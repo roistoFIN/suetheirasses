@@ -392,74 +392,40 @@ export function calculateOwnershipRisk(
  * Naive one-turn-ahead cash projection (0-1 term input, the Risk Gauge's 5th term) — a
  * deliberate simplification, not the real prediction engine (`GameLoop.predictFutureKpis`,
  * which re-runs the full turn-resolution engine in a sandbox). Calling that from inside
- * `calculateRiskGauge` isn't viable here: the risk gauge is computed *inside*
- * `resolveTurn` itself, for every player, every turn, so reaching for the sandboxed
- * predictor would mean `resolveTurn` recursively calling itself once per player per turn —
- * a real recursion/perf risk, not just extra computation. Instead: linear extrapolation
- * of this turn's own net cash movement — "if the trend this turn continues, where does
- * cash land next turn." Cheap, synchronous, and already has both inputs on hand
- * (`cashAfterThisTurn` is `vars.cash` post-balance-sheet-update; `cashBeforeThisTurn` is
- * `PlayerTurnContext.prevCash`, snapshotted before this turn's processing began — the
- * same field the bankruptcy waterfall pool already reuses for an unrelated purpose).
- */
-export function predictNextTurnCashLinear(cashAfterThisTurn: number, cashBeforeThisTurn: number): number {
-  const thisTurnDelta = cashAfterThisTurn - cashBeforeThisTurn;
-  return cashAfterThisTurn + thisTurnDelta;
-}
-
-/**
- * Legal-solvency risk (0-1), for the Risk Gauge's 5th term — a deliberate addition beyond
- * the Risk Gauge's original design, distinct from the existing legal-exposure-ratio term
- * (w1): that term compares raw legal exposure against *current* cash and feeds back into
- * `adjustedProbability`'s snowball effect; this term asks a narrower,
- * forward-looking question — "given where cash is trending, could these open cases
- * actually bankrupt me next turn?" Uses the same probability-weighted `legalExposure`
- * aggregate the w1 term already computes (a case you're likely to lose counts more than a
- * hopeless one), but against `predictNextTurnCashLinear`'s projection instead of today's
- * cash.
- *
- * `CASH_FLOOR` guards the division for a predicted cash at or below zero — a company
- * already trending toward insolvency reads as maximum risk from any nonzero exposure,
- * rather than flipping the ratio's sign or dividing by zero.
- */
-const SOLVENCY_RISK_CASH_FLOOR = 1;
-
-export function calculateSolvencyRisk(legalExposure: number, predictedNextCash: number): number {
-  if (legalExposure <= 0) return 0;
-  return Math.min(1, legalExposure / Math.max(predictedNextCash, SOLVENCY_RISK_CASH_FLOOR));
-}
-
-/**
- * Step 7: Calculate Global Risk Gauge — a weighted blend of 5 terms, 2 of which are
- * deliberate additions beyond the gauge's original 3-term design.
+ * Step 7: Calculate Global Risk Gauge — a weighted blend of 4 terms, 1 of which is a
+ * deliberate addition beyond the gauge's original 3-term design.
  *
  * legalExposure_i = SUM(open case probability * stakes) for all open cases where i is defendant
  * legalExposureRatio_i = MIN(0.8, legalExposure_i / cash_i)
  * risk_i (0-100) = 100 * ( w1*(legalExposureRatio_i / 0.8)
  *                         + w2*(scrutiny_i / 100)
  *                         + w3*(outrage_i / 100)
- *                         + w4*ownershipRisk_i
- *                         + w5*solvencyRisk_i )
+ *                         + w4*ownershipRisk_i )
  *
- * The w4/ownershipRisk and w5/solvencyRisk terms are deliberate deviations from the
- * gauge's original 3-term design — see `calculateOwnershipRisk`/`calculateSolvencyRisk`'s
- * doc comments above and CLAUDE.md's "Risk Gauge takeover term" and "Risk Gauge solvency
- * term" sections.
+ * The w4/ownershipRisk term is a deliberate deviation from the gauge's original 3-term
+ * design — see `calculateOwnershipRisk`'s doc comment above and CLAUDE.md's "Risk Gauge
+ * takeover term" section.
+ *
+ * A 5th term, legal-solvency risk (w5 * solvencyRisk — open cases' exposure against a
+ * linearly-projected next-turn cash), existed briefly and was removed: by explicit
+ * product decision, it read as near-duplicate information next to the legal-exposure-
+ * ratio term (w1) in the Threat Level breakdown — both terms are driven by the same
+ * open-case exposure, one against current cash and one against a naive one-turn
+ * projection, and in practice tracked each other closely enough that showing both was
+ * more redundant than illuminating. w5's weight (0.2) was folded back into w1-w4
+ * proportionally, restoring the exact pre-w5 weights (0.4/0.2/0.2/0.2) — see
+ * CLAUDE.md's "Risk Gauge solvency term" section for the term's original rationale and
+ * this section's own note for why it was removed.
  */
 export function calculateRiskGauge(
   vars: PlayerVariables,
   openCases: Array<{ probability: number; stakes: number }>,
   admin: AdminVariables,
   formulas: FormulaSet,
-  // Cash at the start of this turn, before this turn's own P&L/balance-sheet movement —
-  // defaults to vars.cash (assumes no movement) for callers with no real turn-context
-  // "before" snapshot to give (e.g. getInitialSnapshot, where no cases exist yet anyway
-  // so this term is 0 regardless).
-  prevCash: number = vars.cash,
 ): number {
   const {
     riskWeightLegalExposure_w1: w1, riskWeightScrutiny_w2: w2, riskWeightOutrage_w3: w3,
-    riskWeightOwnership_w4: w4, riskWeightSolvency_w5: w5,
+    riskWeightOwnership_w4: w4,
   } = admin.riskGauge;
   const { legalExposureRatioCap } = admin.legalProcess;
   const { takeoverThresholdPercent } = admin.ownership;
@@ -477,11 +443,8 @@ export function calculateRiskGauge(
 
   const ownershipRisk = calculateOwnershipRisk(vars.shareOwnership, takeoverThresholdPercent);
 
-  const predictedNextCash = predictNextTurnCashLinear(vars.cash, prevCash);
-  const solvencyRisk = calculateSolvencyRisk(legalExposure, predictedNextCash);
-
   return evalNamed(formulas, 'riskGauge', {
-    w1, w2, w3, w4, w5, legalExposureRatio, legalExposureRatioCap, scrutiny: vars.scrutiny, absOutrage, ownershipRisk, solvencyRisk,
+    w1, w2, w3, w4, legalExposureRatio, legalExposureRatioCap, scrutiny: vars.scrutiny, absOutrage, ownershipRisk,
   });
 }
 

@@ -438,15 +438,17 @@ function buildCapTable(target: MinimalPlayerForCapTable, viewerId: string, allPl
 }
 
 // ── Threat Level / Risk Gauge breakdown (ThreatView) — mirrors calcEngine.ts's
-// calculateRiskGauge/calculateOwnershipRisk/calculateSolvencyRisk. The w4/ownershipRisk
-// and w5/solvencyRisk terms are deliberate additions beyond the Risk Gauge's original
-// 3-term design — majority-ownership takeover and going bankrupt from open lawsuits are
-// both fully independent ways to lose the game the original gauge never reflected ──
+// calculateRiskGauge/calculateOwnershipRisk. The w4/ownershipRisk term is a deliberate
+// addition beyond the Risk Gauge's original 3-term design — majority-ownership takeover
+// is a fully independent way to lose the game the original gauge never reflected. A 5th
+// term (legal-solvency risk, w5) existed briefly and was removed by explicit product
+// decision — it read as near-duplicate information next to the legal-exposure-ratio term
+// (both driven by the same open-case exposure), and its weight was folded back into
+// w1-w4 proportionally, restoring the pre-solvency-term weights ──
 
-const THREAT_W1 = 0.32, THREAT_W2 = 0.16, THREAT_W3 = 0.16, THREAT_W4 = 0.16, THREAT_W5 = 0.2;
+const THREAT_W1 = 0.4, THREAT_W2 = 0.2, THREAT_W3 = 0.2, THREAT_W4 = 0.2;
 const THREAT_LEGAL_EXPOSURE_RATIO_CAP = 0.8;
 const THREAT_TAKEOVER_THRESHOLD_PERCENT = 0.5;
-const THREAT_SOLVENCY_CASH_FLOOR = 1;
 
 interface MinimalVarsForThreat {
   legalExposureRatio?: number;
@@ -456,18 +458,8 @@ interface MinimalVarsForThreat {
   cash: number;
 }
 
-interface MinimalCaseForThreat {
-  defendantId: string;
-  status: 'negotiating' | 'awaiting_trial' | 'resolved';
-  adjustedProbability?: number;
-  baseProbability: number;
-  stakes: number;
-}
-
 interface MinimalPlayerForThreat {
-  playerId: string;
   variables: MinimalVarsForThreat;
-  legalCases: MinimalCaseForThreat[];
 }
 
 function computeOwnershipRisk(shareOwnership: Record<string, number> | undefined): number {
@@ -480,22 +472,7 @@ function computeOwnershipRisk(shareOwnership: Record<string, number> | undefined
   return Math.min(1, maxExternalStake / THREAT_TAKEOVER_THRESHOLD_PERCENT);
 }
 
-function predictNextTurnCashLinear(cashAfterThisTurn: number, cashBeforeThisTurn: number): number {
-  return cashAfterThisTurn + (cashAfterThisTurn - cashBeforeThisTurn);
-}
-
-function computeSolvencyRisk(legalExposure: number, predictedNextCash: number): number {
-  if (legalExposure <= 0) return 0;
-  return Math.min(1, legalExposure / Math.max(predictedNextCash, THREAT_SOLVENCY_CASH_FLOOR));
-}
-
-function computeOpenLegalExposure(myPlayerId: string, legalCases: MinimalCaseForThreat[]): number {
-  return legalCases
-    .filter((c) => c.defendantId === myPlayerId && c.status !== 'resolved')
-    .reduce((sum, c) => sum + (c.adjustedProbability ?? c.baseProbability) * c.stakes, 0);
-}
-
-function computeThreatTerms(data: MinimalPlayerForThreat, prevCash: number) {
+function computeThreatTerms(data: MinimalPlayerForThreat) {
   const v = data.variables;
   const ler = v.legalExposureRatio ?? 0;
   const legalTerm = THREAT_W1 * (ler / THREAT_LEGAL_EXPOSURE_RATIO_CAP) * 100;
@@ -503,11 +480,7 @@ function computeThreatTerms(data: MinimalPlayerForThreat, prevCash: number) {
   const outrageTerm = THREAT_W3 * Math.min(1, Math.abs(v.outrage) / 100) * 100;
   const ownershipRisk = computeOwnershipRisk(v.shareOwnership);
   const ownershipTerm = THREAT_W4 * ownershipRisk * 100;
-  const legalExposure = computeOpenLegalExposure(data.playerId, data.legalCases);
-  const predictedNextCash = predictNextTurnCashLinear(v.cash, prevCash);
-  const solvencyRisk = computeSolvencyRisk(legalExposure, predictedNextCash);
-  const solvencyTerm = THREAT_W5 * solvencyRisk * 100;
-  return { ler, legalTerm, scrutinyTerm, outrageTerm, ownershipRisk, ownershipTerm, predictedNextCash, solvencyRisk, solvencyTerm };
+  return { ler, legalTerm, scrutinyTerm, outrageTerm, ownershipRisk, ownershipTerm };
 }
 
 describe('GamePhase utilities', () => {
@@ -1361,18 +1334,15 @@ describe('GamePhase utilities', () => {
   });
 
   describe('computeThreatTerms (Threat Level / Risk Gauge breakdown)', () => {
-    const player = (overrides: Partial<MinimalVarsForThreat> = {}, legalCases: MinimalCaseForThreat[] = []): MinimalPlayerForThreat => ({
-      playerId: 'player-1',
+    const player = (overrides: Partial<MinimalVarsForThreat> = {}): MinimalPlayerForThreat => ({
       variables: { scrutiny: 0, outrage: 0, cash: 100000, ...overrides },
-      legalCases,
     });
 
-    it('is 0 across the board with no legal exposure, scrutiny, outrage, outside shareholders, or open cases', () => {
-      const terms = computeThreatTerms(player(), 100000); // flat cash trend
+    it('is 0 across the board with no legal exposure, scrutiny, outrage, or outside shareholders', () => {
+      const terms = computeThreatTerms(player());
       expect(terms).toEqual({
         ler: 0, legalTerm: 0, scrutinyTerm: 0, outrageTerm: 0,
         ownershipRisk: 0, ownershipTerm: 0,
-        predictedNextCash: 100000, solvencyRisk: 0, solvencyTerm: 0,
       });
     });
 
@@ -1381,87 +1351,39 @@ describe('GamePhase utilities', () => {
       // it), scrutiny has no floor of its own — a negative value used to flow straight
       // through into a negative scrutinyTerm with no lower clamp, mirroring the same gap
       // the real riskGauge formula had (see calcEngine.ts/CLAUDE.md).
-      const terms = computeThreatTerms(player({ scrutiny: -80 }), 100000);
+      const terms = computeThreatTerms(player({ scrutiny: -80 }));
       expect(terms.scrutinyTerm).toBe(0);
     });
 
     it('is 0 when only self and EXTERNAL_MARKET hold shares — neither can trigger a takeover', () => {
-      const terms = computeThreatTerms(player({ shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.7, [EXTERNAL_MARKET_KEY]: 0.3 } }), 100000);
+      const terms = computeThreatTerms(player({ shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.7, [EXTERNAL_MARKET_KEY]: 0.3 } }));
       expect(terms.ownershipRisk).toBe(0);
       expect(terms.ownershipTerm).toBe(0);
     });
 
     it('rises as the largest external holder approaches the 50% takeover threshold', () => {
-      const terms = computeThreatTerms(player({ shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.75, rival: 0.25 } }), 100000);
+      const terms = computeThreatTerms(player({ shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.75, rival: 0.25 } }));
       expect(terms.ownershipRisk).toBeCloseTo(0.5, 5); // 0.25 / 0.5
-      expect(terms.ownershipTerm).toBeCloseTo(THREAT_W4 * 0.5 * 100, 5); // weight 0.16 -> 8
+      expect(terms.ownershipTerm).toBeCloseTo(THREAT_W4 * 0.5 * 100, 5); // weight 0.2 -> 10
     });
 
     it('caps ownership risk at 1 once a holder is at or beyond the threshold', () => {
-      const terms = computeThreatTerms(player({ shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.1, rival: 0.9 } }), 100000);
+      const terms = computeThreatTerms(player({ shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.1, rival: 0.9 } }));
       expect(terms.ownershipRisk).toBe(1);
-      expect(terms.ownershipTerm).toBeCloseTo(THREAT_W4 * 100, 5); // weight 0.16 -> 16
+      expect(terms.ownershipTerm).toBeCloseTo(THREAT_W4 * 100, 5); // weight 0.2 -> 20
     });
 
     it('uses the single largest external stake, not a sum across multiple holders', () => {
-      const terms = computeThreatTerms(player({ shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.5, rivalA: 0.3, rivalB: 0.2 } }), 100000);
+      const terms = computeThreatTerms(player({ shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.5, rivalA: 0.3, rivalB: 0.2 } }));
       expect(terms.ownershipRisk).toBeCloseTo(0.6, 5); // rivalA alone (0.3) / 0.5, not 0.5 combined
     });
 
-    it('projects predicted next-turn cash by extrapolating this turn\'s own trend', () => {
-      // Cash rose 100000 -> 130000 this turn -> projected to keep rising to 160000.
-      const terms = computeThreatTerms(player({ cash: 130000 }), 100000);
-      expect(terms.predictedNextCash).toBe(160000);
-    });
-
-    it('is 0 solvency risk with no open cases against me, regardless of cash trend', () => {
-      const terms = computeThreatTerms(player({ cash: 10000 }), 200000); // steep decline, but no cases
-      expect(terms.solvencyRisk).toBe(0);
-      expect(terms.solvencyTerm).toBe(0);
-    });
-
-    it('ignores an open case where I am the plaintiff, not the defendant', () => {
-      const cases: MinimalCaseForThreat[] = [{ defendantId: 'someone-else', status: 'negotiating', baseProbability: 1, stakes: 100000 }];
-      const terms = computeThreatTerms(player({}, cases), 100000);
-      expect(terms.solvencyRisk).toBe(0);
-    });
-
-    it('ignores a resolved case against me — only still-open cases count', () => {
-      const cases: MinimalCaseForThreat[] = [{ defendantId: 'player-1', status: 'resolved', baseProbability: 1, stakes: 100000 }];
-      const terms = computeThreatTerms(player({}, cases), 100000);
-      expect(terms.solvencyRisk).toBe(0);
-    });
-
-    it('rises as open, probability-weighted case exposure approaches predicted next-turn cash', () => {
-      const cases: MinimalCaseForThreat[] = [{ defendantId: 'player-1', status: 'negotiating', adjustedProbability: 0.5, baseProbability: 0.1, stakes: 100000 }];
-      // legalExposure = 0.5 * 100000 = 50000 (uses adjustedProbability over baseProbability).
-      // Flat cash trend -> predictedNextCash = 100000 -> solvencyRisk = 50000/100000 = 0.5.
-      const terms = computeThreatTerms(player({ cash: 100000 }, cases), 100000);
-      expect(terms.solvencyRisk).toBeCloseTo(0.5, 5);
-      expect(terms.solvencyTerm).toBeCloseTo(THREAT_W5 * 0.5 * 100, 5);
-    });
-
-    it('reads as MORE dangerous when the cash trend is declining, for the exact same current cash and exposure', () => {
-      const cases: MinimalCaseForThreat[] = [{ defendantId: 'player-1', status: 'negotiating', adjustedProbability: 1, baseProbability: 1, stakes: 60000 }];
-      const decliningTrend = computeThreatTerms(player({ cash: 100000 }, cases), 150000); // was 150k, now 100k
-      const risingTrend = computeThreatTerms(player({ cash: 100000 }, cases), 50000); // was 50k, now 100k
-      expect(decliningTrend.solvencyRisk).toBeGreaterThan(risingTrend.solvencyRisk);
-    });
-
-    it('caps solvency risk at 1 (not negative or >1) when predicted next-turn cash is at or below zero', () => {
-      const cases: MinimalCaseForThreat[] = [{ defendantId: 'player-1', status: 'negotiating', adjustedProbability: 1, baseProbability: 1, stakes: 40000 }];
-      const terms = computeThreatTerms(player({ cash: 0 }, cases), 200000); // sharp decline into zero
-      expect(terms.solvencyRisk).toBe(1);
-    });
-
-    it('combines all five terms at their configured weights', () => {
-      const cases: MinimalCaseForThreat[] = [{ defendantId: 'player-1', status: 'negotiating', adjustedProbability: 1, baseProbability: 1, stakes: 100000 }];
+    it('combines all four terms at their configured weights', () => {
       const terms = computeThreatTerms(
-        player({ legalExposureRatio: 0.8, scrutiny: 100, outrage: 100, cash: 100000, shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.5, rival: 0.5 } }, cases),
-        100000, // flat trend -> predictedNextCash = 100000 -> solvencyRisk = 100000/100000 = 1
+        player({ legalExposureRatio: 0.8, scrutiny: 100, outrage: 100, shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.5, rival: 0.5 } }),
       );
-      // w1*1 + w2*1 + w3*1 + w4*1 + w5*1 = 0.32 + 0.16 + 0.16 + 0.16 + 0.2 = 1.0 -> 100
-      expect(terms.legalTerm + terms.scrutinyTerm + terms.outrageTerm + terms.ownershipTerm + terms.solvencyTerm).toBeCloseTo(100, 5);
+      // w1*1 + w2*1 + w3*1 + w4*1 = 0.4 + 0.2 + 0.2 + 0.2 = 1.0 -> 100
+      expect(terms.legalTerm + terms.scrutinyTerm + terms.outrageTerm + terms.ownershipTerm).toBeCloseTo(100, 5);
     });
   });
 });

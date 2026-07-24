@@ -10,8 +10,6 @@ import {
   calculateLegalExposureRatio,
   calculateRiskGauge,
   calculateOwnershipRisk,
-  predictNextTurnCashLinear,
-  calculateSolvencyRisk,
   applyDecisionImpacts,
   applyTargetImpacts,
   calculateMaturityYears,
@@ -91,7 +89,6 @@ function makeAdmin(overrides: Partial<AdminVariables> = {}): AdminVariables {
       riskWeightScrutiny_w2: 0.2,
       riskWeightOutrage_w3: 0.25,
       riskWeightOwnership_w4: 0,
-      riskWeightSolvency_w5: 0,
     },
     ownership: {
       takeoverThresholdPercent: 0.5,
@@ -447,7 +444,7 @@ describe('calcEngine', () => {
         shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.75, rival: 0.25 },
       });
       const admin = makeAdmin({
-        riskGauge: { riskWeightLegalExposure_w1: 0, riskWeightScrutiny_w2: 0, riskWeightOutrage_w3: 0, riskWeightOwnership_w4: 1, riskWeightSolvency_w5: 0 },
+        riskGauge: { riskWeightLegalExposure_w1: 0, riskWeightScrutiny_w2: 0, riskWeightOutrage_w3: 0, riskWeightOwnership_w4: 1 },
       });
 
       const result = calculateRiskGauge(vars, [], admin, DEFAULT_FORMULAS);
@@ -464,47 +461,12 @@ describe('calcEngine', () => {
         shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.6, [EXTERNAL_MARKET_KEY]: 0.4 },
       });
       const admin = makeAdmin({
-        riskGauge: { riskWeightLegalExposure_w1: 0, riskWeightScrutiny_w2: 0, riskWeightOutrage_w3: 0, riskWeightOwnership_w4: 1, riskWeightSolvency_w5: 0 },
+        riskGauge: { riskWeightLegalExposure_w1: 0, riskWeightScrutiny_w2: 0, riskWeightOutrage_w3: 0, riskWeightOwnership_w4: 1 },
       });
 
       const result = calculateRiskGauge(vars, [], admin, DEFAULT_FORMULAS);
 
       expect(result).toBe(0);
-    });
-
-    // Deliberate 5th-term addition beyond the Risk Gauge's original design, distinct from
-    // w1's current-cash legal exposure ratio — see calcEngine.ts's calculateSolvencyRisk
-    // doc comment and CLAUDE.md's "Risk Gauge solvency term" section.
-    it('includes the solvency-risk term (w5) using a projected next-turn cash, not current cash', () => {
-      const vars = makeVars({ cash: 100000, scrutiny: 0, outrage: 0 });
-      const admin = makeAdmin({
-        riskGauge: { riskWeightLegalExposure_w1: 0, riskWeightScrutiny_w2: 0, riskWeightOutrage_w3: 0, riskWeightOwnership_w4: 0, riskWeightSolvency_w5: 1 },
-      });
-      const openCases = [{ probability: 1, stakes: 40000 }]; // legalExposure = 40000
-
-      // prevCash 60000 -> cash rose 40000 this turn -> projected next-turn cash = 100000+40000 = 140000.
-      const risingTrend = calculateRiskGauge(vars, openCases, admin, DEFAULT_FORMULAS, 60000);
-      // prevCash 140000 -> cash fell 40000 this turn -> projected next-turn cash = 100000-40000 = 60000.
-      const fallingTrend = calculateRiskGauge(vars, openCases, admin, DEFAULT_FORMULAS, 140000);
-
-      expect(risingTrend).toBeCloseTo(100 * (40000 / 140000), 5);
-      expect(fallingTrend).toBeCloseTo(100 * (40000 / 60000), 5);
-      // Same current cash and exposure both times — only the trend (via prevCash) differs,
-      // and a worsening trend must read as strictly more dangerous.
-      expect(fallingTrend).toBeGreaterThan(risingTrend);
-    });
-
-    it('defaults prevCash to current cash (assumes no trend) when the caller has none to give', () => {
-      const vars = makeVars({ cash: 100000, scrutiny: 0, outrage: 0 });
-      const admin = makeAdmin({
-        riskGauge: { riskWeightLegalExposure_w1: 0, riskWeightScrutiny_w2: 0, riskWeightOutrage_w3: 0, riskWeightOwnership_w4: 0, riskWeightSolvency_w5: 1 },
-      });
-      const openCases = [{ probability: 1, stakes: 40000 }];
-
-      const noPrevCashGiven = calculateRiskGauge(vars, openCases, admin, DEFAULT_FORMULAS);
-      const explicitFlatTrend = calculateRiskGauge(vars, openCases, admin, DEFAULT_FORMULAS, 100000);
-
-      expect(noPrevCashGiven).toBeCloseTo(explicitFlatTrend, 5);
     });
   });
 
@@ -539,48 +501,6 @@ describe('calcEngine', () => {
     it('is 0 when takeoverThresholdPercent is misconfigured to 0 (guards the division)', () => {
       const ownership = { [SELF_OWNERSHIP_KEY]: 0.4, rival: 0.6 };
       expect(calculateOwnershipRisk(ownership, 0)).toBe(0);
-    });
-  });
-
-  describe('predictNextTurnCashLinear', () => {
-    it('projects forward by the same delta this turn just moved', () => {
-      // Cash went from 80k to 100k this turn (+20k) — projected to keep climbing by
-      // another 20k next turn.
-      expect(predictNextTurnCashLinear(100000, 80000)).toBe(120000);
-    });
-
-    it('projects a continued decline the same way', () => {
-      // Cash went from 100k to 60k this turn (-40k) — projected to keep falling.
-      expect(predictNextTurnCashLinear(60000, 100000)).toBe(20000);
-    });
-
-    it('holds steady when this turn had no net cash movement', () => {
-      expect(predictNextTurnCashLinear(50000, 50000)).toBe(50000);
-    });
-
-    it('can project a negative next-turn cash when the decline is steep enough', () => {
-      expect(predictNextTurnCashLinear(10000, 100000)).toBe(-80000);
-    });
-  });
-
-  describe('calculateSolvencyRisk', () => {
-    it('is 0 with no open legal exposure, regardless of predicted cash', () => {
-      expect(calculateSolvencyRisk(0, 100000)).toBe(0);
-      expect(calculateSolvencyRisk(0, -50000)).toBe(0);
-    });
-
-    it('scales as the fraction of predicted cash the exposure would consume', () => {
-      expect(calculateSolvencyRisk(40000, 100000)).toBeCloseTo(0.4, 5);
-    });
-
-    it('caps at 1 once exposure meets or exceeds predicted cash', () => {
-      expect(calculateSolvencyRisk(40000, 20000)).toBe(1);
-      expect(calculateSolvencyRisk(40000, 40000)).toBe(1);
-    });
-
-    it('caps at 1 (not a negative or >1 ratio) when predicted cash is at or below zero — the floor guards the division', () => {
-      expect(calculateSolvencyRisk(40000, 0)).toBe(1);
-      expect(calculateSolvencyRisk(40000, -100000)).toBe(1);
     });
   });
 

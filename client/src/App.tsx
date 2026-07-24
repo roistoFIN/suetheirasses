@@ -44,16 +44,16 @@ const LostOverlay: React.FC<{ reason: 'bankrupt' | 'forfeit' | 'merged'; acquire
 
   return (
     <Container size="xs" py="xl">
-      <Paper withBorder p="xl" shadow="lg">
+      <Paper p="xl" style={{ background: 'var(--ink-parchment)', backgroundImage: 'var(--paper-texture)', border: '1px solid #cbb888', borderRadius: 4, boxShadow: '6px 8px 0 rgba(0,0,0,0.45)' }}>
         <Image src={reason === 'merged' ? '/images/acquired.png' : '/images/lost.png'} alt="Eliminated" radius="md" mb="md" />
-        <Title order={2} ta="center" mb="xs" c="red">
+        <Title order={2} ta="center" mb="xs" style={{ fontFamily: "'Rye', Georgia, serif", fontWeight: 400, color: 'var(--ink-blood)' }}>
           {copy.title}
         </Title>
-        <Text ta="center" c="dimmed" mb="lg">
+        <Text ta="center" mb="lg" style={{ color: 'var(--ink-text-soft)' }}>
           {copy.body(acquirerName)}
         </Text>
         <Stack gap="xs">
-          <Button fullWidth color="blue" onClick={onWatch}>
+          <Button fullWidth onClick={onWatch} style={{ background: 'var(--ink-text)', color: 'var(--ink-parchment)', border: '2px solid var(--ink-gold)', fontFamily: "'Rye', Georgia, serif", letterSpacing: '0.02em' }}>
             Watch the rest of the game
           </Button>
           <Button fullWidth color="red" variant="outline" onClick={onLeave}>
@@ -92,16 +92,16 @@ const BankruptcyModal: React.FC<{ playerName: string; reason?: 'bankruptcy' | 'm
     onClose={onDismiss}
     size="md"
     centered
-    title={<Text fw={700} fz="0.9rem">💀 PLAYER ELIMINATED</Text>}
+    title={<Text fw={700} fz="0.85rem" style={{ fontFamily: "'Courier Prime', monospace", letterSpacing: '0.03em' }}>💀 PLAYER ELIMINATED</Text>}
   >
     <Stack gap="md">
       <Image src={reason === 'merger' ? '/images/acquired.png' : '/images/lost.png'} alt="Eliminated" radius="md" />
-      <Text ta="center" fw={700} c="red">
+      <Text ta="center" fw={700} style={{ color: 'var(--ink-blood)' }}>
         {reason === 'merger'
           ? `${playerName.toUpperCase()}'S COMPANY WAS ACQUIRED`
           : `${playerName.toUpperCase()} HAS GONE BANKRUPT`}
       </Text>
-      <Text ta="center" c="dimmed" size="sm">
+      <Text ta="center" size="sm" style={{ color: 'var(--ink-text-soft)' }}>
         {reason === 'merger'
           ? `${acquirerName ?? 'A rival'} bought up more than half of their company's shares — they're out of the game.`
           : "Their cash ran out and the bank came knocking — they're out of the game."}
@@ -130,11 +130,11 @@ const NotificationBanner: React.FC = () => {
 
   return (
     <Alert
-      color="blue"
+      color="dark"
       variant="filled"
       withCloseButton
       onClose={() => setNotification(null)}
-      style={{ position: 'fixed', top: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 1000, maxWidth: 480 }}
+      style={{ position: 'fixed', top: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 1000, maxWidth: 480, background: 'var(--ink-text)', border: '2px solid var(--ink-gold)' }}
     >
       {notification}
     </Alert>

@@ -1745,6 +1745,43 @@ describe('GameEngine', () => {
 
       expect(result).toEqual({ success: true, triggerImmediateResolution: false });
     });
+
+    // Regression: getGameTimeline() reads winnerId from the same lastTurnResults cache
+    // every normal resolveGameTurn call keeps current — but a forfeit that itself ends
+    // the game (last player standing) never goes through resolveGameTurn at all, so
+    // without forfeitGame also updating that cache, the finished-game replay's win
+    // badge/art never appears for a forfeit-ended game. Found while verifying the Game
+    // Over screen's new art actually renders after a real forfeit, not just a natural
+    // elimination during a normal turn.
+    it('updates the lastTurnResults cache so getGameTimeline reports the right winner after a forfeit ends the game', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+      const aliceId = Array.from(roomState.players.values()).find((p) => p.name === 'Alice')!.id;
+      const bobId = Array.from(roomState.players.values()).find((p) => p.name === 'Bob')!.id;
+      roomState.room.status = RoomStatus.GAME_PHASE;
+
+      (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockImplementation(({ where }: any) => {
+        if (where?.roomId === roomState.room.id && where?.bankrupt === false) {
+          return Promise.resolve([{ id: bobId }]); // only Bob remains after Alice forfeits
+        }
+        if (where?.roomId === roomState.room.id) {
+          return Promise.resolve([
+            { id: aliceId, name: 'Alice', roomId: roomState.room.id, bankrupt: true, eliminatedRound: 1, company: { id: 'c1', playerId: aliceId, cash: 0, debt: 0, assets: [], engineState: {} } },
+            { id: bobId, name: 'Bob', roomId: roomState.room.id, bankrupt: false, eliminatedRound: null, company: { id: 'c2', playerId: bobId, cash: 100000, debt: 0, assets: [], engineState: {} } },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      await engine.forfeitGame(roomState.room.id, aliceId);
+
+      const timeline = await engine.getGameTimeline(roomState.room.id);
+
+      expect(timeline).not.toBeNull();
+      expect(timeline!.gameOver).toBe(true);
+      expect(timeline!.winnerId).toBe(bobId);
+    });
   });
 
   describe('submitDecisions', () => {

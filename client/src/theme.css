@@ -1,0 +1,136 @@
+/*
+ * "Courtroom Ink" visual identity — see the direction pitch this was picked from
+ * (client-side design review artifact, not checked into this repo) for the full
+ * rationale. Near-black ink ground, parchment case-file cards, a single blood-red
+ * accent for danger/lawsuit actions, amber for warnings, forest-green for positive.
+ *
+ * Self-hosted fonts (not a CDN link) — Rye/Vollkorn/Courier Prime are all
+ * Google Fonts under the SIL Open Font License, safe to redistribute.
+ */
+
+@font-face {
+  font-family: 'Rye';
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/rye-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Vollkorn';
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/vollkorn-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Vollkorn';
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/vollkorn-700.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Courier Prime';
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/courierprime-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Courier Prime';
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/courierprime-700.woff2') format('woff2');
+}
+
+:root {
+  --ink-bg: #171310;
+  --ink-parchment: #efe3c4;
+  --ink-parchment-dim: #ddcda0;
+  --ink-blood: #9c2b22;
+  --ink-blood-bright: #c23a2e;
+  --ink-amber: #c68a2e;
+  --ink-forest: #4c5f3f;
+  --ink-text: #1c150c;
+  --ink-text-soft: #6e5c3f;
+  --ink-text-on-dark: #efe3c4;
+  --ink-text-on-dark-soft: #b8a97e;
+  --ink-hairline: #4a3f2c;
+  --ink-hairline-light: #d8c79a;
+  --ink-gold: #a9822f;
+
+  --font-display: 'Rye', 'Georgia', serif;
+  --font-body: 'Vollkorn', Georgia, serif;
+  --font-mono: 'Courier Prime', 'Courier New', monospace;
+
+  /* Subtle case-file paper grain — an inline SVG feTurbulence noise filter, not a
+     photo/image asset, so it costs nothing extra to load and tiles cleanly at any
+     card size. Kept deliberately faint (0.12 alpha on the noise, tuned by comparing
+     0.05/0.09/0.15 side by side) — enough to read as paper, not enough to fight text
+     legibility. Referenced directly as a `backgroundImage` value wherever a parchment
+     surface is defined; relies on `background-image`/`background-color` being set as
+     separate longhand properties (not the `background` shorthand) at each of those
+     call sites, or this gets silently reset to `none`. */
+  --paper-texture: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22180%22%20height%3D%22180%22%3E%3Cfilter%20id%3D%22n%22%3E%3CfeTurbulence%20type%3D%22fractalNoise%22%20baseFrequency%3D%220.85%22%20numOctaves%3D%222%22%20stitchTiles%3D%22stitch%22%2F%3E%3CfeColorMatrix%20type%3D%22matrix%22%20values%3D%220%200%200%200%200%200%200%200%200%200%200%200%200%200%200%200%200%200%200.12%200%22%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D%22100%25%22%20height%3D%22100%25%22%20filter%3D%22url(%23n)%22%2F%3E%3C%2Fsvg%3E");
+}
+
+html, body, #root {
+  background: var(--ink-bg);
+}
+
+body {
+  font-family: var(--font-body);
+}
+
+/* ── Global Mantine chrome — every Modal/Button/Input in the app picks this up
+   without each call site needing its own style prop. Targets Mantine's stable
+   `mantine-*` class names (present alongside the hashed CSS-module ones). ── */
+
+.mantine-Modal-content {
+  background: var(--ink-parchment);
+  background-image: var(--paper-texture);
+  border: 2px solid var(--ink-hairline);
+  border-radius: 4px;
+}
+.mantine-Modal-header {
+  background: var(--ink-parchment);
+  background-image: var(--paper-texture);
+  border-bottom: 2px solid var(--ink-hairline-light);
+}
+.mantine-Modal-title {
+  font-family: var(--font-display);
+  color: var(--ink-text);
+  letter-spacing: 0.01em;
+}
+.mantine-Modal-close {
+  color: var(--ink-text-soft);
+}
+.mantine-Modal-close:hover {
+  background: var(--ink-hairline-light);
+}
+/* Mantine's own default is padding-top: 0 on the body, relying entirely on the
+   header's bottom padding for breathing room — reads fine with Mantine's default
+   thin divider, but the modal's first content sits almost flush against the
+   header's border here (reported: "too narrow gap ... between the title and the
+   chips", found to reproduce in every modal, not just Decision Deck). Matches the
+   body's other three sides (16px) instead of leaving this one at zero. */
+.mantine-Modal-body {
+  padding-top: var(--mantine-spacing-md);
+}
+.mantine-Modal-overlay {
+  background: rgba(10, 8, 6, 0.72) !important;
+}
+
+.mantine-Button-root[data-variant='filled'] {
+  font-family: var(--font-display);
+  letter-spacing: 0.02em;
+}
+
+/* Native <select> elements (e.g. SueModal's opponent picker, Decision Deck's KPI
+   sort) — deliberately restyled here rather than swapped for a Mantine Select,
+   since that's a larger, separate change; this at least stops them looking like a
+   bare OS control dropped into a themed page. */
+select {
+  font-family: var(--font-body);
+  background: var(--ink-parchment);
+  color: var(--ink-text);
+  border: 2px solid var(--ink-hairline);
+  border-radius: 3px;
+  padding: 6px 8px;
+}

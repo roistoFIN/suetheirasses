@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Container, Paper, Title, Button, Stack, Flex, Badge, Text, Box, Slider, Loader, Center,
+  Container, Paper, Title, Button, Stack, Flex, Badge, Text, Box, Slider, Loader, Center, Image,
 } from '@mantine/core';
 import { LineChart } from '@mantine/charts';
 import { IconPlayerPlay, IconPlayerPause } from '@tabler/icons-react';
@@ -241,9 +241,11 @@ export default function GameTimelineView({ mode }: GameTimelineViewProps) {
 
   return (
     <Container size="lg" py="xl">
-      <Paper withBorder p="xl" shadow="lg">
+      <Paper p="xl" style={{ background: 'var(--ink-parchment)', backgroundImage: 'var(--paper-texture)', border: '1px solid #cbb888', borderRadius: 4, boxShadow: '6px 8px 0 rgba(0,0,0,0.45)' }}>
         <Flex justify="space-between" align="center" mb="md">
-          <Title order={2}>{mode === 'live' ? '👀 Spectating' : '🏆 Game Over!'}</Title>
+          <Title order={2} style={{ fontFamily: "'Rye', Georgia, serif", fontWeight: 400, color: 'var(--ink-text)' }}>
+            {mode === 'live' ? '👀 Spectating' : '🏆 Game Over!'}
+          </Title>
           {mode === 'live' && (
             <Button variant="outline" color="red" onClick={returnToLanding}>
               Leave &amp; Return to Start
@@ -251,18 +253,29 @@ export default function GameTimelineView({ mode }: GameTimelineViewProps) {
           )}
         </Flex>
 
+        {/* Only ever shown for a genuinely finished game, never while spectating a still-
+            active one (mode="live") — the same gate the win badge right below already
+            uses, so the two can never disagree about when the game is actually over. */}
         {mode === 'finished' && data.gameOver && winner && (
-          <Flex justify="center" mb="lg">
-            <Badge color="gold" size="xl" px="xl" py="md">
-              🎉 {winner.playerName} Wins!
-            </Badge>
-          </Flex>
+          <>
+            <Image src="/images/game-over.png" alt="Game over" radius="md" mb="md" />
+            <Flex justify="center" mb="lg">
+              <Badge
+                size="xl"
+                px="xl"
+                py="md"
+                styles={{ root: { background: 'var(--ink-blood)', color: '#f4e9d0', border: '2px solid var(--ink-gold)', fontFamily: "'Rye', Georgia, serif", fontWeight: 400, textTransform: 'none', fontSize: '1rem' } }}
+              >
+                🎉 {winner.playerName} Wins!
+              </Badge>
+            </Flex>
+          </>
         )}
 
         <Stack gap="lg">
           <Box>
             <Flex justify="space-between" align="center" mb="xs" wrap="wrap" gap="sm">
-              <Text fw={700} size="sm">KPI RACE</Text>
+              <Text fw={700} size="sm" style={{ fontFamily: "'Courier Prime', monospace", color: 'var(--ink-text)' }}>KPI RACE</Text>
               <select value={metric} onChange={(e) => setMetric(e.target.value)} style={{ padding: '4px 8px' }}>
                 {METRIC_OPTIONS.map((m) => (
                   <option key={m.field} value={m.field}>{m.label}</option>
@@ -311,7 +324,7 @@ export default function GameTimelineView({ mode }: GameTimelineViewProps) {
               <Text fw={700} size="sm" mb="xs">STANDINGS — {METRIC_OPTIONS.find((m) => m.field === metric)?.label}</Text>
               <Stack gap={6}>
                 {ranking.map((r, i) => (
-                  <Flex key={r.playerId} justify="space-between" align="center" style={{ padding: '6px 10px', border: '2px solid #333', borderRadius: 6, background: '#fff' }}>
+                  <Flex key={r.playerId} justify="space-between" align="center" style={{ padding: '6px 10px', border: '1px solid #cbb888', borderRadius: 3, background: '#f6efd9' }}>
                     <Flex align="center" gap={8}>
                       <Badge color={r.playerId === data.winnerId ? 'gold' : i === 0 ? 'gray' : 'gray'}>#{i + 1}</Badge>
                       <Text size="sm" fw={r.playerId === player?.id ? 700 : 400}>
@@ -347,7 +360,7 @@ export default function GameTimelineView({ mode }: GameTimelineViewProps) {
                       justify="space-between"
                       align="center"
                       onClick={() => handleScrub(h.round)}
-                      style={{ padding: '6px 10px', border: '2px solid #333', borderRadius: 6, cursor: 'pointer', background: '#fff' }}
+                      style={{ padding: '6px 10px', border: '1px solid #cbb888', borderRadius: 3, cursor: 'pointer', background: '#f6efd9' }}
                       title="Click to jump to this round"
                     >
                       <Text size="sm">{happeningLabel(h)}</Text>

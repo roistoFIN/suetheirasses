@@ -290,7 +290,7 @@ describe('Validation Schemas', () => {
           scrutinyLegalRiskMultiplier: 0.02,
           legalExposureRatioCap: 0.8,
         },
-        riskGauge: { riskWeightLegalExposure_w1: 0.25, riskWeightScrutiny_w2: 0.2, riskWeightOutrage_w3: 0.2, riskWeightOwnership_w4: 0.2, riskWeightSolvency_w5: 0.15 },
+        riskGauge: { riskWeightLegalExposure_w1: 0.4, riskWeightScrutiny_w2: 0.2, riskWeightOutrage_w3: 0.2, riskWeightOwnership_w4: 0.2 },
         ownership: { takeoverThresholdPercent: 0.5 },
         finance: { baseFinanceCost: 2000, interestRate: 0.05, taxRate: 0.2, daysSalesOutstanding_DSO: 30 },
         depreciation: { assetUsefulLifeYears: 10, intangibleUsefulLifeYears: 5 },

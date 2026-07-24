@@ -30,7 +30,6 @@ function makeAdmin(overrides: Partial<AdminVariables> = {}): AdminVariables {
       riskWeightScrutiny_w2: 0.2,
       riskWeightOutrage_w3: 0.25,
       riskWeightOwnership_w4: 0,
-      riskWeightSolvency_w5: 0,
     },
     ownership: {
       takeoverThresholdPercent: 0.5,

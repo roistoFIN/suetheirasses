@@ -80,11 +80,10 @@
       "legalExposureRatioCap": 0.8
     },
     "riskGauge": {
-      "riskWeightLegalExposure_w1": 0.32,
-      "riskWeightScrutiny_w2": 0.16,
-      "riskWeightOutrage_w3": 0.16,
-      "riskWeightOwnership_w4": 0.16,
-      "riskWeightSolvency_w5": 0.2
+      "riskWeightLegalExposure_w1": 0.4,
+      "riskWeightScrutiny_w2": 0.2,
+      "riskWeightOutrage_w3": 0.2,
+      "riskWeightOwnership_w4": 0.2
     },
     "ownership": {
       "takeoverThresholdPercent": 0.5

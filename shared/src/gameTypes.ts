@@ -156,10 +156,6 @@ export interface RiskGaugeConfig {
    * 3-term design, since majority-ownership takeover is a fully independent
    * way to lose the game the original gauge never reflected. */
   riskWeightOwnership_w4: number;
-  /** Weight for legal-solvency risk (see calcEngine.ts's `calculateSolvencyRisk`) —
-   * open lawsuits' probability-weighted stakes against a linear one-turn-ahead cash
-   * projection, distinct from w1's current-cash legal exposure ratio. */
-  riskWeightSolvency_w5: number;
 }
 
 export interface OwnershipConfig {
