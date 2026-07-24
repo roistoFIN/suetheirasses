@@ -95,15 +95,15 @@ interface GameState {
   hasAcknowledgedElimination: boolean;
   acknowledgeElimination: () => void;
 
-  /** One "X has gone bankrupt"/"X was acquired by Y" notice queued per elimination every
-   * *other* still-in-the-game player should be told about — the eliminated player
-   * themselves gets `selfElimination`'s full-screen takeover instead, never this. Queued
-   * (not a single value) since more than one player can be eliminated in the same turn.
-   * `reason`/`acquirerName` distinguish a merger takeover from a plain bankruptcy —
-   * `reason` defaults to `'bankruptcy'` for any event that doesn't set it (forfeit is
-   * never queued here at all, only ever via `selfElimination`). */
-  bankruptcyEvents: { playerId: string; playerName: string; reason?: 'bankruptcy' | 'merger'; acquirerName?: string }[];
-  enqueueBankruptcyEvent: (event: { playerId: string; playerName: string; reason?: 'bankruptcy' | 'merger'; acquirerName?: string }) => void;
+  /** One "X has gone bankrupt"/"X was acquired by Y"/"X chickened out" notice queued per
+   * elimination every *other* still-in-the-game player should be told about — the
+   * eliminated player themselves gets `selfElimination`'s full-screen takeover instead,
+   * never this. Queued (not a single value) since more than one player can be eliminated
+   * in the same turn. `reason`/`acquirerName` distinguish a merger takeover, a plain
+   * bankruptcy, and a voluntary forfeit — `reason` defaults to `'bankruptcy'` for any
+   * event that doesn't set it. */
+  bankruptcyEvents: { playerId: string; playerName: string; reason?: 'bankruptcy' | 'merger' | 'forfeit'; acquirerName?: string }[];
+  enqueueBankruptcyEvent: (event: { playerId: string; playerName: string; reason?: 'bankruptcy' | 'merger' | 'forfeit'; acquirerName?: string }) => void;
   dismissBankruptcyEvent: () => void;
 }
 

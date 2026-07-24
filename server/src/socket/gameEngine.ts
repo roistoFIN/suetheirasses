@@ -870,6 +870,34 @@ export class GameEngine {
     return this.playerToRoom.get(socketId);
   }
 
+  /**
+   * A socket must only ever be a Socket.IO room member of the ONE room `playerToRoom`
+   * currently associates it with — otherwise it keeps receiving `io.to(oldRoomId).emit(...)`
+   * broadcasts for a room it's no longer meant to be in. Call this right before
+   * (re)pointing `playerToRoom` at a new room, in every path that can attach the same
+   * socket to a different room: `createRoom`, `joinRoom`, `rejoinRoom`.
+   *
+   * This was a real, reproduced bug: `game:leave` (forfeit) marks a player bankrupt and
+   * tells the client to return to the landing page, but — unlike `room:leave` (the
+   * WAITING-lobby departure, which already calls `socket.leave(roomId)` at its own call
+   * site) — never called `socket.leave` for the forfeited room, since the socket itself
+   * stays fully connected and able to keep playing (a forfeited/bankrupted player can
+   * choose to keep spectating that exact room — see the game-timeline feature — so
+   * leaving the Socket.IO room the INSTANT they forfeit would break that). If that same
+   * socket went on to create or join a SECOND room without ever reloading the page, it
+   * remained subscribed to BOTH rooms' broadcasts — the moment the first (old) room's
+   * game later concluded, its `game:over`/`player:bankrupt`/`phase:changed` broadcasts
+   * landed on this socket too, silently overwriting whatever the second (current) game
+   * was showing with the first game's stale winner/eliminated-player data. Guarding at
+   * the point a socket newly attaches to a room (rather than at every place it might stop
+   * belonging to one) closes this for every current and future such path in one place.
+   */
+  private leaveStaleSocketRoom(socketId: string, newRoomId: string): void {
+    const oldRoomId = this.playerToRoom.get(socketId);
+    if (!oldRoomId || oldRoomId === newRoomId) return;
+    this.io.sockets.sockets.get(socketId)?.leave(oldRoomId);
+  }
+
   async createRoom(player: Player): Promise<RoomState> {
     const roomId = crypto.randomUUID();
 
@@ -920,6 +948,7 @@ export class GameEngine {
     };
 
     this.rooms.set(room.id, roomState);
+    this.leaveStaleSocketRoom(player.socketId!, room.id);
     this.playerToRoom.set(player.socketId!, room.id);
     this.touchRoomActivity(room.id);
 
@@ -975,6 +1004,7 @@ export class GameEngine {
     };
 
     roomState.players.set(dbPlayer.id, syncedPlayer);
+    this.leaveStaleSocketRoom(player.socketId!, roomId);
     this.playerToRoom.set(player.socketId!, roomId);
     this.touchRoomActivity(roomId);
 
@@ -1325,9 +1355,16 @@ export class GameEngine {
       await this.syncPlayerToDB(playerId, { bankrupt: true, eliminatedRound: forfeitRound });
       player.bankrupt = true;
       player.eliminatedRound = forfeitRound;
+      // `reason: 'forfeit'` is what lets every OTHER still-in-the-game player's
+      // BankruptcyModal show "X chickened out" instead of the generic "gone bankrupt"
+      // copy a natural cash<0 elimination gets — the forfeiting player's own screen
+      // already distinguishes this correctly via the separate GAME_LEFT event (which
+      // upgrades their own selfElimination reason to 'forfeit'); this is the same
+      // distinction, just for the players watching it happen to someone else.
       this.io.to(roomId).emit(ServerEvents.PLAYER_BANKRUPT, {
         playerId: player.id,
         playerName: player.name,
+        reason: 'forfeit',
       });
 
       const stillActive = await this.prisma.player.findMany({ where: { roomId, bankrupt: false } });
@@ -1651,6 +1688,7 @@ export class GameEngine {
     if (!player) return { success: false };
 
     player.socketId = socketId;
+    this.leaveStaleSocketRoom(socketId, roomId);
     this.playerToRoom.set(socketId, roomId);
     this.disconnectedPlayers.delete(playerId);
     this.touchRoomActivity(roomId);

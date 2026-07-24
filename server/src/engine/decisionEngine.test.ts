@@ -288,7 +288,7 @@ describe('DecisionEngine', () => {
     describe('permanent-effect redeploy lock', () => {
       // makeDecisionDef's default impacts (processingLevel with a non-zero 'default'
       // schedule value) is itself a permanent-effect decision — see hasPermanentEffect.
-      it('should block redeploying a permanent-effect decision whose instance is still delivering its effect (no statute passed — never expires)', () => {
+      it('should block redeploying a permanent-effect decision whose instance is still delivering its effect (no cooldown passed — never expires)', () => {
         const def = makeDecisionDef({ decision: 'Permanent Boost' });
         engine.setDefinitions([def]);
         const deployed: DeployedDecision[] = [
@@ -311,25 +311,43 @@ describe('DecisionEngine', () => {
         expect(result.allowed).toBe(true);
       });
 
-      it('should block redeploying while the matured instance is younger than the statute of limitations', () => {
+      it('should block redeploying while the matured instance is younger than permanentEffectCooldownYears', () => {
         const def = makeDecisionDef({ decision: 'Permanent Boost' });
         engine.setDefinitions([def]);
         const deployed: DeployedDecision[] = [
-          { id: 'd1', definition: def, deployedYear: 2020, elapsedYears: 9, isMatured: true, voidedByLawsuit: false },
+          { id: 'd1', definition: def, deployedYear: 2020, elapsedYears: 2, isMatured: true, voidedByLawsuit: false },
         ];
 
-        const result = engine.canDeploy(deployed, 'Permanent Boost', 10);
+        const result = engine.canDeploy(deployed, 'Permanent Boost', 3);
         expect(result.allowed).toBe(false);
       });
 
-      it('should allow redeploying once the matured instance has aged past the statute of limitations (its effect has expired)', () => {
+      it('should allow redeploying once the matured instance has aged past permanentEffectCooldownYears (its effect has expired)', () => {
         const def = makeDecisionDef({ decision: 'Permanent Boost' });
         engine.setDefinitions([def]);
         const deployed: DeployedDecision[] = [
-          { id: 'd1', definition: def, deployedYear: 2020, elapsedYears: 10, isMatured: true, voidedByLawsuit: false },
+          { id: 'd1', definition: def, deployedYear: 2020, elapsedYears: 3, isMatured: true, voidedByLawsuit: false },
         ];
 
-        const result = engine.canDeploy(deployed, 'Permanent Boost', 10);
+        const result = engine.canDeploy(deployed, 'Permanent Boost', 3);
+        expect(result.allowed).toBe(true);
+      });
+
+      // Regression coverage for the fix itself: canDeploy used to reuse
+      // gameSettings.statuteOfLimitationsYears (default 10) for this exact gate, which —
+      // given typical games run ~12-15 rounds — made a permanent-effect decision an
+      // effective one-time-per-game pick. canDeploy no longer even accepts a statute value
+      // at all, only this separate, normally much shorter cooldown — so an instance well
+      // within any real-world statute (elapsedYears=4, nowhere near 10) is still freely
+      // redeployable as long as it's past the (short) cooldown. See CLAUDE.md.
+      it('unlocks redeployment on a short cooldown, independent of how long the (unrelated) legal statute of limitations would be', () => {
+        const def = makeDecisionDef({ decision: 'Permanent Boost' });
+        engine.setDefinitions([def]);
+        const deployed: DeployedDecision[] = [
+          { id: 'd1', definition: def, deployedYear: 2020, elapsedYears: 4, isMatured: true, voidedByLawsuit: false },
+        ];
+
+        const result = engine.canDeploy(deployed, 'Permanent Boost', 3);
         expect(result.allowed).toBe(true);
       });
 
@@ -426,7 +444,7 @@ describe('DecisionEngine', () => {
         },
       ],
     });
-    const attackerVars = { scrutiny: 30, legalExposureRatio: 0 };
+    const attackerVars = makeVars({ scrutiny: 30, legalExposureRatio: 0 });
 
     it('should return a non-zero probability by default', () => {
       const best = pickBestGround(def, 2, attackerVars, makeAdmin(), DEFAULT_FORMULAS);
@@ -448,6 +466,32 @@ describe('DecisionEngine', () => {
       const best = pickBestGround(def, 2, attackerVars, makeAdmin(), DEFAULT_FORMULAS, Infinity, false, false);
       expect(best?.name).toBe('Environmental Violation');
       expect(best?.probability).toBe(0);
+    });
+
+    // Regression coverage for the "show Stakes alongside Estimated success" feature —
+    // pickBestGround's stakes estimate must match LegalEngine.fileLawsuit's real stakes
+    // calc exactly, since the whole point is that what a player sees before filing is
+    // what the real case will actually carry.
+    it('should compute stakes as the absolute schedule value for an absolute-type ground', () => {
+      const best = pickBestGround(def, 2, attackerVars, makeAdmin(), DEFAULT_FORMULAS);
+      expect(best?.stakes).toBe(22050);
+    });
+
+    it('should compute stakes by scaling a relative-type ground against the defendant\'s own current field value', () => {
+      const relativeDef = makeDecisionDef({
+        decision: 'Hype Initial Coin Offering',
+        legalRisks: [
+          {
+            name: 'Unfair Competition',
+            description: 'Sue for fraudulent capital procurement',
+            probability: { default: 0.2 },
+            impact: { type: 'relative', target: 'equity', schedule: { default: -0.45 } },
+          },
+        ],
+      });
+      const vars = makeVars({ scrutiny: 30, legalExposureRatio: 0, equity: 100000 });
+      const best = pickBestGround(relativeDef, 2, vars, makeAdmin(), DEFAULT_FORMULAS);
+      expect(best?.stakes).toBe(45000); // abs(100000 * -0.45)
     });
   });
 

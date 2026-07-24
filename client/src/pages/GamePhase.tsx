@@ -18,7 +18,7 @@ import {
   IconClock, IconFileText,
   IconTrendingUp, IconTrendingDown, IconMinus, IconSearch, IconGavel,
   IconLock, IconCheck, IconSwords, IconChevronDown,
-  IconShield, IconDoorExit,
+  IconShield, IconDoorExit, IconX,
 } from '@tabler/icons-react';
 
 // ============================================================
@@ -67,6 +67,36 @@ function semaphoreLevel(p: number, greenMax = 0.15, yellowMax = 0.4): 'green' | 
   if (p < greenMax) return 'green';
   if (p < yellowMax) return 'yellow';
   return 'red';
+}
+
+/**
+ * The two headline "chance of winning" figures shown anywhere in this file — the
+ * pre-filing Dig Deeper "Estimated success" hint and a filed case's own odds chip — are
+ * both snapshots that can go stale the moment more cases pile up against the same
+ * defendant: `legalExposureRatio` snowballs with every open case (including, once
+ * filed, the very case being estimated), so the real trial-time number is frequently
+ * HIGHER than whatever was estimated before/shortly after filing, not just noisy in
+ * either direction. Showing an exact "23%" invites false confidence in a number that's
+ * already drifting the moment it's shown — a fixed 5-band verbal scale (independent of
+ * the admin-configurable semaphore color thresholds above, which still drive the
+ * chip's dot color) communicates "this is a rough, dated read" more honestly than false
+ * precision would.
+ *
+ * Deliberately NOT applied to `RiskBreakdownView` (opened by clicking the chip) —
+ * every number in there, including its own final "Adjusted probability" total, is
+ * recomputed live from the viewer's actual CURRENT variables every time it's opened,
+ * not a frozen dig-time snapshot, so the staleness problem this exists for doesn't
+ * apply to it. It's also an intentional "show me the real math" breakdown (base
+ * probability + a scrutiny term + a legal-exposure term = the total) — converting only
+ * the final row to a word while the components above it stay numeric percentages would
+ * read as inconsistent, and "Moderate = 18% + 6% + 23%" doesn't mean anything anyway.
+ */
+function likelihoodLabel(p: number): string {
+  if (p >= 0.8) return 'Highly Likely';
+  if (p >= 0.6) return 'Likely';
+  if (p >= 0.4) return 'Moderate';
+  if (p >= 0.2) return 'Unlikely';
+  return 'Highly Unlikely';
 }
 
 /** How a KPI moved since last turn. `undefined` means "no prior turn to compare" (round 1). */
@@ -516,6 +546,14 @@ export default function GamePhase() {
   const [riskInfoCase, setRiskInfoCase] = useState<LegalCaseData | null>(null);
   const [loading, setLoading] = useState(true);
   const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
+  // Incoming-attack hints a player has explicitly dismissed ("not interested in this
+  // one") — keyed by the attacking decision instance's stable `attackId`, so a dismissal
+  // sticks for as long as that exact instance keeps showing up in `incomingAttacks`
+  // (matures, expires, or gets sued over — see `isAttackAlreadySuedOver` above — and it's
+  // gone from the list on its own regardless). Purely a local view preference, same
+  // "ephemeral, resets on reload" convention as `pending`/`newsItems` — nothing server-
+  // side needs to know a player chose to stop looking at a given hint.
+  const [dismissedAttackIds, setDismissedAttackIds] = useState<Set<string>>(new Set());
   // News feed (sued / lawsuit verdict / settlement / turn change) — see NewsItem's doc
   // comment. Never auto-pops a modal; accumulates here and the player clicks a row to
   // open its info window (newsModalItem below), for the sake of not interrupting play.
@@ -810,6 +848,8 @@ export default function GamePhase() {
                   }}
                   pendingLawsuits={pending.lawsuits}
                   myLegalCases={myLegalCases}
+                  dismissedAttackIds={dismissedAttackIds}
+                  onDismiss={(attackId) => setDismissedAttackIds((prev) => new Set(prev).add(attackId))}
                 />
                 <Button variant="filled" color="red" onClick={() => setSueModalOpen(true)} style={{ ...boldStyle }}>
                   SUE THEIR ASSES (${(gameSettings?.lawsuitFilingCost ?? 0).toLocaleString()})
@@ -1636,7 +1676,7 @@ function getDeployability(
   def: DecisionDefinition,
   activeDecisions: PlayerTurnResult['activeDecisions'],
   allDecisions: DecisionDefinition[],
-  statuteOfLimitationsYears = Infinity,
+  permanentEffectCooldownYears = Infinity,
 ): { blocked: boolean; reason?: string } {
   const existing = activeDecisions.filter((d) => d.decisionName === def.decision);
   if (existing.length > 0 && !existing[existing.length - 1].isMatured) {
@@ -1644,12 +1684,13 @@ function getDeployability(
     return { blocked: true, reason: `Still maturing — ${Math.max(0, last.maturityYears - last.elapsedYears)} turn(s) left` };
   }
 
-  // A decision with a permanent effect blocks redeploying itself for as long as an
-  // instance is still actively delivering that effect — that window ends the same way an
-  // instance stops being suable (gameSettings.statuteOfLimitationsYears), same as its
-  // effect stops being re-applied server-side. A voided-by-lawsuit instance never counts,
-  // since it never got to keep its effect at all.
-  if (hasPermanentEffect(def) && existing.some((d) => d.isMatured && !d.voidedByLawsuit && d.elapsedYears < statuteOfLimitationsYears)) {
+  // A decision with a permanent effect blocks redeploying itself for
+  // gameSettings.permanentEffectCooldownYears turns after an instance matures — a
+  // deliberately separate, normally much shorter clock from statuteOfLimitationsYears
+  // (which governs legal liability, not redeployment — see CLAUDE.md and the server-side
+  // canDeploy this mirrors). A voided-by-lawsuit instance never counts, since it never got
+  // to keep its effect at all.
+  if (hasPermanentEffect(def) && existing.some((d) => d.isMatured && !d.voidedByLawsuit && d.elapsedYears < permanentEffectCooldownYears)) {
     return { blocked: true, reason: 'Still delivering its permanent effect — cannot be redeployed yet' };
   }
 
@@ -1890,7 +1931,7 @@ function DecisionDeckView({ decisions, gameSettings, myData, competitors, pendin
             const atLimit = gameSettings
               ? pending[bucket].length >= (bucket === 'strategic' ? gameSettings.maxStrategicDecisionsPerTurn : gameSettings.maxOperationalDecisionsPerTurn)
               : false;
-            const deployability = getDeployability(def, myData.activeDecisions, decisions, gameSettings?.statuteOfLimitationsYears);
+            const deployability = getDeployability(def, myData.activeDecisions, decisions, gameSettings?.permanentEffectCooldownYears);
             return (
               <DecisionCard
                 key={def.decision}
@@ -2141,7 +2182,7 @@ function CaseCard({ caseData, myPlayerId, playerNames, onRiskInfo, negotiationPe
         {knowsOdds && sem && (
           <Box style={gpStyles.semaphoreChip(sem)} onClick={() => onRiskInfo(caseData)}>
             <Box h={8} w={8} style={{ background: semColors[sem].bg, borderRadius: '50%' }} />
-            <Text style={{ fontWeight: 900 }}>{Math.round(displayProb * 100)}%</Text>
+            <Text style={{ fontWeight: 900 }}>{likelihoodLabel(displayProb)}</Text>
           </Box>
         )}
         {!knowsOdds && (
@@ -2466,26 +2507,31 @@ interface IncomingAttackHintsProps {
   onSueNow: (targetId: string, decisionName: string, groundName: string) => void;
   pendingLawsuits: SubmittedDecisions['lawsuits'];
   myLegalCases: LegalCaseData[];
+  /** attackId set of hints this player has explicitly dismissed — see the `useState` doc
+   * comment at its call site in `GamePhase` for why this lives there, not here. */
+  dismissedAttackIds: Set<string>;
+  onDismiss: (attackId: string) => void;
 }
 
-function IncomingAttackHints({ attacks, cash, digDeeperCost, socket, onSueNow, pendingLawsuits, myLegalCases }: IncomingAttackHintsProps) {
-  const visibleAttacks = attacks.filter((a) => !isAttackAlreadySuedOver(a, pendingLawsuits, myLegalCases));
+function IncomingAttackHints({ attacks, cash, digDeeperCost, socket, onSueNow, pendingLawsuits, myLegalCases, dismissedAttackIds, onDismiss }: IncomingAttackHintsProps) {
+  const visibleAttacks = attacks.filter((a) => !isAttackAlreadySuedOver(a, pendingLawsuits, myLegalCases) && !dismissedAttackIds.has(a.attackId));
   if (visibleAttacks.length === 0) return null;
   return (
     <Stack gap={6}>
       {visibleAttacks.map((attack) => (
-        <AttackHintCard key={attack.attackId} attack={attack} cash={cash} digDeeperCost={digDeeperCost} socket={socket} onSueNow={onSueNow} />
+        <AttackHintCard key={attack.attackId} attack={attack} cash={cash} digDeeperCost={digDeeperCost} socket={socket} onSueNow={onSueNow} onDismiss={onDismiss} />
       ))}
     </Stack>
   );
 }
 
-function AttackHintCard({ attack, cash, digDeeperCost, socket, onSueNow }: {
+function AttackHintCard({ attack, cash, digDeeperCost, socket, onSueNow, onDismiss }: {
   attack: IncomingAttackInfo;
   cash: number;
   digDeeperCost: number;
   socket: Socket | null;
   onSueNow: (targetId: string, decisionName: string, groundName: string) => void;
+  onDismiss: (attackId: string) => void;
 }) {
   const fullyInvestigated = attack.investigationLevel >= 3;
   const canAfford = cash >= digDeeperCost;
@@ -2504,8 +2550,17 @@ function AttackHintCard({ attack, cash, digDeeperCost, socket, onSueNow }: {
   const digButtonColor = attack.isIndirect ? 'blue' : 'orange';
 
   return (
-    <div style={{ padding: 10, border: `3px solid ${borderColor}`, borderRadius: 8, background }}>
-      <Text style={{ ...boldStyle, fontSize: '0.8rem' }}>{headline}</Text>
+    <div style={{ padding: 10, border: `3px solid ${borderColor}`, borderRadius: 8, background, position: 'relative' }}>
+      <Flex justify="space-between" align="flex-start" gap={6}>
+        <Text style={{ ...boldStyle, fontSize: '0.8rem' }}>{headline}</Text>
+        <Box
+          onClick={() => onDismiss(attack.attackId)}
+          title="Dismiss — not interested in this one"
+          style={{ cursor: 'pointer', flexShrink: 0, padding: 2, lineHeight: 0, color: 'var(--ink-text-soft)' }}
+        >
+          <IconX size={14} />
+        </Box>
+      </Flex>
 
       {/* Set server-side only at investigationLevel === 1 (attacker known, decision not
           yet revealed) — the same AI-narrated "annual report" flavor text the Full Filing
@@ -2531,7 +2586,10 @@ function AttackHintCard({ attack, cash, digDeeperCost, socket, onSueNow }: {
         <Box style={{ marginTop: 8, padding: 8, background: '#fff', border: `1px solid ${suggestedBoxBorder}`, borderRadius: 6 }}>
           <Text style={{ ...boldStyle, fontSize: '0.75rem' }}>Suggested: {attack.suggestedGroundName}</Text>
           <Text size="xs" c="dimmed" style={{ lineHeight: 1.4 }}>{attack.suggestedGroundDescription}</Text>
-          <Text size="xs" style={{ marginTop: 4 }}>Estimated success: <strong>{Math.round((attack.successProbability ?? 0) * 100)}%</strong></Text>
+          <Flex justify="space-between" align="center" style={{ marginTop: 4 }}>
+            <Text size="xs">Estimated success: <strong>{likelihoodLabel(attack.successProbability ?? 0)}</strong></Text>
+            <Text size="xs">Stakes: <strong>{fmt(attack.suggestedGroundStakes ?? 0)}</strong></Text>
+          </Flex>
           <Button
             size="xs"
             color="red"

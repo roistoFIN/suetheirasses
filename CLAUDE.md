@@ -229,7 +229,33 @@ same as before; this is an accepted, narrower approximation than the real-case c
 a regression, since it only ever covers the gap within the single turn a lawsuit is
 queued but not yet resolved.
 
-`RoomState.room` (`Room`, the shared type) carries its own embedded `players: Player[]`
+### A player can dismiss an incoming-attack hint they're not interested in — a third, purely client-side filter alongside "already sued over"
+
+Requested directly: nothing let a player hide a "[Player] did something to you"/"...did
+something that indirectly affects you" hint they'd decided not to act on — it stayed
+pinned in the Open Lawsuits box for as long as the underlying decision instance remained
+active (which, for a permanent-effect decision, can be most of a game). `GamePhase`
+(the top-level component) now holds `dismissedAttackIds: Set<string>` — a plain `useState`,
+same "ephemeral, resets on reload" convention as `pending`/`newsItems` elsewhere in this
+file, since a "stop showing me this" preference has no reason to be server-authoritative
+or to survive a refresh. `AttackHintCard` gained a small "✕" (`IconX`) in its header row,
+calling a threaded-down `onDismiss(attack.attackId)` that adds to this set;
+`IncomingAttackHints` filters `dismissedAttackIds.has(a.attackId)` alongside its existing
+`isAttackAlreadySuedOver` check (see above) before rendering — a third way a hint can stop
+showing, alongside "sued over" and "matured/expired/voided out of `incomingAttacks`
+entirely" (the server-side list already excludes those on its own).
+
+Keyed by `attackId` (the attacking decision instance's stable id), the exact same id
+`isAttackAlreadySuedOver` already matches by — a dismissal sticks for as long as that
+specific instance keeps reappearing in `incomingAttacks` every turn, and stops mattering
+the moment the server stops sending it (matured out, expired past the statute, voided by a
+lawsuit) or a NEW instance of the same decision is redeployed later with a different id, at
+which point it's a fresh hint the player hasn't seen before and shows normally — dismissal
+is scoped to the one instance, not "this decision, forever," matching how sued-over
+already scopes by instance rather than by name for the identical reason (see above). No
+server round-trip, no persisted field: this is purely "which cards is this browser tab
+currently choosing not to render," the same category of local view state as which KPI
+breakdown panel is expanded or which filter chip is selected.
 array — but that array is only ever populated once, from the single founding player
 Prisma's `room.create` returns in `GameEngine.createRoom`. Nothing keeps it in sync
 afterward: `joinRoom`, kicks, `leaveRoom`, host reassignment all mutate the *separate*
@@ -283,6 +309,107 @@ Quick Play search happened to consider the very room that kicked them got a hard
 Quick Play has no business surfacing a room-specific rejection reason at all; it means
 "any room, or a new one," so the loop's catch block should stay a blanket `continue`
 regardless of what future reasons `joinRoom` might grow to throw for.
+
+### A socket that starts a second game without reloading kept receiving its first game's broadcasts — a real, reported, reproduced bug
+
+Reported directly by a user: playing two sequential games in one browser session (same
+player, two different opponents) showed the *second* game's Game Over screen with
+information from the *first* game. Reproduced with a live 3-player Playwright scenario
+before touching any code (not assumed from reading alone): `PlayerA` forfeits out of a
+3-player room1 (room1 keeps going for the other two), returns to the landing page via the
+"lost" takeover's **Leave** button (no page reload — same socket connection the whole
+time), creates a brand-new room2, and starts a fresh game against `OpponentC`. The instant
+room1 later concludes on its own (its remaining two players finish among themselves),
+`PlayerA`'s room2 screen — mid-game, nothing to do with room1 — suddenly showed
+`"Game Over! OpponentB wins!"` (room1's actual winner) and a
+`"OpponentD has gone bankrupt"` info-window modal (a room1-only player who forfeited
+there), stomped directly over the correct, still-in-progress room2 UI.
+
+**Root cause: a socket only ever gets added to Socket.IO's per-room broadcast channel
+(`socket.join(roomId)`), never removed from an old one on every path that can leave a
+player's socket connected but no longer meaningfully "in" that room.** `ROOM_LEAVE` (the
+WAITING-lobby "Leave Room" button) is the *only* handler that ever calls
+`socket.leave(roomId)`. `GAME_LEAVE` (the in-game "Leave Game" forfeit button) does not —
+deliberately, since a forfeited/bankrupted player can choose to keep *spectating* that
+exact room (see the game-timeline feature's live mode), so leaving the channel the instant
+they forfeit would break that on-purpose feature. But nothing ever left it *later* either,
+even once that same socket moved on to a completely different room. `GameEngine`'s own
+`playerToRoom` bookkeeping map (socketId → current room id) gets correctly overwritten the
+moment that socket creates/joins a new room — so every *outbound* action from that socket
+(submitting decisions, filing lawsuits, `game:getGameTimeline`, etc.) is correctly scoped
+to the new room — but the *inbound* Socket.IO room membership from the old room was never
+torn down, so `io.to(oldRoomId).emit(...)` broadcasts (`turn:resolved`, `phase:changed`,
+`player:bankrupt`, `game:over`) kept reaching this socket indefinitely, on top of whatever
+the new room's own broadcasts were also sending it. Every client-side handler for these
+events (`setGameOver`, `enqueueBankruptcyEvent`, `updatePhase`, `handleTurnResolved`)
+applies its payload unconditionally, with no concept of "is this event even about the room
+I'm currently looking at" — so the old room's stale broadcast silently won whichever race
+it happened to land in.
+
+**Fixed by guarding at the point a socket newly attaches to a room, not by chasing every
+individual path that might fail to detach it.** `GameEngine.leaveStaleSocketRoom(socketId,
+newRoomId)` reads the *current* `playerToRoom` mapping for that socket before it's
+overwritten, and calls `.leave(oldRoomId)` on the actual `Socket` instance (looked up via
+`this.io.sockets.sockets.get(socketId)`) if there was a different one. Called from all
+three places that ever (re)point `playerToRoom` at a room — `createRoom`, `joinRoom`,
+`rejoinRoom` — right before the `.set()` call, so it always sees the outgoing value. This
+is deliberately the general fix, not a targeted "also call `socket.leave` in the
+`GAME_LEAVE` handler" patch: it closes the gap for forfeit *and* for any other current or
+future path that might leave a socket's room membership stale without anyone having
+noticed, since it doesn't matter *why* the old membership never got cleaned up — only that
+a socket must never belong to more than the one room `playerToRoom` currently says it's in.
+The common case (a genuinely fresh socket, e.g. after an actual page reload) is a no-op —
+`playerToRoom.get(socketId)` has nothing to return yet.
+
+`gameEngine.test.ts`'s `createMockIo()` gained a `sockets: { sockets: Map }` (empty by
+default — every existing test's socket ids have no registered entry, so the optional-
+chained `?.leave(...)` this guard performs is a harmless no-op for all of them) so tests
+that *do* care can register a fake socket with a `leave` spy directly into that map. Three
+regression tests — one each in `createRoom`, `joinRoom`, and `rejoinRoom`'s describe
+blocks — register such a socket, attach it to a first room, then (re)attach the same
+socket to a second, different room, and assert `.leave(firstRoomId)` was actually called
+and `getPlayerRoom` now reports the second room. Extend those, not just the happy path, if
+you touch `playerToRoom`/`leaveStaleSocketRoom` again.
+
+### A forfeit's `player:bankrupt` broadcast carries `reason: 'forfeit'` — everyone else gets their own "chickened out" notice, not the generic bankruptcy one
+
+Raised directly by the user: when a player forfeits (`game:leave`), every other still-
+in-the-game player used to see the exact same `BankruptcyModal` copy/art ("X HAS GONE
+BANKRUPT", `lost.png`) a natural cash<0 elimination gets — voluntarily quitting and
+actually running out of money read identically to everyone watching it happen. This was
+never a problem for the forfeiting player's *own* screen — `App.tsx`'s `LostOverlay`
+already correctly shows "YOU FORFEITED" for them, driven by the separate `game:left`
+event (see *Leave Game (Voluntary Forfeit)* in README) — the gap was specifically in what
+everyone *else* saw, since `GameEngine.forfeitGame`'s `player:bankrupt` broadcast carried
+no `reason` field at all (unlike the natural-elimination path, which always sends
+`reason: 'bankruptcy' | 'merger'` from `GameLoop`'s `BankruptedPlayer.reason`), so it fell
+through to the same "gone bankrupt" branch every other reason-less case already did.
+
+Fixed by having `forfeitGame`'s broadcast explicitly send `reason: 'forfeit'` — a third
+value alongside the pre-existing `'bankruptcy'`/`'merger'`, widened through every type that
+carries this field client-side (`socketStore.ts`'s `PLAYER_BANKRUPT` handler,
+`gameStore.ts`'s `bankruptcyEvents`/`enqueueBankruptcyEvent`, `App.tsx`'s
+`BankruptcyModal` props). `BankruptcyModal` gained a third branch alongside its existing
+merger/bankruptcy one: title `🐔 PLAYER CHICKENED OUT`, `chickened-out.png` (a new asset,
+moved into `client/public/images/` alongside `lost.png`/`acquired.png` and renamed to this
+codebase's kebab-case convention — it arrived at the project root as
+`SueTheirAsses_chickenedOut.png`), and "X CHICKENED OUT" / "They forfeited the game rather
+than see it through — the rest of you carry on without them." copy. `GameLoop`'s own
+`BankruptedPlayer.reason` type (`'bankruptcy' | 'merger'`) was deliberately **not** widened
+to include `'forfeit'` — a forfeit never goes through `GameLoop`'s bankruptcy waterfall at
+all (`forfeitGame` is one of the four out-of-band exceptions to "everything happens in
+resolveTurn," see that section above), so `'forfeit'` could never actually appear there;
+the two `reason` unions describe genuinely different, non-overlapping code paths that just
+happen to share a client-side rendering component.
+
+`gameEngine.test.ts`'s `forfeitGame — ready interaction` describe block and
+`gameStore.test.ts`'s `bankruptcyEvents queue` describe block each gained a regression
+test for this (the broadcast payload, and the queue round-tripping the new reason value
+unchanged) — extend those, not just the happy path, if you touch this again. Verified live
+end-to-end via a real 2-player Playwright run (not just unit tests): the surviving
+player's screen shows the "🐔 PLAYER CHICKENED OUT" modal with `chickened-out.png` and
+"OPPONENTB CHICKENED OUT," overlaid on the Game Over screen exactly like the pre-existing
+bankruptcy modal already does for a natural elimination.
 
 ### `Matchmaking` never unmounts across a room ↔ landing transition — local component state must be reset explicitly, or it leaks into whatever's next
 
@@ -1152,6 +1279,49 @@ NOW route replaced an older, now-redundant intel source elsewhere in this file).
 `resolveGameTurn` describe block's blurb-persistence regression test (the blurb survives
 into a later turn's broadcast without a fresh dig) are the coverage — extend those, not
 just the happy path, if you touch this again.
+
+### The tier-3 Dig Deeper reveal shows estimated stakes alongside estimated odds — priced identically to a real filed case, on request
+
+`DecisionEngine.pickBestGround`'s `SuggestedGround` (the tier-3 "suggested ground +
+estimated win probability" reveal) used to surface only a probability — a player deciding
+whether to actually sue had no idea how much money was even on the line before committing to
+the filing fee, only what a real case's `CaseCard` shows *after* filing (`LegalCaseData.
+stakes`, always visible regardless of `knowsOdds` — see the STAKES box in `CaseCard`
+below). Added a `stakes` field to `SuggestedGround`, threaded through to
+`IncomingAttackInfo.suggestedGroundStakes` and rendered in the same row as "Estimated
+success" in `AttackHintCard`'s tier-3 box.
+
+**Priced by mirroring `LegalEngine.fileLawsuit`'s real stakes calc exactly, not
+independently re-derived** — same fixed `risk.impact.schedule['default'] ??
+risk.impact.schedule[1] ?? 0` read (not `getScheduleValue(schedule, elapsedYears)` —
+stakes deliberately isn't elapsed-year-sensitive, matching how the real case prices it),
+same relative-vs-absolute branch (`absolute` grounds use the schedule value directly;
+`relative` grounds — `target: 'equity'`/`'revenue'` in the real library — scale it against
+the defendant's own current value of that field, read generically off `PlayerVariables`,
+never hardcoded to a specific field name, same principle as `shareTransactionType`/
+`legalRiskConditions` elsewhere in this file). The whole point is that the number a player
+sees *before* filing matches what the real case will actually carry once filed — an
+independently-computed "estimate" that quietly used a different formula would be worse than
+no number at all. This is why `pickBestGround`'s `attackerVars` parameter had to widen from
+a narrow `Pick<PlayerVariables, 'scrutiny' | 'legalExposureRatio'>` to the full
+`PlayerVariables` — computing a relative ground's stakes needs generic index access into
+whichever field the ground actually targets, not just the two fields the probability
+formula happens to read. Both real call sites (`revealAttack`, and the plaintiff-side
+`plaintiffFullyInvestigated` check in `resolveTurn`'s Step 8) already pass the full
+`PlayerVariables` object they had on hand, so this was a pure widening, not a behavior
+change at either site.
+
+**Deliberately not an expected value.** `stakes` is "what's at stake if this lands," shown
+unmodified next to (not multiplied by) `successProbability` — a player weighing "is this
+worth $15,000 to file" needs both numbers separately, not one number that's already
+discounted by a probability they can also see right next to it.
+
+`decisionEngine.test.ts`'s `pickBestGround` describe block gained two regression tests (an
+absolute-type ground's stakes equal the raw schedule value; a relative-type ground's stakes
+scale correctly against a defendant fixture's current `equity`) and `gameLoop.test.ts`'s
+dig-3 test asserts `suggestedGroundStakes` comes through end-to-end via `GameLoop.digDeeper`
+— extend those, not just the happy path, if you touch `pickBestGround`'s stakes calc or add
+a relative-type ground against a field other than `equity`/`revenue` again.
 
 ### Client: no path-based routing for game phases — `/admin` is the one real URL
 
@@ -2200,6 +2370,11 @@ build step is needed to see changes during dev, only for production builds.
   confirm `roomState.room.players` is still stale at length 1 while the snapshot is
   correct at length 2) — that's the regression guard for the "host shown as a plain
   player" bug; its `promoteNewHostIfNeeded`/`leaveRoom` tests cover host reassignment.
+  Its `createRoom`/`joinRoom`/`rejoinRoom` describe blocks each have a regression test for
+  `leaveStaleSocketRoom` (a socket that (re)attaches to a second room actually leaves its
+  previous one's Socket.IO channel) — see *"A socket that starts a second game without
+  reloading kept receiving its first game's broadcasts"* above; extend those, not just the
+  happy path, if you touch `playerToRoom` again.
   Its `finalizePlayerRemoval` heartbeat-sweep describe block and its own
   `resolveGameTurn` describe block each have a regression test for the two-part fix to
   the grace-period/turn-resolution race documented above (a blocked-mid-flight
@@ -2718,6 +2893,60 @@ resulting boolean is then persisted into the case exactly like every other
 `LegalCaseData` field (both parties' `engineState.legalCases`) and never recomputed —
 permanent for the life of the case, immune to the attack info disappearing later.
 
+### A case's odds display as a 5-band verbal likelihood, not a raw percentage — the estimate is a snapshot that snowballs, so an exact number invites false confidence
+
+Raised directly by the user: the Dig Deeper tier-3 "Estimated success" figure sometimes
+reads noticeably *lower* than what the same case's real trial-time probability turns out
+to be. Confirmed as a real, expected property of the design, not a bug: `legalExposureRatio`
+(`calculateLegalExposureRatio`, `calcEngine.ts`) is recomputed every turn from whatever
+cases are *currently* open against a defendant — and the estimate (`pickBestGround`) is
+computed at Dig Deeper time, using whatever `legalExposureRatio` was as of the *last
+resolved turn*, before this specific lawsuit exists yet. Two things push the real,
+eventual trial-time probability up from there that the pre-filing estimate structurally
+can't see:
+
+1. **The case snowballs against its own defendant.** The moment it's actually filed, it
+   becomes one more open case counted into that same defendant's `legalExposureRatio` on
+   every subsequent turn (`gameLoop.ts`'s Step 7: `legalExposure = Σ (adjustedProbability
+   ?? baseProbability) × stakes` across all open cases) — which in turn raises
+   `adjustedProbability` for every open case against that defendant, including this one,
+   for as long as it stays open.
+2. **Other plaintiffs can pile on** in the turns between the dig and the eventual trial,
+   pushing the same shared ratio up further still.
+
+So the estimate isn't stale/wrong data — it's an inherently pre-filing snapshot of a number
+that keeps moving, almost always upward, once litigation against a target starts
+accumulating — structurally analogous to a real litigant not knowing how many *other*
+lawsuits will land on the same target before their own reaches trial.
+
+**Fix, by explicit product decision (offered two options; chose to apply the change to
+every headline "chance of winning" figure, not just this one hint):** both the Dig Deeper
+"Estimated success" line and a filed case's own odds chip (`CaseCard`'s semaphore chip)
+now show a fixed 5-band verbal label (`likelihoodLabel`, `GamePhase.tsx`) instead of an
+exact percentage — `0–20% → Highly Unlikely`, `20–40% → Unlikely`, `40–60% → Moderate`,
+`60–80% → Likely`, `80–100%+ → Highly Likely`. Deliberately a **separate, fixed** ladder
+from the existing `semaphoreLevel(p, greenMax, yellowMax)` — that function still drives
+the chip's dot *color* (green/yellow/red) and stays admin-configurable via
+`gameSettings.semaphoreGreenMax`/`semaphoreYellowMax`; `likelihoodLabel`'s 5 cutoffs are
+not currently wired to any config value, matching the exact bands specified when this was
+requested. Communicating "this is a rough, dated read" via a verbal band is a more honest
+representation of what the number actually is than a precise-looking `%` ever was — the
+underlying number hasn't gotten any less prone to drifting, only the display stopped
+overstating how exact it is.
+
+**Deliberately NOT applied to `RiskBreakdownView`** (opened by clicking the chip) — every
+number in there, including its own final "Adjusted probability" total, is recomputed live
+from the viewer's own actual *current* `PlayerVariables` every time the modal opens (not a
+frozen dig-time snapshot), so the staleness problem this exists for doesn't apply to it at
+all. It's also an intentional "show me the real math" breakdown (base probability + a
+scrutiny term + a legal-exposure term = the total) — converting only the bottom row to a
+word while the components feeding it stay numeric percentages would read as inconsistent,
+and "Moderate = 18% + 6% + 23%" doesn't mean anything regardless.
+
+`GamePhase.utils.test.ts`'s `likelihoodLabel` describe block covers all 5 bands and their
+boundaries (matching `semaphoreLevel`'s existing describe block's own boundary-testing
+style) — extend that, not just the happy path, if you touch the band cutoffs again.
+
 ### Winning a case voids the sued decision instance — matched by id, not by name, since a voided decision can be redeployed
 
 A further addition beyond spec (the original design has no concept of this at all): whenever the
@@ -2787,11 +3016,15 @@ reasons above; a decision like Bot Attack, whose only nonzero-`'default'` field 
 force `isMatured: true` on expiry too, covering the edge case where an admin sets
 `statuteOfLimitationsYears` shorter than a decision's own maturity schedule. Whatever the
 effect already contributed in earlier turns is untouched — this only stops *forthcoming*
-re-application, the identical framing `voidSuedDecisionInstance` uses. Both `canDeploy`
-(server) and `getDeployability` (client, `GamePhase.tsx`) check the same
-`elapsedYears < statuteOfLimitationsYears` condition to decide whether an instance still
-blocks redeployment, so the two can never disagree about when a decision becomes
-redeployable again. A decision instance that expires this way (as opposed to being voided by
+re-application, the identical framing `voidSuedDecisionInstance` uses.
+
+**Superseded by the next section**: `canDeploy`/`getDeployability` used to check this exact
+same `elapsedYears < statuteOfLimitationsYears` condition to decide whether an instance still
+blocks redeployment — they now check a separate, normally much shorter
+`permanentEffectCooldownYears` instead (see *"canDeploy's permanent-effect redeploy lock was
+decoupled from the statute of limitations"* below for why). This section's own natural-
+expiration mechanic (stopping re-application, forcing `isMatured`) is otherwise unchanged.
+A decision instance that expires this way (as opposed to being voided by
 a lost lawsuit) is *not* flagged `voidedByLawsuit` — the client tells the two apart purely by
 recomputing `hasPermanentEffect(def) && elapsedYears >= statuteOfLimitationsYears` itself
 (no new persisted field needed, since it's a pure function of data the client already has),
@@ -2804,6 +3037,69 @@ check in `advanceAndApply`/`collectTargetImpacts` is gated on `hasPermanentEffec
 `hasPermanentImpactMap` specifically so a legitimately long *finite* explicit schedule (e.g.
 an admin-authored decision with an explicit year-12 entry and no `'default'`) is never cut
 off early just for outliving the statute.
+
+### `canDeploy`'s permanent-effect redeploy lock was decoupled from the statute of limitations — matured decisions were effectively one-time-per-game
+
+Raised directly by the user asking "do matured decisions ever get back to being made again?
+They should" — confirmed by reading the code (not assumed) that non-permanent-effect
+decisions (the majority — instant-maturity Operational picks, one-shot Strategic ones)
+already redeployed freely the instant they matured, exactly as the previous section
+describes. The real gap was specifically **permanent-effect** decisions (New Factory,
+Vertical Integration, Raw Material Monopoly, Venture Capital Shadow Money, Patent Portfolio,
+Bot Attack, and anything else `hasPermanentEffect`/`hasPermanentImpactMap` flags): `canDeploy`
+gated their redeploy lock on `gameSettings.statuteOfLimitationsYears` itself (10 by
+default) — the exact same clock the previous section's natural-expiration mechanic uses.
+Given this session's own randomized-simulation findings put median game length around
+12-14 rounds, a 10-turn lock made these decisions an effective **one-time-per-game** pick in
+practice, with no way back in short of an opponent choosing to sue it into
+`voidedByLawsuit` — even though the game's own documented multi-instance stacking math
+(`installedCapacity = base * (1 + 0.4 + 0.4)` for two matured New Factorys, see the
+`advanceAndApply` compounding-fix section above) assumes redeploying the same permanent-
+effect decision more than once in a game is normal, intended play, not an edge case.
+
+Presented three options before touching anything (the tradeoffs are real, not obvious):
+reuse the same clock as always (status quo, the bug); shorten
+`statuteOfLimitationsYears` itself (simpler, but also shortens how long a decision stays
+legally suable — a bigger behavior change than "let me redeploy sooner"); or remove the
+lock entirely (simplest, but permits deliberately stacking a permanent effect the instant
+it matures, with zero cooldown at all). Confirmed by the user: add a **new, separate,
+admin-editable field**, `GameSettings.permanentEffectCooldownYears` (default 3), used
+*only* for this gate — `statuteOfLimitationsYears` (still 10 by default) keeps meaning
+exactly what it always has: how long a decision instance stays suable, and (per the
+previous section) how long its own/`target.*` effect keeps naturally re-applying before
+expiring. The two clocks now serve genuinely different questions ("how soon can I build
+another factory" vs. "how long am I legally exposed for this one") and can be tuned
+independently from `/admin`.
+
+The actual code change is a rename-in-place, not new logic: `DecisionEngine.canDeploy`'s
+third parameter (`statuteOfLimitationsYears = Infinity`) became
+`permanentEffectCooldownYears = Infinity`, used in the exact same
+`existing.some(d => d.isMatured && !d.voidedByLawsuit && d.elapsedYears < X)` gate it always
+had — only which config value `X` is now matters. `GameLoop.processNewDecisions`'s one
+production call site passes `this.config.gameSettings.permanentEffectCooldownYears` instead
+of the statute; the client mirror, `getDeployability` (`GamePhase.tsx`), got the identical
+parameter rename and its one call site (the Decision Deck) now passes
+`gameSettings?.permanentEffectCooldownYears`. The natural-expiration mechanic in the
+previous section (`advanceAndApply`/`collectTargetImpacts` stopping re-application, the
+**EXPIRED** badge) is completely untouched — it still runs on `statuteOfLimitationsYears`,
+unchanged; in practice the short cooldown will almost always free a decision for
+redeployment long before the (much longer) statute would ever naturally expire it, so the
+two mechanisms rarely interact in a single game, but they're independent by design, not by
+coincidence.
+
+`decisionEngine.test.ts`'s `canDeploy` "permanent-effect redeploy lock" describe block gained
+a dedicated regression test proving the decoupling directly (an instance well within any
+real-world statute — `elapsedYears=4`, nowhere near 10 — is still freely redeployable once
+past a short `permanentEffectCooldownYears=3`); `gameLoop.test.ts`'s equivalent describe
+block was split so the "effect stops applying at the statute" assertion (unaffected) and the
+"redeployment unlocks on the (short) cooldown, independent of the statute" assertion (the
+actual fix, exercised end-to-end through `resolveTurn`/`submitDecisions`) are two separate,
+clearly-named tests rather than one test conflating both. `GamePhase.utils.test.ts`'s
+`getDeployability` describe block — which previously had no permanent-effect coverage at all
+(its minimal test fixtures had no `impacts` field to check `hasPermanentEffect` against, a
+real pre-existing gap in that test's fidelity to the real function) — gained the missing
+gate plus the same cooldown/statute-independence coverage. Extend all three, not just the
+happy path, if you touch this mechanic again.
 
 ### React `setState` updater callbacks must be pure — StrictMode will call them twice in dev
 

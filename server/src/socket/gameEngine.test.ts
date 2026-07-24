@@ -19,6 +19,12 @@ const createMockIo = () => ({
   on: vi.fn(),
   to: vi.fn().mockReturnThis(),
   emit: vi.fn().mockReturnThis(),
+  // `leaveStaleSocketRoom` looks a socket up here to call `.leave(oldRoomId)` on it —
+  // empty by default (every existing test's `player.socketId` values have no
+  // corresponding entry, so `.get(...)` returns undefined and the optional-chained
+  // `?.leave(...)` is a harmless no-op); tests that care about the leave behavior
+  // itself register a fake socket into this map directly.
+  sockets: { sockets: new Map<string, { leave: ReturnType<typeof vi.fn> }>() },
 }) as unknown as Server;
 
 let playerCounter = 0;
@@ -384,6 +390,30 @@ describe('GameEngine', () => {
 
       expect(roomPlayer.isHost).toBe(true);
     });
+
+    // Regression coverage for a real, reproduced bug: a player who forfeits a game
+    // (game:leave) keeps their socket fully connected — they can choose to keep
+    // spectating that same room — but the server never called `socket.leave(roomId)`
+    // for it (unlike room:leave's WAITING-lobby departure, which already does). If that
+    // same socket went on to create/join a SECOND room without reloading the page, it
+    // stayed subscribed to BOTH rooms' broadcasts: the old room's later `game:over`/
+    // `player:bankrupt`/`phase:changed` events landed on it too, silently overwriting
+    // the second game's Game Over screen with the first game's stale winner/eliminated-
+    // player data — confirmed via a live 2-game Playwright repro before this fix. See
+    // CLAUDE.md.
+    it('leaves the previous room\'s Socket.IO channel when the same socket creates a second room (regression)', async () => {
+      const leaveSpy = vi.fn();
+      (mockIo as unknown as { sockets: { sockets: Map<string, { leave: typeof leaveSpy }> } })
+        .sockets.sockets.set('socket-1', { leave: leaveSpy });
+
+      const player = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const room1 = await engine.createRoom(player);
+      expect(leaveSpy).not.toHaveBeenCalled(); // nothing stale yet on the very first room
+
+      const room2 = await engine.createRoom({ ...player, id: '', roomId: '' });
+      expect(leaveSpy).toHaveBeenCalledWith(room1.room.id);
+      expect(engine.getPlayerRoom('socket-1')).toBe(room2.room.id);
+    });
   });
 
   describe('joinRoom', () => {
@@ -588,6 +618,25 @@ describe('GameEngine', () => {
           }),
         }),
       );
+    });
+
+    // Same regression as createRoom's — joining a second (different) room on a socket
+    // still mapped to an earlier one must leave that earlier room's Socket.IO channel.
+    it('leaves the previous room\'s Socket.IO channel when the same socket joins a second, different room (regression)', async () => {
+      const leaveSpy = vi.fn();
+      (mockIo as unknown as { sockets: { sockets: Map<string, { leave: typeof leaveSpy }> } })
+        .sockets.sockets.set('socket-2', { leave: leaveSpy });
+
+      const room1 = await engine.createRoom({ id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' });
+      const room2 = await engine.createRoom({ id: '', name: 'Carol', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-3' });
+
+      const bob = { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' };
+      await engine.joinRoom(room1.room.id, bob);
+      expect(leaveSpy).not.toHaveBeenCalled();
+
+      await engine.joinRoom(room2.room.id, { ...bob, id: '', name: 'Bob2', roomId: '' });
+      expect(leaveSpy).toHaveBeenCalledWith(room1.room.id);
+      expect(engine.getPlayerRoom('socket-2')).toBe(room2.room.id);
     });
   });
 
@@ -1036,6 +1085,26 @@ describe('GameEngine', () => {
       expect(result.gameOver!.winner.id).toBe(playerId);
       expect(result.gameDeck).toBeUndefined();
       expect(result.turnResolved).toBeUndefined();
+    });
+
+    // Defense-in-depth version of the same createRoom/joinRoom regression above — a
+    // socket already mapped to a different room (e.g. it never got the chance to leave
+    // one for some other reason) must leave that stale room before rejoinRoom points it
+    // at a new one.
+    it('leaves a different room\'s Socket.IO channel if the rejoining socket was still mapped to one (regression)', async () => {
+      const leaveSpy = vi.fn();
+      (mockIo as unknown as { sockets: { sockets: Map<string, { leave: typeof leaveSpy }> } })
+        .sockets.sockets.set('socket-2', { leave: leaveSpy });
+
+      const room1 = await engine.createRoom({ id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' });
+      const playerId = Array.from(room1.players.keys())[0];
+      const room2 = await engine.createRoom({ id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+      expect(engine.getPlayerRoom('socket-2')).toBe(room2.room.id);
+
+      await engine.rejoinRoom(room1.room.id, playerId, 'socket-2');
+
+      expect(leaveSpy).toHaveBeenCalledWith(room2.room.id);
+      expect(engine.getPlayerRoom('socket-2')).toBe(room1.room.id);
     });
   });
 
@@ -1718,6 +1787,34 @@ describe('GameEngine', () => {
         data: { bankrupt: true, eliminatedRound: 4 },
       });
       expect(roomState.players.get(aliceId)!.eliminatedRound).toBe(4);
+    });
+
+    // Regression: a forfeit used to broadcast `player:bankrupt` with no `reason` field at
+    // all, which every other still-in-the-game player's client folded into the generic
+    // "gone bankrupt" BankruptcyModal copy — indistinguishable from a natural cash<0
+    // elimination. `reason: 'forfeit'` is what lets those other players' modal instead
+    // read "X chickened out" with its own art. See CLAUDE.md.
+    it('broadcasts player:bankrupt with reason: \'forfeit\' for everyone else in the room', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Carol', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-3' });
+      const aliceId = Array.from(roomState.players.values()).find((p) => p.name === 'Alice')!.id;
+      const bobId = Array.from(roomState.players.values()).find((p) => p.name === 'Bob')!.id;
+      const carolId = Array.from(roomState.players.values()).find((p) => p.name === 'Carol')!.id;
+      roomState.room.status = RoomStatus.GAME_PHASE;
+
+      (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockImplementation(({ where }: any) =>
+        Promise.resolve(where?.roomId === roomState.room.id && where?.bankrupt === false ? [{ id: bobId }, { id: carolId }] : []),
+      );
+
+      await engine.forfeitGame(roomState.room.id, aliceId);
+
+      expect(mockIo.to).toHaveBeenCalledWith(roomState.room.id);
+      expect(mockIo.emit).toHaveBeenCalledWith(
+        ServerEvents.PLAYER_BANKRUPT,
+        expect.objectContaining({ playerId: aliceId, playerName: 'Alice', reason: 'forfeit' }),
+      );
     });
 
     it('should not signal immediate resolution while a remaining active player still isn\'t ready', async () => {

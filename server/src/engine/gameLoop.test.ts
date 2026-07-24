@@ -57,6 +57,7 @@ function makeConfig(overrides: Partial<GameConfig> = {}): GameConfig {
       negotiationPeriodTurns: 2,
       lawsuitFilingCost: 15000,
       statuteOfLimitationsYears: 10,
+      permanentEffectCooldownYears: 3,
       semaphoreGreenMax: 0.15,
       semaphoreYellowMax: 0.4,
     },
@@ -1249,7 +1250,7 @@ describe('GameLoop', () => {
   });
 
   describe('resolveTurn — a permanent effect naturally expires at the statute of limitations (regression)', () => {
-    it('stops applying New Factory\'s permanent installedCapacity effect once it ages past makeConfig\'s statuteOfLimitationsYears (10), and frees it for redeployment', () => {
+    it('stops applying New Factory\'s permanent installedCapacity effect once it ages past makeConfig\'s statuteOfLimitationsYears (10)', () => {
       const players = makePlayers([
         {
           id: 'player-1', name: 'Alice',
@@ -1270,29 +1271,39 @@ describe('GameLoop', () => {
       expect(nfInstance.elapsedYears).toBe(10);
       expect(nfInstance.isMatured).toBe(true);
       expect(nfInstance.voidedByLawsuit).toBe(false); // expired naturally, not sued over
-
-      // And it's now redeployable — canDeploy no longer blocks it.
-      const aliceUpdate = outcome.companyUpdates.find((u) => u.playerId === 'player-1')!;
-      gameLoop.submitDecisions('room-1', 'player-1', { strategic: [{ name: 'New Factory' }], operational: [], lawsuits: [] });
-      const players2 = makePlayers([
-        { id: 'player-1', name: 'Alice', variables: aliceUpdate.variables, engineState: aliceUpdate.engineState },
-        { id: 'player-2', name: 'Bob' },
-      ]);
-      const outcome2 = gameLoop.resolveTurn('room-1', 12, players2);
-      const alice2 = outcome2.result.players.find((p) => p.playerId === 'player-1')!;
-      expect(alice2.activeDecisions.filter((d) => d.decisionName === 'New Factory')).toHaveLength(2);
     });
+  });
 
-    it('still blocks redeployment while the instance is younger than the statute of limitations', () => {
+  describe('resolveTurn — permanentEffectCooldownYears gates redeployment independently of the (much longer) legal statute of limitations (regression)', () => {
+    // Confirms the actual fix requested for CLAUDE.md's "matured decisions never come
+    // back" gap: canDeploy used to reuse gameSettings.statuteOfLimitationsYears (10 in
+    // makeConfig) for its permanent-effect redeploy lock, which — given typical games run
+    // ~12-15 rounds — made a permanent-effect decision an effective one-time-per-game
+    // pick. It's now gated on the separate, shorter makeConfig().gameSettings.
+    // permanentEffectCooldownYears (3) instead, well before the statute (10) would ever
+    // be reached.
+    it('still blocks redeployment while the instance is younger than permanentEffectCooldownYears (3)', () => {
       const players = makePlayers([
-        { id: 'player-1', name: 'Alice', engineState: { activeDecisions: [{ id: 'nf-1', definitionName: 'New Factory', deployedYear: 1, elapsedYears: 8, isMatured: true }] } },
+        { id: 'player-1', name: 'Alice', engineState: { activeDecisions: [{ id: 'nf-1', definitionName: 'New Factory', deployedYear: 1, elapsedYears: 1, isMatured: true }] } },
         { id: 'player-2', name: 'Bob' },
       ]);
       gameLoop.submitDecisions('room-1', 'player-1', { strategic: [{ name: 'New Factory' }], operational: [], lawsuits: [] });
 
-      const outcome = gameLoop.resolveTurn('room-1', 10, players);
+      const outcome = gameLoop.resolveTurn('room-1', 2, players);
       const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
       expect(alice.activeDecisions.filter((d) => d.decisionName === 'New Factory')).toHaveLength(1);
+    });
+
+    it('allows redeployment once the instance ages past permanentEffectCooldownYears (3) — long before the statute of limitations (10) would free it', () => {
+      const players = makePlayers([
+        { id: 'player-1', name: 'Alice', engineState: { activeDecisions: [{ id: 'nf-1', definitionName: 'New Factory', deployedYear: 1, elapsedYears: 3, isMatured: true }] } },
+        { id: 'player-2', name: 'Bob' },
+      ]);
+      gameLoop.submitDecisions('room-1', 'player-1', { strategic: [{ name: 'New Factory' }], operational: [], lawsuits: [] });
+
+      const outcome = gameLoop.resolveTurn('room-1', 4, players);
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+      expect(alice.activeDecisions.filter((d) => d.decisionName === 'New Factory')).toHaveLength(2);
     });
   });
 
@@ -2051,7 +2062,7 @@ describe('GameLoop', () => {
       expect(outcome.attack.suggestedGroundName).toBeUndefined();
     });
 
-    it('dig 3 adds the suggested lawsuit ground and a success probability', () => {
+    it('dig 3 adds the suggested lawsuit ground, a success probability, and its estimated stakes', () => {
       const outcome = gameLoop.digDeeper('player-2', ATTACK_ID, makeAttackFixture({ victimInvestigations: { [ATTACK_ID]: 2 } }));
 
       expect(outcome.success).toBe(true);
@@ -2060,6 +2071,9 @@ describe('GameLoop', () => {
       expect(outcome.attack.suggestedGroundName).toBe('CFAA Digital Sabotage Lawsuit');
       expect(outcome.attack.successProbability).toBeGreaterThan(0);
       expect(outcome.attack.successProbability).toBeLessThanOrEqual(1);
+      // Same figure a real filed case's LegalCaseData.stakes would carry — see
+      // pickBestGround/fileLawsuit's shared stakes calc.
+      expect(outcome.attack.suggestedGroundStakes).toBeGreaterThan(0);
     });
 
     it('dig 3 still names a suggested ground but quotes 0% once the attack is past the statute of limitations (makeConfig: 10 years)', () => {

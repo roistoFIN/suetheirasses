@@ -397,6 +397,7 @@ const gameSettingsSchema = z.object({
   negotiationPeriodTurns: z.number(),
   lawsuitFilingCost: z.number(),
   statuteOfLimitationsYears: z.number(),
+  permanentEffectCooldownYears: z.number(),
   semaphoreGreenMax: z.number(),
   semaphoreYellowMax: z.number(),
 });

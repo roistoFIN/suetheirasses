@@ -86,25 +86,37 @@ const LostOverlay: React.FC<{ reason: 'bankrupt' | 'forfeit' | 'merged'; acquire
  * over the GameOver screen that phase change swaps in underneath, exactly like it did
  * before, just without blocking the view of whichever screen is actually current.
  */
-const BankruptcyModal: React.FC<{ playerName: string; reason?: 'bankruptcy' | 'merger'; acquirerName?: string; onDismiss: () => void }> = ({ playerName, reason, acquirerName, onDismiss }) => (
+const BankruptcyModal: React.FC<{ playerName: string; reason?: 'bankruptcy' | 'merger' | 'forfeit'; acquirerName?: string; onDismiss: () => void }> = ({ playerName, reason, acquirerName, onDismiss }) => (
   <Modal
     opened
     onClose={onDismiss}
     size="md"
     centered
-    title={<Text fw={700} fz="0.85rem" style={{ fontFamily: "'Courier Prime', monospace", letterSpacing: '0.03em' }}>💀 PLAYER ELIMINATED</Text>}
+    title={
+      <Text fw={700} fz="0.85rem" style={{ fontFamily: "'Courier Prime', monospace", letterSpacing: '0.03em' }}>
+        {reason === 'forfeit' ? '🐔 PLAYER CHICKENED OUT' : '💀 PLAYER ELIMINATED'}
+      </Text>
+    }
   >
     <Stack gap="md">
-      <Image src={reason === 'merger' ? '/images/acquired.png' : '/images/lost.png'} alt="Eliminated" radius="md" />
+      <Image
+        src={reason === 'merger' ? '/images/acquired.png' : reason === 'forfeit' ? '/images/chickened-out.png' : '/images/lost.png'}
+        alt="Eliminated"
+        radius="md"
+      />
       <Text ta="center" fw={700} style={{ color: 'var(--ink-blood)' }}>
         {reason === 'merger'
           ? `${playerName.toUpperCase()}'S COMPANY WAS ACQUIRED`
-          : `${playerName.toUpperCase()} HAS GONE BANKRUPT`}
+          : reason === 'forfeit'
+            ? `${playerName.toUpperCase()} CHICKENED OUT`
+            : `${playerName.toUpperCase()} HAS GONE BANKRUPT`}
       </Text>
       <Text ta="center" size="sm" style={{ color: 'var(--ink-text-soft)' }}>
         {reason === 'merger'
           ? `${acquirerName ?? 'A rival'} bought up more than half of their company's shares — they're out of the game.`
-          : "Their cash ran out and the bank came knocking — they're out of the game."}
+          : reason === 'forfeit'
+            ? 'They forfeited the game rather than see it through — the rest of you carry on without them.'
+            : "Their cash ran out and the bank came knocking — they're out of the game."}
       </Text>
       <Button fullWidth color="red" onClick={onDismiss}>
         Got it

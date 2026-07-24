@@ -82,6 +82,21 @@ export interface GameSettings {
    * schedule locks in, not legal liability) — a decision can be long
    * matured and still well within the limitations window, or vice versa. */
   statuteOfLimitationsYears: number;
+  /** Turns a permanent-effect decision's own matured instance blocks that same decision
+   * from being redeployed — deliberately a SEPARATE, shorter clock from
+   * `statuteOfLimitationsYears`, not a reuse of it. `DecisionEngine.canDeploy` used to gate
+   * redeployment on `statuteOfLimitationsYears` itself (10 by default), which — given
+   * typical games run ~12-15 rounds — made a permanent-effect decision (New Factory,
+   * Vertical Integration, Raw Material Monopoly, Venture Capital Shadow Money, Patent
+   * Portfolio, Bot Attack, etc.) effectively a one-time-per-game pick unless an opponent
+   * happened to sue it into `voidedByLawsuit`, even though the game's own stacking math
+   * (`installedCapacity = base * (1 + 0.4 + 0.4)` for two matured New Factorys) assumes
+   * redeploying the same permanent-effect decision more than once in a game is a normal,
+   * intended thing to do. `statuteOfLimitationsYears` keeps meaning exactly what it always
+   * has — how long a decision instance stays legally suable, and how long its `target.*`
+   * effect (an ongoing attack against a rival) keeps re-applying — this field governs only
+   * "how soon can I build another one," independent of legal exposure. See CLAUDE.md. */
+  permanentEffectCooldownYears: number;
   /** Lawsuit-odds coloring thresholds for `GamePhase.tsx`'s `semaphoreLevel` (green below
    * this, yellow below `semaphoreYellowMax`, red otherwise) — live here (not
    * `AdminVariables.legalProcess`) specifically because `GameSettings` is the one config
@@ -385,6 +400,11 @@ export interface IncomingAttackInfo {
   suggestedGroundDescription?: string;
   /** 0-1 estimate using the attacker's current scrutiny/legal exposure — the real probability is still recomputed at trial time. */
   successProbability?: number;
+  /** Estimated dollar amount at stake if this ground is sued over and won — priced the
+   * same way a real filed case's `LegalCaseData.stakes` is (see `DecisionEngine.
+   * pickBestGround`/`LegalEngine.fileLawsuit`), so it matches what the real case will
+   * actually carry once filed. Not an expected value — not discounted by `successProbability`. */
+  suggestedGroundStakes?: number;
 }
 
 /** One rival's active decision, narrated for their "annual report" — see `game:getAnnualReport`. */

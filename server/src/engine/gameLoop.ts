@@ -1938,6 +1938,7 @@ export class GameLoop {
         info.suggestedGroundName = best.name;
         info.suggestedGroundDescription = best.description;
         info.successProbability = best.probability;
+        info.suggestedGroundStakes = best.stakes;
       }
     }
     return info;
@@ -1970,7 +1971,7 @@ export class GameLoop {
         const ok = this.decisionEngine.canDeploy(
           ctx.engineState.activeDecisions,
           name,
-          this.config.gameSettings.statuteOfLimitationsYears,
+          this.config.gameSettings.permanentEffectCooldownYears,
         );
         if (!ok.allowed) continue;
         const inst = this.decisionEngine.deploy(ctx.playerId, def, year, targetId);

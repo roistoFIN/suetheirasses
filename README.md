@@ -1007,10 +1007,18 @@ Neither side sees a case's win probability for free — both start at a gray, un
 attack (investigation level 3) and suing over its exact suggested ground. The
 **defendant** earns it *after* the fact, by paying `gameSettings.digDeeperCost` on the case
 itself (`game:digDeeperCase`) — a single one-shot reveal, unlike the plaintiff's 3-tier
-route. Once earned, either side's card shows the same colored percentage chip (green/
-yellow/red via `semaphoreLevel`, using `adjustedProbability` if the case has one, else
-`baseProbability`), clickable to `RiskBreakdownView` for the full weighted-factor
-breakdown. The plaintiff's flag is decided once, permanently, at the moment the case is
+route. Once earned, either side's card shows the same colored chip (dot color still
+green/yellow/red via `semaphoreLevel`, using `adjustedProbability` if the case has one,
+else `baseProbability`) — but labeled with a 5-band verbal likelihood
+(`likelihoodLabel`: Highly Unlikely/Unlikely/Moderate/Likely/Highly Likely) rather than
+an exact percentage, since the underlying number is a snapshot that snowballs (every
+open case against the same defendant makes every other one somewhat more likely to
+succeed too — see *Legal Risk & Lawsuits* below), so a precise-looking `%` overstates
+how exact a read it really is. The chip is still clickable to `RiskBreakdownView` for the
+full weighted-factor breakdown, which keeps its exact percentages (base probability +
+scrutiny term + legal-exposure term = total) — that view is recomputed live from current
+data every time it's opened, not a stale snapshot, so the same false-precision concern
+doesn't apply there. The plaintiff's flag is decided once, permanently, at the moment the case is
 filed (not recomputed from the player's live attack list on every render), so it can't
 flicker back to "Unknown" later just because the underlying attacking decision matures out
 or its deployer goes bankrupt; the defendant's flag is likewise permanent once paid for.
@@ -1119,27 +1127,45 @@ verdict/settlement is actually decided — the trial-resolution loop (Step 8b/9)
 offer auto-settle branch (Step 8b), and the out-of-band `acceptOffer` action — never from
 `makeOffer`/`goToCourt`, which don't resolve anything themselves.
 
-**A decision with a permanent effect blocks redeploying itself only for as long as it's
-still actually delivering that effect — the same window as the statute of limitations.**
-`DecisionEngine.hasPermanentEffect(def)` flags a decision whenever any of its own
-(non-`target.*`, non-`competitor*`) impact fields carries a non-zero `'default'` schedule
-value — meaning that field's effect would otherwise re-apply every turn forever once the
-schedule's explicit years run out, not just a one-time bump. Rather than lock such a
-decision out of redeployment permanently, its permanent effect (and a permanent `target.*`
-effect, e.g. Bot Attack's ongoing `target.outrage`) **expires** once the instance has been
-active `gameSettings.statuteOfLimitationsYears` turns (10 by default, admin-editable, the
-same value that governs how long a decision stays suable) — `advanceAndApply`/
-`collectTargetImpacts` simply stop re-applying its schedule from that turn on, forcing it
-`isMatured: true` if it wasn't already, which is what frees it back up for redeployment
-(`canDeploy`'s existing "the previous instance must have matured" rule covers the rest).
-Without this, the ability to redeploy after a voided lawsuit would double as a way to keep
-re-rolling a decision that grants an indefinitely-repeating KPI boost until one attempt
-slips through unsued — tying the expiry to the same statute closes that loophole while still
-letting the effect run its natural course, rather than shutting it off arbitrarily early or
-letting it stack forever. A decision voided by a lost lawsuit is unaffected by this — it's
-already free to redeploy immediately, expiry or not (see above). Decisions without a
-permanent effect are unaffected too: they can still be redeployed as soon as they mature,
-exactly as before this feature.
+**A decision with a permanent effect blocks redeploying itself only for
+`gameSettings.permanentEffectCooldownYears` turns after it matures — a separate, normally
+much shorter clock from the statute of limitations.** `DecisionEngine.hasPermanentEffect(def)`
+flags a decision whenever any of its own (non-`target.*`, non-`competitor*`) impact fields
+carries a non-zero `'default'` schedule value — meaning that field's effect would otherwise
+re-apply every turn forever once the schedule's explicit years run out, not just a one-time
+bump. `canDeploy` blocks redeploying such a decision while a matured, non-voided instance is
+younger than `permanentEffectCooldownYears` (3 by default, admin-editable) — deliberately
+**not** the same value as `statuteOfLimitationsYears` (10 by default, which still governs
+only how long a decision stays suable and how long a `target.*` effect keeps re-applying,
+completely unchanged). Redeployability lifts as soon as the cooldown passes, independent of
+whether the effect has "naturally expired" per the statute below.
+
+This used to reuse `statuteOfLimitationsYears` itself for the redeploy lock too — given
+typical games run ~12-15 rounds, a 10-turn lock made every permanent-effect decision (New
+Factory, Vertical Integration, Raw Material Monopoly, Venture Capital Shadow Money, Patent
+Portfolio, Bot Attack, ...) an effective one-time-per-game pick unless an opponent happened
+to sue it into `voidedByLawsuit` first — even though the game's own documented stacking math
+(`installedCapacity = base * (1 + 0.4 + 0.4)` for two matured New Factorys) assumes
+redeploying the same permanent-effect decision more than once in a game is normal, intended
+play. `permanentEffectCooldownYears` fixes that: matured decisions genuinely come back into
+rotation during a normal game, on a cooldown tuned for "how often can I reinvest in this,"
+not "how long am I legally exposed."
+
+Separately, a permanent effect (and a permanent `target.*` effect, e.g. Bot Attack's ongoing
+`target.outrage`) still **naturally expires** once the instance has been active
+`gameSettings.statuteOfLimitationsYears` turns — `advanceAndApply`/`collectTargetImpacts`
+stop re-applying its schedule from that turn on, forcing `isMatured: true` if it wasn't
+already. This is unchanged by the above and exists for a different reason: without it, the
+ability to redeploy after a voided lawsuit would double as a way to keep re-rolling a
+decision that grants an indefinitely-repeating KPI boost until one attempt slips through
+unsued — tying the expiry to the statute closes that loophole while still letting the effect
+run its natural course. In practice `permanentEffectCooldownYears` (short) will almost always
+free a decision for redeployment well before `statuteOfLimitationsYears` (long) would ever
+naturally expire it — the two mechanisms just happen to share the same underlying "how old is
+this instance" clock, for two independent purposes. A decision voided by a lost lawsuit is
+unaffected by either — it's already free to redeploy immediately (see above). Decisions
+without a permanent effect are unaffected by both: they can still be redeployed as soon as
+they mature, exactly as before this feature.
 
 **Only one lawsuit can ever be filed against a specific decision instance — first come,
 first served.** The moment a genuine (non-wrong-guess, non-time-barred) case is filed
@@ -1184,16 +1210,33 @@ attack instance in `Company.engineState.investigations`:
    annual-report blurb"* for why this has to be computed in `GameEngine`, not `GameLoop`.
 2. **What** — the decision name, description, and a human-readable effect summary (e.g.
    *"-20% Capacity Utilization"*), via `decisionEngine.summarizeTargetImpacts`
-3. **Suggested lawsuit + estimated odds** — the strongest `legalRisks` ground against that
-   decision, picked by `decisionEngine.pickBestGround` using the *same* adjusted-probability
-   formula as real trial resolution evaluated against the attacker's current
-   scrutiny/legal exposure — an estimate; the real probability is still recomputed fresh at
-   trial time. A **SUE NOW** button at this tier pre-fills `SueModal` with the right target
-   and ground (still requires the player's own QUEUE LAWSUIT confirmation).
+3. **Suggested lawsuit + estimated odds + estimated stakes** — the strongest `legalRisks`
+   ground against that decision, picked by `decisionEngine.pickBestGround` using the *same*
+   adjusted-probability formula as real trial resolution evaluated against the attacker's
+   current scrutiny/legal exposure — an estimate, shown as a 5-band verbal likelihood
+   (Highly Unlikely/Unlikely/Moderate/Likely/Highly Likely) rather than an exact
+   percentage, since it's a pre-filing snapshot that typically only grows from here (every
+   case later opened against the same target raises everyone's odds against them, this
+   one included, once it exists) — the real probability is still recomputed fresh at trial
+   time. Shown alongside it: an estimated dollar **stakes** figure, priced
+   the exact same way a real filed case's `LegalCaseData.stakes` is (`LegalEngine.
+   fileLawsuit`'s own calc — absolute-type grounds use the schedule value directly,
+   relative-type grounds scale it against the attacker's own current field value), so the
+   number shown here before filing matches what the real case will actually carry once
+   filed — not an expected value, not discounted by the probability next to it. A
+   **SUE NOW** button at this tier pre-fills `SueModal` with the right target and ground
+   (still requires the player's own QUEUE LAWSUIT confirmation).
 
 Once fully investigated (tier 3), the button disables — no further charge. The button is
 also disabled client-side whenever cash is below `digDeeperCost`; the server enforces the
 same rule independently, so it's never possible to Dig Deeper into bankruptcy.
+
+Each hint card has its own small **✕** to dismiss it — a purely local "I'm not interested
+in this one" preference, not something the server tracks. A dismissed hint stays hidden for
+as long as that same attacking decision instance keeps showing up (it reappears if you
+reload the page, and stops mattering entirely once the instance itself matures out/expires/
+gets voided by a lawsuit, or if a fresh instance of the same decision is redeployed later —
+that's a new hint you haven't dismissed).
 
 **Indirect effects get the same hint, broadcast to everyone instead of one target.** Most
 of the decision library has no `target.*` impacts at all — no single player it's aimed
@@ -1303,10 +1346,9 @@ timed out, both still land normally, no refresh required.
 
 A red **Leave Game** button in the GAME_PHASE header (confirmation modal first — it's
 irreversible) emits `game:leave`. `GameEngine.forfeitGame` marks the requesting player
-bankrupt immediately — same DB write and `player:bankrupt` broadcast shape as a natural
-cash<0 elimination — and, if that leaves at most one active player, ends the game exactly
-like a normal turn's post-resolution win check would. The game continues uninterrupted for
-everyone else.
+bankrupt immediately — same DB write shape as a natural cash<0 elimination — and, if that
+leaves at most one active player, ends the game exactly like a normal turn's post-resolution
+win check would. The game continues uninterrupted for everyone else.
 
 The forfeiting player doesn't just get redirected — `App.tsx` shows a full-screen "lost"
 takeover (`lost.png`, "YOU FORFEITED") ahead of whatever phase the room is actually in, so
@@ -1317,6 +1359,34 @@ acknowledgement step, not an auto-redirect. The identical takeover (`lost.png`, 
 GONE BANKRUPT") also covers natural cash<0 elimination, which previously had no client-side
 handling at all — both paths set the same `gameStore.selfElimination` flag from
 `player:bankrupt`/`game:left`, just with a different `reason`.
+
+**Everyone else in the room gets their own distinct notice — "X CHICKENED OUT"
+(`chickened-out.png`), not the generic "gone bankrupt" one a natural elimination gets.**
+`forfeitGame`'s `player:bankrupt` broadcast carries `reason: 'forfeit'` specifically for
+this — every OTHER still-in-the-game player's `BankruptcyModal` (the same info-window
+overlay a natural bankruptcy or a majority-ownership merger already shows, see *Game Over
+Screen* elsewhere in this doc) branches on that reason the same way it already branches on
+`'merger'`, so a forfeit reads as a voluntary quit rather than a financial collapse. This
+was previously indistinguishable — `forfeitGame`'s broadcast carried no `reason` field at
+all, so it fell through to the same "gone bankrupt" copy/art a real elimination gets. The
+forfeiting player's own screen was never affected by this gap — their own `game:left` event
+already correctly showed "YOU FORFEITED" — the gap was specifically in what everyone
+*else* saw about them.
+
+**A forfeited player's socket stays fully connected — including still subscribed to that
+room's Socket.IO broadcast channel, on purpose (see the game-timeline "keep spectating"
+feature) — so leaving this room for a second one on the same connection, without a page
+reload, used to leak the first room's future broadcasts into whatever the second room's
+screen was showing.** A real, reported, and reproduced bug: play a game to completion,
+start a second one against a different opponent on the same tab (no reload), and once the
+*first* room's game happened to conclude on its own, its `game:over`/`player:bankrupt`
+broadcasts landed on this same socket too — silently overwriting the second game's own,
+still-in-progress Game Over/GamePhase screen with the first game's stale winner/eliminated-
+player data. Fixed by `GameEngine.leaveStaleSocketRoom`, called from every place a socket
+gets (re)pointed at a room (`createRoom`/`joinRoom`/`rejoinRoom`): it leaves whatever room
+that socket was previously mapped to before attaching it to the new one. See CLAUDE.md's
+*"A socket that starts a second game without reloading kept receiving its first game's
+broadcasts"* for the full root-cause writeup.
 
 ### AI-Narrated Annual Reports
 

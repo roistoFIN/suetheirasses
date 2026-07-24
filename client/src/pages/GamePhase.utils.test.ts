@@ -29,6 +29,16 @@ function semaphoreLevel(p: number): 'green' | 'yellow' | 'red' {
   return 'red';
 }
 
+/** Verbal likelihood band for a headline "chance of winning" figure — see GamePhase.tsx's
+ * own copy for why this replaces an exact percentage (a stale, drifting estimate). */
+function likelihoodLabel(p: number): string {
+  if (p >= 0.8) return 'Highly Likely';
+  if (p >= 0.6) return 'Likely';
+  if (p >= 0.4) return 'Moderate';
+  if (p >= 0.2) return 'Unlikely';
+  return 'Highly Unlikely';
+}
+
 // ── Lawsuit grounds derivation (SueModal) — the whole decision library's legal-risk
 // catalog, not scoped to what a specific target has actually deployed, so a player can
 // knowingly guess a ground the target may or may not have actually pursued ──
@@ -65,6 +75,7 @@ function getGroundsAgainst(decisions: MinimalDecisionDefForGrounds[]): DerivedGr
 interface MinimalDecisionDef {
   decision: string;
   excludes: string[];
+  impacts: Record<string, { schedule: Record<number | string, number> }>;
 }
 
 interface MinimalActiveDecision {
@@ -72,17 +83,31 @@ interface MinimalActiveDecision {
   isMatured: boolean;
   maturityYears: number;
   elapsedYears: number;
+  voidedByLawsuit: boolean;
+}
+
+function deployabilityHasPermanentEffect(def: MinimalDecisionDef): boolean {
+  for (const [field, impact] of Object.entries(def.impacts)) {
+    if (field.startsWith('target.') || field.startsWith('competitor')) continue;
+    if ((impact.schedule['default'] ?? 0) !== 0) return true;
+  }
+  return false;
 }
 
 function getDeployability(
   def: MinimalDecisionDef,
   activeDecisions: MinimalActiveDecision[],
   allDecisions: MinimalDecisionDef[],
+  permanentEffectCooldownYears = Infinity,
 ): { blocked: boolean; reason?: string } {
   const existing = activeDecisions.filter((d) => d.decisionName === def.decision);
   if (existing.length > 0 && !existing[existing.length - 1].isMatured) {
     const last = existing[existing.length - 1];
     return { blocked: true, reason: `Still maturing — ${Math.max(0, last.maturityYears - last.elapsedYears)} turn(s) left` };
+  }
+
+  if (deployabilityHasPermanentEffect(def) && existing.some((d) => d.isMatured && !d.voidedByLawsuit && d.elapsedYears < permanentEffectCooldownYears)) {
+    return { blocked: true, reason: 'Still delivering its permanent effect — cannot be redeployed yet' };
   }
 
   for (const excluded of def.excludes) {
@@ -565,6 +590,33 @@ describe('GamePhase utilities', () => {
     });
   });
 
+  describe('likelihoodLabel', () => {
+    it('should return Highly Unlikely below 20%', () => {
+      expect(likelihoodLabel(0)).toBe('Highly Unlikely');
+      expect(likelihoodLabel(0.19)).toBe('Highly Unlikely');
+    });
+
+    it('should return Unlikely from 20% up to (not including) 40%', () => {
+      expect(likelihoodLabel(0.2)).toBe('Unlikely');
+      expect(likelihoodLabel(0.39)).toBe('Unlikely');
+    });
+
+    it('should return Moderate from 40% up to (not including) 60%', () => {
+      expect(likelihoodLabel(0.4)).toBe('Moderate');
+      expect(likelihoodLabel(0.59)).toBe('Moderate');
+    });
+
+    it('should return Likely from 60% up to (not including) 80%', () => {
+      expect(likelihoodLabel(0.6)).toBe('Likely');
+      expect(likelihoodLabel(0.79)).toBe('Likely');
+    });
+
+    it('should return Highly Likely from 80% and up', () => {
+      expect(likelihoodLabel(0.8)).toBe('Highly Likely');
+      expect(likelihoodLabel(1.0)).toBe('Highly Likely');
+    });
+  });
+
   describe('calculateAdjustedProbability', () => {
     it('should calculate base probability when scrutiny and legalExposure are zero', () => {
       const result = calculateAdjustedProbability(0.1, 0, 0);
@@ -720,10 +772,15 @@ describe('GamePhase utilities', () => {
   });
 
   describe('getDeployability', () => {
-    const newFactory: MinimalDecisionDef = { decision: 'New Factory', excludes: [] };
-    const exclusiveDeal: MinimalDecisionDef = { decision: 'Exclusive Deal', excludes: ['Competitor Lock-in'] };
-    const competitorLockIn: MinimalDecisionDef = { decision: 'Competitor Lock-in', excludes: ['Exclusive Deal'] };
-    const allDecisions = [newFactory, exclusiveDeal, competitorLockIn];
+    const newFactory: MinimalDecisionDef = { decision: 'New Factory', excludes: [], impacts: {} };
+    const exclusiveDeal: MinimalDecisionDef = { decision: 'Exclusive Deal', excludes: ['Competitor Lock-in'], impacts: {} };
+    const competitorLockIn: MinimalDecisionDef = { decision: 'Competitor Lock-in', excludes: ['Exclusive Deal'], impacts: {} };
+    const permanentBoost: MinimalDecisionDef = {
+      decision: 'Permanent Boost',
+      excludes: [],
+      impacts: { installedCapacity: { schedule: { 2: 0.15, default: 0.4 } } },
+    };
+    const allDecisions = [newFactory, exclusiveDeal, competitorLockIn, permanentBoost];
 
     it('should allow deploying a decision with no active instance', () => {
       const result = getDeployability(newFactory, [], allDecisions);
@@ -732,16 +789,16 @@ describe('GamePhase utilities', () => {
 
     it('should block redeploying the same decision while it is still maturing', () => {
       const active: MinimalActiveDecision[] = [
-        { decisionName: 'New Factory', isMatured: false, maturityYears: 2, elapsedYears: 1 },
+        { decisionName: 'New Factory', isMatured: false, maturityYears: 2, elapsedYears: 1, voidedByLawsuit: false },
       ];
       const result = getDeployability(newFactory, active, allDecisions);
       expect(result.blocked).toBe(true);
       expect(result.reason).toContain('maturing');
     });
 
-    it('should allow redeploying the same decision once it has matured', () => {
+    it('should allow redeploying a non-permanent-effect decision once it has matured', () => {
       const active: MinimalActiveDecision[] = [
-        { decisionName: 'New Factory', isMatured: true, maturityYears: 2, elapsedYears: 2 },
+        { decisionName: 'New Factory', isMatured: true, maturityYears: 2, elapsedYears: 2, voidedByLawsuit: false },
       ];
       const result = getDeployability(newFactory, active, allDecisions);
       expect(result.blocked).toBe(false);
@@ -749,7 +806,7 @@ describe('GamePhase utilities', () => {
 
     it('should block a decision that excludes an active, unmatured decision (forward exclusion)', () => {
       const active: MinimalActiveDecision[] = [
-        { decisionName: 'Competitor Lock-in', isMatured: false, maturityYears: 1, elapsedYears: 0 },
+        { decisionName: 'Competitor Lock-in', isMatured: false, maturityYears: 1, elapsedYears: 0, voidedByLawsuit: false },
       ];
       const result = getDeployability(exclusiveDeal, active, allDecisions);
       expect(result.blocked).toBe(true);
@@ -758,7 +815,7 @@ describe('GamePhase utilities', () => {
 
     it('should block a decision when an active, unmatured decision excludes it (reverse exclusion)', () => {
       const active: MinimalActiveDecision[] = [
-        { decisionName: 'Exclusive Deal', isMatured: false, maturityYears: 1, elapsedYears: 0 },
+        { decisionName: 'Exclusive Deal', isMatured: false, maturityYears: 1, elapsedYears: 0, voidedByLawsuit: false },
       ];
       const result = getDeployability(competitorLockIn, active, allDecisions);
       expect(result.blocked).toBe(true);
@@ -767,9 +824,38 @@ describe('GamePhase utilities', () => {
 
     it('should not block a mutually-exclusive decision once the blocking one has matured', () => {
       const active: MinimalActiveDecision[] = [
-        { decisionName: 'Competitor Lock-in', isMatured: true, maturityYears: 1, elapsedYears: 1 },
+        { decisionName: 'Competitor Lock-in', isMatured: true, maturityYears: 1, elapsedYears: 1, voidedByLawsuit: false },
       ];
       const result = getDeployability(exclusiveDeal, active, allDecisions);
+      expect(result.blocked).toBe(false);
+    });
+
+    // Regression coverage for the permanentEffectCooldownYears feature — a permanent-effect
+    // decision's matured instance blocks redeployment only for a separate, normally much
+    // shorter cooldown than gameSettings.statuteOfLimitationsYears (which this function no
+    // longer even takes a parameter for). See CLAUDE.md.
+    it('should block redeploying a permanent-effect decision whose matured instance is younger than the cooldown', () => {
+      const active: MinimalActiveDecision[] = [
+        { decisionName: 'Permanent Boost', isMatured: true, maturityYears: 2, elapsedYears: 1, voidedByLawsuit: false },
+      ];
+      const result = getDeployability(permanentBoost, active, allDecisions, 3);
+      expect(result.blocked).toBe(true);
+      expect(result.reason).toContain('permanent effect');
+    });
+
+    it('should allow redeploying a permanent-effect decision once its matured instance has aged past the (short) cooldown', () => {
+      const active: MinimalActiveDecision[] = [
+        { decisionName: 'Permanent Boost', isMatured: true, maturityYears: 2, elapsedYears: 3, voidedByLawsuit: false },
+      ];
+      const result = getDeployability(permanentBoost, active, allDecisions, 3);
+      expect(result.blocked).toBe(false);
+    });
+
+    it('should allow redeploying a permanent-effect decision whose only matured instance was voided by a lost lawsuit, even within the cooldown', () => {
+      const active: MinimalActiveDecision[] = [
+        { decisionName: 'Permanent Boost', isMatured: true, maturityYears: 2, elapsedYears: 1, voidedByLawsuit: true },
+      ];
+      const result = getDeployability(permanentBoost, active, allDecisions, 3);
       expect(result.blocked).toBe(false);
     });
   });

@@ -285,6 +285,16 @@ describe('gameStore', () => {
 
       expect(useGameStore.getState().bankruptcyEvents).toEqual([]);
     });
+
+    // Regression: a forfeit's player:bankrupt broadcast now carries reason: 'forfeit' so
+    // OTHER players' BankruptcyModal shows "X chickened out" instead of the generic
+    // bankruptcy copy — this just confirms the queue round-trips that reason unchanged,
+    // same as 'merger' already does.
+    it('should preserve a forfeit reason through the queue', () => {
+      useGameStore.getState().enqueueBankruptcyEvent({ playerId: 'player-2', playerName: 'Bob', reason: 'forfeit' });
+
+      expect(useGameStore.getState().bankruptcyEvents).toEqual([{ playerId: 'player-2', playerName: 'Bob', reason: 'forfeit' }]);
+    });
   });
 
   describe('selfElimination / hasAcknowledgedElimination', () => {

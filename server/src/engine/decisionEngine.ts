@@ -146,6 +146,12 @@ export interface SuggestedGround {
   name: string;
   description: string;
   probability: number;
+  /** Estimated dollar amount that would change hands if this ground is sued over and won
+   * — priced the exact same way `LegalEngine.fileLawsuit` prices a real case's `stakes`
+   * (see its own doc comment), so the number shown here before filing matches what the
+   * real case will actually carry. Not adjusted by probability — this is "what's at
+   * stake if it lands," not an expected value. */
+  stakes: number;
 }
 
 /**
@@ -176,7 +182,7 @@ export interface SuggestedGround {
 export function pickBestGround(
   def: DecisionDefinition,
   elapsedYears: number,
-  attackerVars: Pick<PlayerVariables, 'scrutiny' | 'legalExposureRatio'>,
+  attackerVars: PlayerVariables,
   admin: AdminVariables,
   formulas: FormulaSet,
   statuteOfLimitationsYears = Infinity,
@@ -193,7 +199,15 @@ export function pickBestGround(
     // as a guaranteed win — clamp to [0,1] here purely for a sane percentage display.
     const adjusted = Math.min(1, Math.max(0, calculateAdjustedProbability(base, attackerVars.scrutiny, attackerVars.legalExposureRatio ?? 0, admin, formulas)));
     if (!best || adjusted > best.probability) {
-      best = { name: risk.name, description: risk.description, probability: adjusted };
+      // Mirrors LegalEngine.fileLawsuit's own stakes calc exactly (same fixed
+      // 'default'-or-year-1 schedule read, same relative-vs-absolute branch) — see
+      // SuggestedGround's doc comment for why this has to match the real thing.
+      const scheduleValue = risk.impact.schedule['default'] ?? risk.impact.schedule[1] ?? 0;
+      const targetFieldValue = (attackerVars as unknown as Record<string, unknown>)[risk.impact.target];
+      const stakes = risk.impact.type === 'relative'
+        ? Math.abs((typeof targetFieldValue === 'number' ? targetFieldValue : 0) * scheduleValue)
+        : Math.abs(scheduleValue);
+      best = { name: risk.name, description: risk.description, probability: adjusted, stakes };
     }
   }
   return best;
@@ -248,7 +262,7 @@ export class DecisionEngine {
   canDeploy(
     playerDecisions: DeployedDecision[],
     decisionName: string,
-    statuteOfLimitationsYears = Infinity,
+    permanentEffectCooldownYears = Infinity,
   ): { allowed: boolean; reason?: string } {
     const existing = playerDecisions.filter(d => d.definition.decision === decisionName);
 
@@ -261,14 +275,20 @@ export class DecisionEngine {
     if (!def) return { allowed: false, reason: 'Unknown decision' };
 
     // A decision with a permanent (non-zero 'default') effect blocks redeploying itself
-    // for as long as an instance is still actively delivering that effect — otherwise
-    // deploying it again while the first is still live would stack the same permanent KPI
-    // boost. That window ends the same way an instance stops being suable: once it's been
-    // active `statuteOfLimitationsYears` turns (`advanceAndApply`/`collectTargetImpacts`
-    // stop applying its impacts at the same point — see CLAUDE.md), it's no longer
-    // contributing anything, so a fresh deploy no longer stacks with it. An instance voided
-    // by a lost lawsuit never got to keep its effect at all, so it never blocks
-    // redeployment either.
+    // for `gameSettings.permanentEffectCooldownYears` turns after an instance matures —
+    // otherwise deploying it again immediately would stack the same permanent KPI boost
+    // with zero real investment/turn cost in between. Deliberately a SEPARATE, normally
+    // much shorter clock from `statuteOfLimitationsYears` (which keeps governing legal
+    // liability and how long a `target.*` effect keeps re-applying, completely unchanged)
+    // — this used to reuse `statuteOfLimitationsYears` itself (10 by default), which, given
+    // typical games run ~12-15 rounds, made every permanent-effect decision (New Factory,
+    // Vertical Integration, Raw Material Monopoly, Venture Capital Shadow Money, Patent
+    // Portfolio, Bot Attack, ...) an effective one-time-per-game pick unless an opponent
+    // happened to sue it into `voidedByLawsuit` — even though the game's own documented
+    // stacking math (`installedCapacity = base * (1 + 0.4 + 0.4)` for two matured New
+    // Factorys) assumes redeploying the same permanent-effect decision more than once in a
+    // game is normal, intended play. See CLAUDE.md. An instance voided by a lost lawsuit
+    // never got to keep its effect at all, so it never blocks redeployment either.
     //
     // Checked on BOTH the decision's own fields (`hasPermanentEffect`) and its `target.*`
     // fields (`hasPermanentImpactMap` over the extracted target-impact map) — a decision
@@ -281,7 +301,7 @@ export class DecisionEngine {
     // Bot Attack's own ongoing `operatingExpenses`/`cash` effects), which is why this gap
     // stayed invisible until audited directly against the seed data.
     const hasPermanentTargetEffect = hasPermanentImpactMap(this.getTargetImpacts(def.impacts));
-    if ((hasPermanentEffect(def) || hasPermanentTargetEffect) && existing.some(d => d.isMatured && !d.voidedByLawsuit && d.elapsedYears < statuteOfLimitationsYears)) {
+    if ((hasPermanentEffect(def) || hasPermanentTargetEffect) && existing.some(d => d.isMatured && !d.voidedByLawsuit && d.elapsedYears < permanentEffectCooldownYears)) {
       return { allowed: false, reason: `${decisionName} is still delivering its permanent effect and cannot be redeployed yet` };
     }
 

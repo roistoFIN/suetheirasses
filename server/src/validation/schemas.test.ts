@@ -269,6 +269,7 @@ describe('Validation Schemas', () => {
         negotiationPeriodTurns: 2,
         lawsuitFilingCost: 15000,
         statuteOfLimitationsYears: 10,
+        permanentEffectCooldownYears: 3,
         semaphoreGreenMax: 0.15,
         semaphoreYellowMax: 0.4,
       },
