@@ -13,6 +13,17 @@
 const LLM_URL = process.env.LLM_URL || 'http://localhost:8080';
 const REQUEST_TIMEOUT_MS = 8_000;
 
+/** The local LLM container has been unreliable in practice, so annual-report generation is
+ * disabled by default — every call skips the network entirely and returns the caller's
+ * static `competitorsView` fallback text immediately (the same text a failed/timed-out call
+ * would have fallen back to anyway, just without the wasted round trip). Set
+ * `ANNUAL_REPORT_LLM_ENABLED=true` to turn real generation back on once the model/container
+ * is fixed. Read fresh on every call (not cached at module load) so tests can toggle it via
+ * `process.env` without needing to re-import this module. */
+function isLlmEnabled(): boolean {
+  return process.env.ANNUAL_REPORT_LLM_ENABLED === 'true';
+}
+
 /** In-memory cache keyed by `${decisionName}#${elapsedYears}` — same decision/age combo
  * is asked for repeatedly (every player who opens that rival's Full Filing), and the
  * flavor text has no reason to vary per requester, so one generation covers everyone
@@ -27,16 +38,45 @@ export interface AnnualReportBlurbRequest {
   fallback: string;
 }
 
-export async function generateAnnualReportBlurb(req: AnnualReportBlurbRequest): Promise<string> {
+/** Telemetry for the admin Analytics tab's performance view — see eventLogService.ts's
+ * `llm.call` event. Deliberately a separate optional callback rather than widening this
+ * function's return type: every existing call site only ever wanted the blurb text
+ * itself, and changing the return shape to `{ text, ... }` would force every one of them
+ * to unwrap it for no benefit — an opt-in callback lets `GameEngine` observe latency/
+ * success without touching what any caller already does with the resolved string. */
+export interface LlmCallTelemetry {
+  latencyMs: number;
+  /** false only when the real model call failed/timed out and the caller's static fallback text was used. */
+  success: boolean;
+  cached: boolean;
+}
+
+export async function generateAnnualReportBlurb(
+  req: AnnualReportBlurbRequest,
+  onComplete?: (telemetry: LlmCallTelemetry) => void,
+): Promise<string> {
+  // Disabled: no network call was even attempted, so there's no `llm.call` telemetry to
+  // report — onComplete is deliberately not invoked here (see logLlmCall's doc comment,
+  // this must degrade as invisibly as an unreachable server does).
+  if (!isLlmEnabled()) {
+    return req.fallback;
+  }
+
   const cacheKey = `${req.decisionName}#${req.elapsedYears}`;
   const cached = cache.get(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    onComplete?.({ latencyMs: 0, success: true, cached: true });
+    return cached;
+  }
 
+  const start = Date.now();
   try {
     const text = await requestBlurb(req);
     cache.set(cacheKey, text);
+    onComplete?.({ latencyMs: Date.now() - start, success: true, cached: false });
     return text;
   } catch {
+    onComplete?.({ latencyMs: Date.now() - start, success: false, cached: false });
     return req.fallback;
   }
 }
@@ -79,7 +119,7 @@ async function requestBlurb({ decisionName, description, elapsedYears }: AnnualR
       throw new Error(`LLM server responded with status ${response.status}`);
     }
 
-    const data: any = await response.json();
+    const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
     const raw: string = data?.choices?.[0]?.message?.content ?? '';
     const text = sanitize(raw);
     if (!text) throw new Error('Empty LLM response');

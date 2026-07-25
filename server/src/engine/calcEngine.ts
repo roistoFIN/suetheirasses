@@ -539,6 +539,11 @@ export function applyDecisionImpacts(
   currentYear?: number,
 ): ApplyImpactsResult {
   const v = { ...vars };
+  // `field` is a runtime string key (from admin-editable decision data), not a known
+  // PlayerVariables property — every real field it can name is a plain number (the one
+  // exception, `shareOwnership`, is never targeted by a generic impact), so this typed
+  // view is the dynamic-key equivalent of `(v as any)[field]` without losing that guarantee.
+  const vDyn = v as unknown as Record<string, number | undefined>;
   const newDepreciationEntries: DepreciationLedgerEntry[] = [];
   // Track absolute additions to P&L fields
   let revenueDelta = 0;
@@ -601,7 +606,7 @@ export function applyDecisionImpacts(
       // forever, the instant any player anywhere first deployed one. Caught by a random
       // 4-player game simulation, not by hand — see CLAUDE.md's "applyDecisionImpacts'
       // absolute-impact write corrupted an undefined field to NaN" section.
-      (v as any)[field] = ((v as any)[field] ?? 0) + value;
+      vDyn[field] = (vDyn[field] ?? 0) + value;
 
       // Track absolute additions to P&L fields for delta passing
       if (field === 'revenue') revenueDelta += value;
@@ -622,9 +627,9 @@ export function applyDecisionImpacts(
       }
     } else {
       const multiplier = fieldMultipliers.get(field) ?? 0;
-      const currentVal = (v as any)[field];
+      const currentVal = vDyn[field];
       if (typeof currentVal === 'number' && currentVal !== 0) {
-        (v as any)[field] = currentVal * (1 + multiplier);
+        vDyn[field] = currentVal * (1 + multiplier);
       }
     }
   }
@@ -660,6 +665,8 @@ export function applyTargetImpacts(
   elapsedYears: number,
 ): PlayerVariables {
   const v = { ...vars };
+  // See applyDecisionImpacts' own vDyn comment above — same dynamic-key situation.
+  const vDyn = v as unknown as Record<string, number | undefined>;
 
   // Phase 1 — accumulate per-field relative multipliers additively
   const fieldMultipliers = new Map<string, number>();
@@ -680,12 +687,12 @@ export function applyTargetImpacts(
       // branch above — none of the 9 real target.* fields currently hit this in
       // practice (all seeded, non-optional), but a future admin-added target.* mapping
       // to an optional field would otherwise silently reintroduce the same bug.
-      (v as any)[field] = ((v as any)[field] ?? 0) + value;
+      vDyn[field] = (vDyn[field] ?? 0) + value;
     } else {
       const multiplier = fieldMultipliers.get(field) ?? 0;
-      const currentVal = (v as any)[field];
+      const currentVal = vDyn[field];
       if (typeof currentVal === 'number' && currentVal !== 0) {
-        (v as any)[field] = currentVal * (1 + multiplier);
+        vDyn[field] = currentVal * (1 + multiplier);
       }
     }
   }

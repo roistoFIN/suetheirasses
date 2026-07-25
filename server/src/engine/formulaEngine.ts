@@ -270,8 +270,9 @@ export function buildFormulaSet(rows: Array<{ key: string; expression: string }>
   for (const row of rows) {
     try {
       set.set(row.key, compileFormula(row.expression));
-    } catch (error: any) {
-      throw new FormulaParseError(`Formula "${row.key}" failed to compile: ${error.message}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new FormulaParseError(`Formula "${row.key}" failed to compile: ${message}`);
     }
   }
   return set;

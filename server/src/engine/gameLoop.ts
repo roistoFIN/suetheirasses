@@ -168,6 +168,10 @@ export interface TurnResolutionOutcome {
   result: TurnResolutionResult;
   companyUpdates: CompanyPersistUpdate[];
   bankruptedPlayers: BankruptedPlayer[];
+  /** Server-only telemetry for GameEngine to log to EventLog — see DecisionDeployEvent's doc comment. Never part of the client broadcast. */
+  decisionEvents: DecisionDeployEvent[];
+  /** Wall-clock ms this resolveTurn call itself took, for the admin Analytics tab's performance view. */
+  durationMs: number;
 }
 
 /** Result of a `digDeeper` call — a lightweight, single-player, out-of-band mutation (not part of turn resolution). */
@@ -277,6 +281,29 @@ interface ShareTransactionRequest {
   amount: number;
   submittedAt: number;
   type: 'buy' | 'sell';
+}
+
+/**
+ * One entry per decision `processNewDecisions` actually attempted to deploy this turn —
+ * server-only telemetry for the admin Analytics tab (decision-balance dashboard, and
+ * bug-tracing a repeat of the "canDeploy's level-limit check silently dropped a decision
+ * for the rest of the game" class of bug — see CLAUDE.md). `canDeploy` already computes a
+ * human-readable `reason` for every rejection and always has (`processNewDecisions` used
+ * to just discard it via a bare `continue`) — this only starts collecting what already
+ * existed, it doesn't change what gets rejected or why. Deliberately NOT part of
+ * `TurnResolutionResult` (the `turn:resolved` broadcast payload) — the client has no use
+ * for this, and `processNewDecisions`' existing silent-drop behavior for the PLAYER stays
+ * completely unchanged; this is purely an additional, parallel collection for
+ * `GameEngine` to log to `EventLog`.
+ */
+export interface DecisionDeployEvent {
+  playerId: string;
+  bucket: DecisionBucket;
+  decisionName: string;
+  targetId?: string;
+  outcome: 'deployed' | 'rejected';
+  /** Only set for `outcome: 'rejected'` — `canDeploy`'s own reason string, or 'Unknown decision' for a bogus name. */
+  reason?: string;
 }
 
 // ============================================================
@@ -424,7 +451,7 @@ export class GameLoop {
 
     const dbPlayers = players;
     if (dbPlayers.length === 0) {
-      return { result: { round, players: [], gameOver: false }, companyUpdates: [], bankruptedPlayers: [] };
+      return { result: { round, players: [], gameOver: false }, companyUpdates: [], bankruptedPlayers: [], decisionEvents: [], durationMs: Date.now() - t0 };
     }
 
     // ── Build in-memory context per player ─────────────────────
@@ -433,7 +460,7 @@ export class GameLoop {
 
     for (const p of dbPlayers) {
       const company = p.company!;
-      let vars = this.readVariables(company.variables as any);
+      let vars = this.readVariables(company.variables);
 
       // First turn: seed starting values
       if (!vars.cash && !vars.assets) {
@@ -471,9 +498,12 @@ export class GameLoop {
     }
 
     const shareTransactionQueue: ShareTransactionRequest[] = [];
+    const decisionEvents: DecisionDeployEvent[] = [];
     for (const [, ctx] of ctxs) {
       if (!ctx.submittedDecisions) continue;
-      shareTransactionQueue.push(...this.processNewDecisions(roomId, ctx, round));
+      const { shareTransactions, decisionEvents: events } = this.processNewDecisions(roomId, ctx, round);
+      shareTransactionQueue.push(...shareTransactions);
+      decisionEvents.push(...events);
     }
 
     // ── Step 1b — Buy/Sell Shares execution (design addition — not part of the
@@ -1069,12 +1099,14 @@ export class GameLoop {
 
     this.clearSubmissions(roomId);
 
-    console.log(`[GameLoop] Turn ${round} resolved in ${Date.now() - t0}ms — room ${roomId}`);
+    const durationMs = Date.now() - t0;
 
     return {
       result: { round, players: results, gameOver, winnerId },
       companyUpdates,
       bankruptedPlayers,
+      decisionEvents,
+      durationMs,
     };
   }
 
@@ -1100,7 +1132,7 @@ export class GameLoop {
 
     for (const p of dbPlayers) {
       const company = p.company!;
-      let vars = this.readVariables(company.variables as any);
+      let vars = this.readVariables(company.variables);
       if (!vars.cash && !vars.assets) {
         vars = this.startingVars();
       }
@@ -1177,7 +1209,7 @@ export class GameLoop {
     const byId = new Map<string, { name: string; vars: PlayerVariables; engineState: CompanyEngineState }>();
     for (const p of players) {
       if (!p.company) continue;
-      let vars = this.readVariables(p.company.variables as any);
+      let vars = this.readVariables(p.company.variables);
       // Same "first turn hasn't resolved yet, Company.variables is still {}" fallback
       // resolveTurn/getInitialSnapshot already apply — this is an instant, out-of-band
       // action that can in principle be triggered before any turn has ever resolved.
@@ -1282,7 +1314,7 @@ export class GameLoop {
       return { success: false, reason: 'limit_reached' };
     }
 
-    let vars = this.readVariables(me.company.variables as any);
+    let vars = this.readVariables(me.company.variables);
     // Same "first turn hasn't resolved yet, Company.variables is still {}" fallback
     // resolveTurn/getInitialSnapshot already apply — filing (and guessing) a lawsuit is
     // now a realistic round-1 action (see getGroundsAgainst's whole-library ground
@@ -1573,12 +1605,20 @@ export class GameLoop {
   // ============================================================
 
   /** Read engine state from Company JSONB (active decisions + depreciation ledger) */
-  private readEngineState(company: any): CompanyEngineState {
-    const raw = company?.engineState ?? {};
+  private readEngineState(company: { engineState: unknown } | null | undefined): CompanyEngineState {
+    const raw = (company?.engineState ?? {}) as {
+      activeDecisions?: PersistedDecisionInstance[];
+      depreciationLedger?: DepreciationEntry[];
+      legalCases?: LegalCaseData[];
+      investigations?: Record<string, number>;
+    };
     return {
-      activeDecisions: (raw.activeDecisions ?? []).map((d: any) => ({
+      activeDecisions: (raw.activeDecisions ?? []).map((d) => ({
         id: d.id,
-        definition: this.decisionEngine.getDef(d.definitionName),
+        // Non-null: an in-use decision's definition can never vanish from the loaded
+        // library (see CLAUDE.md's "Deleting a decision is guarded" — GameEngine.deleteDecision
+        // rejects removing a decision still deployed anywhere before it ever reaches the DB).
+        definition: this.decisionEngine.getDef(d.definitionName)!,
         deployedYear: d.deployedYear,
         elapsedYears: d.elapsedYears,
         isMatured: d.isMatured,
@@ -1587,9 +1627,9 @@ export class GameLoop {
         everSued: d.everSued ?? false,
         acquisitionFraction: d.acquisitionFraction,
       })),
-      depreciationLedger: (raw.depreciationLedger ?? []) as DepreciationEntry[],
-      legalCases: (raw.legalCases ?? []) as LegalCaseData[],
-      investigations: (raw.investigations ?? {}) as Record<string, number>,
+      depreciationLedger: raw.depreciationLedger ?? [],
+      legalCases: raw.legalCases ?? [],
+      investigations: raw.investigations ?? {},
     };
   }
 
@@ -1615,7 +1655,7 @@ export class GameLoop {
     for (const p of players) {
       if (!p.company) continue;
       byId.set(p.id, {
-        vars: this.readVariables(p.company.variables as any),
+        vars: this.readVariables(p.company.variables),
         engineState: this.readEngineState(p.company),
       });
     }
@@ -1997,7 +2037,7 @@ export class GameLoop {
    * — see `ShareTransactionRequest`'s doc comment for why this can't just re-scan raw
    * submissions: some entries get dropped by `canDeploy`/level-limit checks below, and
    * only the ones that actually deployed should ever execute a real trade). */
-  private processNewDecisions(roomId: string, ctx: PlayerTurnContext, year: number): ShareTransactionRequest[] {
+  private processNewDecisions(roomId: string, ctx: PlayerTurnContext, year: number): { shareTransactions: ShareTransactionRequest[]; decisionEvents: DecisionDeployEvent[] } {
     const sub = ctx.submittedDecisions!;
     const maxForLevel: Record<DecisionBucket, number> = {
       strategic: this.config.gameSettings.maxStrategicDecisionsPerTurn,
@@ -2008,6 +2048,7 @@ export class GameLoop {
     // Track absolute deltas from newly deployed decisions on the same turn
     const newDecisionAbsDeltas: Array<{ revenueDelta: number; financeCostDelta: number; taxCostDelta: number; receivablesDelta: number; cashDelta: number }> = [];
     const shareTransactions: ShareTransactionRequest[] = [];
+    const decisionEvents: DecisionDeployEvent[] = [];
 
     for (const bucket of DECISION_BUCKETS) {
       const maxForBucket = maxForLevel[bucket];
@@ -2019,13 +2060,20 @@ export class GameLoop {
       for (const entry of sub[bucket].slice(0, maxForBucket)) {
         const { name, targetId, amount } = entry;
         const def = this.decisionEngine.getDef(name);
-        if (!def) continue;
+        if (!def) {
+          decisionEvents.push({ playerId: ctx.playerId, bucket, decisionName: name, targetId, outcome: 'rejected', reason: 'Unknown decision' });
+          continue;
+        }
         const ok = this.decisionEngine.canDeploy(
           ctx.engineState.activeDecisions,
           name,
           this.config.gameSettings.permanentEffectCooldownYears,
         );
-        if (!ok.allowed) continue;
+        if (!ok.allowed) {
+          decisionEvents.push({ playerId: ctx.playerId, bucket, decisionName: name, targetId, outcome: 'rejected', reason: ok.reason });
+          continue;
+        }
+        decisionEvents.push({ playerId: ctx.playerId, bucket, decisionName: name, targetId, outcome: 'deployed' });
         const inst = this.decisionEngine.deploy(ctx.playerId, def, year, targetId);
         ctx.engineState.activeDecisions.push(inst);
         const result = this.decisionEngine.applyImpactsForYear(ctx.vars, def.impacts, 0, year);
@@ -2067,10 +2115,10 @@ export class GameLoop {
       ctx.newDecisionAbsDeltas = { revenueDelta: 0, financeCostDelta: 0, taxCostDelta: 0, receivablesDelta: 0, cashDelta: 0 };
     }
 
-    return shareTransactions;
+    return { shareTransactions, decisionEvents };
   }
 
-  private readVariables(json: any): PlayerVariables {
+  private readVariables(json: unknown): PlayerVariables {
     if (!json || typeof json !== 'object') return {} as PlayerVariables;
     return json as unknown as PlayerVariables;
   }
@@ -2118,7 +2166,7 @@ export class GameLoop {
 
   private stripInternal(v: PlayerVariables): PlayerVariables {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { _playerId, ...rest } = v as any;
+    const { _playerId, ...rest } = v as PlayerVariables & { _playerId?: unknown };
     return rest;
   }
 }

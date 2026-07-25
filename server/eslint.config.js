@@ -16,6 +16,16 @@ export default tseslint.config(
     },
   },
   {
+    // Test files mock/fixture arbitrary shapes (Prisma models, Socket.IO servers, partial
+    // request payloads) where a precise type would just be a second copy of the production
+    // type with every field re-declared optional — `any` is the right tool there, not a
+    // shortcut. Production code keeps the strict warning.
+    files: ['**/*.test.ts'],
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off',
+    },
+  },
+  {
     ignores: ['dist/', 'node_modules/'],
   }
 );

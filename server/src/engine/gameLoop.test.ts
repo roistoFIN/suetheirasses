@@ -744,6 +744,70 @@ describe('GameLoop', () => {
     });
   });
 
+  describe('resolveTurn — decisionEvents/durationMs telemetry (regression)', () => {
+    // Server-only fields on TurnResolutionOutcome (never part of the client-facing
+    // TurnResolutionResult) — GameEngine logs these to EventLog for the admin
+    // Analytics tab's decision-balance dashboard and bug-tracing feed. See CLAUDE.md's
+    // EventLog section. `canDeploy` already computed a `reason` string for every
+    // rejection before this existed (processNewDecisions just discarded it via a bare
+    // `continue`) — decisionEvents only starts collecting what was already there.
+    it('records a deployed entry for a decision that actually deploys', () => {
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [{ name: 'New Factory' }], operational: [], financial: [], lawsuits: [],
+      });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+
+      expect(outcome.decisionEvents).toContainEqual({
+        playerId: 'player-1',
+        bucket: 'strategic',
+        decisionName: 'New Factory',
+        targetId: undefined,
+        outcome: 'deployed',
+      });
+    });
+
+    it('records a rejected entry with canDeploy\'s real reason when a decision is still maturing', () => {
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [], operational: [{ name: 'Quality Certification' }], financial: [], lawsuits: [],
+      });
+      const outcome1 = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+      const persisted = outcome1.companyUpdates.find((u) => u.playerId === 'player-1')!;
+      const players2 = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: persisted.variables, engineState: persisted.engineState },
+        { id: 'player-2', name: 'Bob' },
+      ]);
+
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [], operational: [{ name: 'Quality Certification' }], financial: [], lawsuits: [],
+      });
+      const outcome2 = gameLoop.resolveTurn('room-1', 2, players2);
+
+      const rejectedEvent = outcome2.decisionEvents.find((e) => e.playerId === 'player-1' && e.outcome === 'rejected');
+      expect(rejectedEvent).toBeDefined();
+      expect(rejectedEvent?.decisionName).toBe('Quality Certification');
+      expect(rejectedEvent?.reason).toContain('matur');
+    });
+
+    it('records a targetId on a target-bearing decision\'s event, matching the deployed instance', () => {
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [], operational: [{ name: 'Bot Attack', targetId: 'player-2' }], financial: [], lawsuits: [],
+      });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+
+      const event = outcome.decisionEvents.find((e) => e.decisionName === 'Bot Attack');
+      expect(event).toMatchObject({ outcome: 'deployed', targetId: 'player-2' });
+    });
+
+    it('is empty when nobody submits anything, and durationMs is a real non-negative measurement', () => {
+      const outcome = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+      expect(outcome.decisionEvents).toEqual([]);
+      expect(outcome.durationMs).toBeGreaterThanOrEqual(0);
+      expect(Number.isFinite(outcome.durationMs)).toBe(true);
+    });
+  });
+
   describe('resolveTurn — financial calculations', () => {
     it('should calculate derived values correctly', () => {
       const outcome = gameLoop.resolveTurn('room-1', 1, twoPlayers());

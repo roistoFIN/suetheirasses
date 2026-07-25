@@ -56,7 +56,7 @@ interface GameState {
   setAnnualReportLoading: (rivalPlayerId: string) => void;
   applyAnnualReportResult: (rivalPlayerId: string, entries: AnnualReportEntry[]) => void;
 
-  // Decision deck — the 45-decision library + per-turn limits, sent once per game
+  // Decision deck — the shared decision library + per-turn limits, sent once per game
   decisions: DecisionDefinition[];
   gameSettings: GameSettings | null;
   setGameDeck: (data: GameDeckResponse) => void;

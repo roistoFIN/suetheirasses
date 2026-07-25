@@ -16,9 +16,21 @@ import {
   Code,
   Textarea,
   Tabs,
+  Progress,
+  Select,
 } from '@mantine/core';
-import { IconLogout, IconTrash, IconPlus, IconMoodCry, IconMoodSad, IconMoodNeutral, IconMoodSmile, IconMoodHappy } from '@tabler/icons-react';
-import type { AdminRoomSnapshot, DecisionDefinition, GameConfig, FormulaInfo, FeedbackEntry } from '@suetheirasses/shared';
+import { IconLogout, IconTrash, IconPlus, IconMoodCry, IconMoodSad, IconMoodNeutral, IconMoodSmile, IconMoodHappy, IconRefresh } from '@tabler/icons-react';
+import type {
+  AdminRoomSnapshot,
+  DecisionDefinition,
+  GameConfig,
+  FormulaInfo,
+  FeedbackEntry,
+  EventLogEntry,
+  DecisionAnalyticsEntry,
+  LawsuitAnalyticsEntry,
+  PerformanceAnalyticsResponse,
+} from '@suetheirasses/shared';
 
 /**
  * Admin Portal — a real, independent URL (`/admin`), not driven by game phase state
@@ -32,7 +44,7 @@ import type { AdminRoomSnapshot, DecisionDefinition, GameConfig, FormulaInfo, Fe
  * would risk silently overwriting an admin's in-progress edit out from under them.
  * Editing is raw-JSON-textarea + server-side Zod validation, not a structured form —
  * proportionate given DecisionDefinition.impacts is an open-ended nested record and
- * there are 45 decisions plus a multi-section config object.
+ * the decision library is a growing, admin-editable list plus a multi-section config object.
  */
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
 const TOKEN_KEY = 'stita_admin_token';
@@ -102,7 +114,7 @@ const AdminPortal: React.FC = () => {
   // Try any saved token once on mount, so a refresh doesn't require re-entering it.
   useEffect(() => {
     if (token) tryAuth(token);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 
   // Poll rooms + feedback — both genuinely live data (rooms change as players play;
@@ -245,6 +257,7 @@ const AdminPortal: React.FC = () => {
             <Tabs.Tab value="decisions">Decisions ({decisions.length})</Tabs.Tab>
             <Tabs.Tab value="formulas">Formulas ({formulas.length})</Tabs.Tab>
             <Tabs.Tab value="feedback">Feedback ({feedback.length})</Tabs.Tab>
+            <Tabs.Tab value="analytics">Analytics</Tabs.Tab>
           </Tabs.List>
 
           <Tabs.Panel value="config">
@@ -273,6 +286,10 @@ const AdminPortal: React.FC = () => {
 
           <Tabs.Panel value="feedback">
             <FeedbackTab feedback={feedback} />
+          </Tabs.Panel>
+
+          <Tabs.Panel value="analytics">
+            <AnalyticsTab token={token} />
           </Tabs.Panel>
         </Tabs>
       </Paper>
@@ -441,7 +458,7 @@ function AiGeneratePanel({
         setError(`${body.message || body.error || `Generation failed (${res.status})`}${body.raw ? ` — last raw output: ${body.raw.slice(0, 200)}` : ''}`);
         return;
       }
-      setWarnings((body.warnings || []).map((w: any) => `${w.path}: ${w.message}`));
+      setWarnings((body.warnings || []).map((w: { path: string; message: string }) => `${w.path}: ${w.message}`));
       onGenerated(JSON.stringify(body.decision, null, 2));
     } catch {
       setError('Could not reach the server (is the LLM container running?).');
@@ -831,6 +848,455 @@ function FormulaRow({
         </Group>
       </Stack>
     </Paper>
+  );
+}
+
+// ============================================================
+// Analytics — the EventLog-backed admin tab for game analysis/balance/bug-tracing (see
+// CLAUDE.md's EventLog section and server/src/services/eventLogService.ts). Four
+// sub-views, each fetching from its own endpoint independently rather than being routed
+// through the parent's `loadEditableData`/room-polling effects — none of these are edit
+// targets (nothing here is ever written back), so there's no clobber risk to guard
+// against, just a cost-of-polling tradeoff. The raw Event Feed is genuinely live data
+// (new rows arrive continuously while games are in progress), so it polls the same way
+// Feedback/Rooms do; the three aggregate dashboards run real multi-thousand-row scans
+// server-side (see index.ts's analytics routes), so they're fetched once on mount plus a
+// manual Refresh button, not continuously polled.
+// ============================================================
+
+function winRateColor(rate: number | null): string {
+  if (rate === null) return 'gray';
+  if (rate >= 0.55) return 'green';
+  if (rate >= 0.35) return 'yellow';
+  return 'red';
+}
+
+const EVENT_FEED_POLL_INTERVAL_MS = 5000;
+const EVENT_TYPE_OPTIONS = [
+  'turn.resolved',
+  'decision.deployed',
+  'decision.rejected',
+  'player.eliminated',
+  'player.disconnected',
+  'player.reconnected',
+  'player.kicked',
+  'room.stale_cleanup',
+  'game.completed',
+  'llm.call',
+  'error.persistence',
+];
+
+function AnalyticsTab({ token }: { token: string }) {
+  const [subTab, setSubTab] = useState<string | null>('feed');
+
+  const [events, setEvents] = useState<EventLogEntry[]>([]);
+  const [eventTypeFilter, setEventTypeFilter] = useState<string | null>(null);
+  const [severityFilter, setSeverityFilter] = useState<string | null>(null);
+  const [roomIdFilter, setRoomIdFilter] = useState('');
+
+  const [decisions, setDecisions] = useState<DecisionAnalyticsEntry[] | null>(null);
+  const [gamesConsidered, setGamesConsidered] = useState(0);
+  const [decisionsLoading, setDecisionsLoading] = useState(false);
+
+  const [lawsuits, setLawsuits] = useState<LawsuitAnalyticsEntry[] | null>(null);
+  const [lawsuitsLoading, setLawsuitsLoading] = useState(false);
+
+  const [performance, setPerformance] = useState<PerformanceAnalyticsResponse | null>(null);
+  const [performanceLoading, setPerformanceLoading] = useState(false);
+
+  const loadEvents = useCallback(async () => {
+    const params = new URLSearchParams({ limit: '100' });
+    if (eventTypeFilter) params.set('eventType', eventTypeFilter);
+    if (severityFilter) params.set('severity', severityFilter);
+    if (roomIdFilter.trim()) params.set('roomId', roomIdFilter.trim());
+    const res = await adminFetch(`/api/admin/events?${params.toString()}`, token);
+    if (res.ok) setEvents((await res.json()).events);
+  }, [token, eventTypeFilter, severityFilter, roomIdFilter]);
+
+  // Only the raw feed polls — see this section's own doc comment for why the three
+  // aggregate dashboards below don't.
+  useEffect(() => {
+    if (subTab !== 'feed') return;
+    loadEvents();
+    const interval = setInterval(loadEvents, EVENT_FEED_POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [subTab, loadEvents]);
+
+  const loadDecisions = useCallback(async () => {
+    setDecisionsLoading(true);
+    try {
+      const res = await adminFetch('/api/admin/analytics/decisions', token);
+      if (res.ok) {
+        const body = await res.json();
+        setDecisions(body.decisions);
+        setGamesConsidered(body.gamesConsidered);
+      }
+    } finally {
+      setDecisionsLoading(false);
+    }
+  }, [token]);
+
+  const loadLawsuits = useCallback(async () => {
+    setLawsuitsLoading(true);
+    try {
+      const res = await adminFetch('/api/admin/analytics/lawsuits', token);
+      if (res.ok) setLawsuits((await res.json()).grounds);
+    } finally {
+      setLawsuitsLoading(false);
+    }
+  }, [token]);
+
+  const loadPerformance = useCallback(async () => {
+    setPerformanceLoading(true);
+    try {
+      const res = await adminFetch('/api/admin/analytics/performance', token);
+      if (res.ok) setPerformance(await res.json());
+    } finally {
+      setPerformanceLoading(false);
+    }
+  }, [token]);
+
+  // Fire all three once on mount, regardless of which sub-tab starts active, so
+  // switching between Decision Balance / Lawsuits / Performance never shows a cold
+  // "Loading…" the first time — only Refresh re-runs them after that.
+  useEffect(() => {
+    loadDecisions();
+    loadLawsuits();
+    loadPerformance();
+  }, [loadDecisions, loadLawsuits, loadPerformance]);
+
+  return (
+    <Tabs value={subTab} onChange={setSubTab} orientation="vertical">
+      <Tabs.List mb="md">
+        <Tabs.Tab value="feed">Event Feed</Tabs.Tab>
+        <Tabs.Tab value="decisions">Decision Balance</Tabs.Tab>
+        <Tabs.Tab value="lawsuits">Lawsuit Win Rates</Tabs.Tab>
+        <Tabs.Tab value="performance">Performance & Errors</Tabs.Tab>
+      </Tabs.List>
+
+      <Tabs.Panel value="feed" pl="md">
+        <EventFeedView
+          events={events}
+          eventTypeFilter={eventTypeFilter}
+          setEventTypeFilter={setEventTypeFilter}
+          severityFilter={severityFilter}
+          setSeverityFilter={setSeverityFilter}
+          roomIdFilter={roomIdFilter}
+          setRoomIdFilter={setRoomIdFilter}
+          onRefresh={loadEvents}
+        />
+      </Tabs.Panel>
+
+      <Tabs.Panel value="decisions" pl="md">
+        <DecisionBalanceView
+          decisions={decisions}
+          gamesConsidered={gamesConsidered}
+          loading={decisionsLoading}
+          onRefresh={loadDecisions}
+        />
+      </Tabs.Panel>
+
+      <Tabs.Panel value="lawsuits" pl="md">
+        <LawsuitWinRatesView grounds={lawsuits} loading={lawsuitsLoading} onRefresh={loadLawsuits} />
+      </Tabs.Panel>
+
+      <Tabs.Panel value="performance" pl="md">
+        <PerformanceView data={performance} loading={performanceLoading} onRefresh={loadPerformance} />
+      </Tabs.Panel>
+    </Tabs>
+  );
+}
+
+function EventFeedView({
+  events,
+  eventTypeFilter,
+  setEventTypeFilter,
+  severityFilter,
+  setSeverityFilter,
+  roomIdFilter,
+  setRoomIdFilter,
+  onRefresh,
+}: {
+  events: EventLogEntry[];
+  eventTypeFilter: string | null;
+  setEventTypeFilter: (v: string | null) => void;
+  severityFilter: string | null;
+  setSeverityFilter: (v: string | null) => void;
+  roomIdFilter: string;
+  setRoomIdFilter: (v: string) => void;
+  onRefresh: () => void;
+}) {
+  return (
+    <Stack gap="sm">
+      <Group gap="sm">
+        <Select
+          placeholder="Event type"
+          data={EVENT_TYPE_OPTIONS}
+          value={eventTypeFilter}
+          onChange={setEventTypeFilter}
+          clearable
+          size="xs"
+          w={200}
+        />
+        <Select
+          placeholder="Severity"
+          data={['info', 'warning', 'error']}
+          value={severityFilter}
+          onChange={setSeverityFilter}
+          clearable
+          size="xs"
+          w={140}
+        />
+        <TextInput
+          placeholder="Room id"
+          value={roomIdFilter}
+          onChange={(e) => setRoomIdFilter(e.currentTarget.value)}
+          size="xs"
+          w={160}
+        />
+        <ActionIcon variant="light" onClick={onRefresh} title="Refresh now">
+          <IconRefresh size={16} />
+        </ActionIcon>
+      </Group>
+
+      {events.length === 0 ? (
+        <Text size="sm" c="dimmed">No events match this filter yet.</Text>
+      ) : (
+        <Table striped highlightOnHover verticalSpacing="xs" fz="xs">
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th>When</Table.Th>
+              <Table.Th>Type</Table.Th>
+              <Table.Th>Severity</Table.Th>
+              <Table.Th>Room</Table.Th>
+              <Table.Th>Player</Table.Th>
+              <Table.Th>Payload</Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {events.map((e) => (
+              <Table.Tr key={e.id}>
+                <Table.Td style={{ whiteSpace: 'nowrap' }}>{new Date(e.createdAt).toLocaleTimeString()}</Table.Td>
+                <Table.Td><Code>{e.eventType}</Code></Table.Td>
+                <Table.Td>
+                  <Badge size="xs" color={e.severity === 'error' ? 'red' : e.severity === 'warning' ? 'yellow' : 'gray'}>
+                    {e.severity}
+                  </Badge>
+                </Table.Td>
+                <Table.Td>{e.roomId ? <Code>{e.roomId.slice(0, 8)}</Code> : '—'}</Table.Td>
+                <Table.Td>{e.playerId ? <Code>{e.playerId.slice(0, 8)}</Code> : '—'}</Table.Td>
+                <Table.Td style={{ maxWidth: 420, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {JSON.stringify(e.payload)}
+                </Table.Td>
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      )}
+    </Stack>
+  );
+}
+
+function DecisionBalanceView({
+  decisions,
+  gamesConsidered,
+  loading,
+  onRefresh,
+}: {
+  decisions: DecisionAnalyticsEntry[] | null;
+  gamesConsidered: number;
+  loading: boolean;
+  onRefresh: () => void;
+}) {
+  if (!decisions) return <Text size="sm" c="dimmed">Loading…</Text>;
+
+  return (
+    <Stack gap="sm">
+      <Group justify="space-between">
+        <Text size="xs" c="dimmed">
+          Win rate is drawn from {gamesConsidered} completed game{gamesConsidered === 1 ? '' : 's'} — a decision with no
+          bar yet was never deployed in a room whose game has since finished.
+        </Text>
+        <ActionIcon variant="light" loading={loading} onClick={onRefresh} title="Refresh"><IconRefresh size={16} /></ActionIcon>
+      </Group>
+      {decisions.length === 0 ? (
+        <Text size="sm" c="dimmed">No decisions logged yet — play a game to populate this.</Text>
+      ) : (
+        <Table striped highlightOnHover verticalSpacing="xs" fz="xs">
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th>Decision</Table.Th>
+              <Table.Th>Deployed</Table.Th>
+              <Table.Th>Rejected</Table.Th>
+              <Table.Th>Top rejection reason</Table.Th>
+              <Table.Th>Win rate (eventual winner vs. loser)</Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {decisions.map((d) => (
+              <Table.Tr key={d.decisionName}>
+                <Table.Td>{d.decisionName}</Table.Td>
+                <Table.Td>{d.deployCount}</Table.Td>
+                <Table.Td>{d.rejectCount}</Table.Td>
+                <Table.Td>
+                  {d.topRejectReasons[0]
+                    ? <Text size="xs" c="dimmed">{d.topRejectReasons[0].reason} ({d.topRejectReasons[0].count})</Text>
+                    : '—'}
+                </Table.Td>
+                <Table.Td style={{ minWidth: 180 }}>
+                  {d.winRate === null ? (
+                    <Text size="xs" c="dimmed">n/a</Text>
+                  ) : (
+                    <Group gap={6} wrap="nowrap">
+                      <Progress value={d.winRate * 100} color={winRateColor(d.winRate)} size="sm" w={100} />
+                      <Text size="xs">{Math.round(d.winRate * 100)}% ({d.winCount}/{d.winCount + d.lossCount})</Text>
+                    </Group>
+                  )}
+                </Table.Td>
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      )}
+    </Stack>
+  );
+}
+
+function LawsuitWinRatesView({
+  grounds,
+  loading,
+  onRefresh,
+}: {
+  grounds: LawsuitAnalyticsEntry[] | null;
+  loading: boolean;
+  onRefresh: () => void;
+}) {
+  if (!grounds) return <Text size="sm" c="dimmed">Loading…</Text>;
+
+  return (
+    <Stack gap="sm">
+      <Group justify="flex-end">
+        <ActionIcon variant="light" loading={loading} onClick={onRefresh} title="Refresh"><IconRefresh size={16} /></ActionIcon>
+      </Group>
+      {grounds.length === 0 ? (
+        <Text size="sm" c="dimmed">No lawsuits filed yet.</Text>
+      ) : (
+        <Table striped highlightOnHover verticalSpacing="xs" fz="xs">
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th>Decision</Table.Th>
+              <Table.Th>Ground</Table.Th>
+              <Table.Th>Filed</Table.Th>
+              <Table.Th>Resolved</Table.Th>
+              <Table.Th>Plaintiff win rate</Table.Th>
+              <Table.Th>Avg stakes</Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {grounds.map((g) => (
+              <Table.Tr key={`${g.decisionName}::${g.groundName}`}>
+                <Table.Td>{g.decisionName}</Table.Td>
+                <Table.Td style={{ maxWidth: 320 }}>{g.groundName}</Table.Td>
+                <Table.Td>{g.filedCount}</Table.Td>
+                <Table.Td>{g.resolvedCount}</Table.Td>
+                <Table.Td style={{ minWidth: 180 }}>
+                  {g.winRate === null ? (
+                    <Text size="xs" c="dimmed">n/a</Text>
+                  ) : (
+                    <Group gap={6} wrap="nowrap">
+                      <Progress value={g.winRate * 100} color={winRateColor(g.winRate)} size="sm" w={100} />
+                      <Text size="xs">{Math.round(g.winRate * 100)}% ({g.wonCount}/{g.resolvedCount})</Text>
+                    </Group>
+                  )}
+                </Table.Td>
+                <Table.Td>{g.avgStakes !== null ? `$${Math.round(g.avgStakes).toLocaleString()}` : '—'}</Table.Td>
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      )}
+    </Stack>
+  );
+}
+
+function PerformanceView({
+  data,
+  loading,
+  onRefresh,
+}: {
+  data: PerformanceAnalyticsResponse | null;
+  loading: boolean;
+  onRefresh: () => void;
+}) {
+  if (!data) return <Text size="sm" c="dimmed">Loading…</Text>;
+
+  return (
+    <Stack gap="lg">
+      <Group justify="flex-end">
+        <ActionIcon variant="light" loading={loading} onClick={onRefresh} title="Refresh"><IconRefresh size={16} /></ActionIcon>
+      </Group>
+
+      <div>
+        <Text size="sm" fw={600} mb={4}>Turn resolution ({data.turns.count} logged)</Text>
+        {data.turns.count === 0 ? (
+          <Text size="xs" c="dimmed">No turns logged yet.</Text>
+        ) : (
+          <Group gap="xl">
+            <Text size="xs">Avg engine compute: <b>{data.turns.avgComputeMs}ms</b></Text>
+            <Text size="xs">Avg total (incl. persistence): <b>{data.turns.avgTotalMs}ms</b></Text>
+            <Text size="xs">Slowest total: <b>{data.turns.maxTotalMs}ms</b></Text>
+          </Group>
+        )}
+      </div>
+
+      <div>
+        <Text size="sm" fw={600} mb={4}>Local LLM calls</Text>
+        {data.llm.length === 0 ? (
+          <Text size="xs" c="dimmed">No LLM calls logged yet.</Text>
+        ) : (
+          <Table verticalSpacing="xs" fz="xs" w={480}>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>Kind</Table.Th>
+                <Table.Th>Calls</Table.Th>
+                <Table.Th>Avg latency</Table.Th>
+                <Table.Th>Success rate</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {data.llm.map((l) => (
+                <Table.Tr key={l.kind}>
+                  <Table.Td>{l.kind}</Table.Td>
+                  <Table.Td>{l.count}</Table.Td>
+                  <Table.Td>{l.avgLatencyMs}ms</Table.Td>
+                  <Table.Td>
+                    <Badge size="xs" color={l.successRate >= 0.9 ? 'green' : l.successRate >= 0.6 ? 'yellow' : 'red'}>
+                      {Math.round(l.successRate * 100)}%
+                    </Badge>
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        )}
+      </div>
+
+      <div>
+        <Text size="sm" fw={600} mb={4}>Recent errors, by context</Text>
+        {data.errorCounts.length === 0 ? (
+          <Text size="xs" c="dimmed">No errors logged — good sign.</Text>
+        ) : (
+          <Stack gap={4}>
+            {data.errorCounts.map((e) => (
+              <Group key={e.context} gap="xs">
+                <Badge size="xs" color="red">{e.count}</Badge>
+                <Text size="xs">{e.context}</Text>
+              </Group>
+            ))}
+          </Stack>
+        )}
+      </div>
+    </Stack>
   );
 }
 

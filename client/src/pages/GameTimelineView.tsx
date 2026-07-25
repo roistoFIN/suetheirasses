@@ -35,7 +35,7 @@ function fmt(n: number): string {
 function getKpiFieldValue(point: { variables: PlayerVariables; derived: PlayerDerivedStats; riskGauge: number }, field: string): number {
   if (field === 'riskGauge') return point.riskGauge;
   const [bucket, key] = field.split('.') as ['variables' | 'derived', string];
-  return (point[bucket] as any)?.[key] ?? 0;
+  return (point[bucket] as unknown as Record<string, number | undefined>)?.[key] ?? 0;
 }
 
 /** Same 5 metrics/labels as GamePhase.tsx's OWN_KPI_DRILLDOWN_FIELD, for the same reason: one switchable race chart, not five separate ones. */
@@ -171,7 +171,7 @@ export default function GameTimelineView({ mode }: GameTimelineViewProps) {
     return () => {
       socket.off(ServerEvents.GAME_TIMELINE_RESULT, handler);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [socket, mode === 'live' ? liveRound : 'static', mode === 'live' ? gameOver : 'static']);
 
   const maxRound = data?.currentRound ?? 1;

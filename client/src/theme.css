@@ -116,6 +116,30 @@ body {
 .mantine-Modal-overlay {
   background: rgba(10, 8, 6, 0.72) !important;
 }
+/* Mantine's <List> defaults to `list-style-position: inside` — the marker is
+   laid out as an inline box *before* `List-itemWrapper` on the same line, but
+   `itemWrapper`'s own width is computed against the <li>'s full content-box
+   width, not "what's left after the marker." The marker's width (~19px for a
+   disc bullet at this font size) is never subtracted, so the wrapper's right
+   edge overflows its container by exactly the marker's width — which pokes a
+   few px past a Modal body's padding and forces a horizontal scrollbar
+   (reported: both the About and Privacy Policy popups scrolled sideways;
+   reproduced via a live Playwright inspection, not guessed — `List-itemWrapper`'s
+   bounding rect measurably exceeded `Modal-body`'s on every `<List>` in both
+   modals, and confirmed `list-style-position: inside` was already Mantine's
+   own default, so overriding it to the same value changed nothing). Flipping
+   to `list-style-position: outside` moves the marker into the <li>'s margin
+   box instead, genuinely outside the content box this time — combined with a
+   matching `padding-inline-start` on the list root to give that outside
+   marker somewhere to sit, `itemWrapper`'s content-box width (and thus its
+   100%-width children) is correctly narrowed by the reserved space, and
+   nothing overflows. */
+.mantine-List-root {
+  padding-inline-start: 1.2em;
+}
+.mantine-List-item {
+  list-style-position: outside;
+}
 
 .mantine-Button-root[data-variant='filled'] {
   font-family: var(--font-display);

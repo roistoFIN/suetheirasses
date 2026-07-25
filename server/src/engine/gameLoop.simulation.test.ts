@@ -21,7 +21,7 @@
  * absolute-impact write corrupted an undefined field to NaN" section). This file keeps the
  * simulation itself as a permanent regression tool — a hand-written fixture library can
  * only ever exercise the specific fields/decisions someone thought to write a test for; a
- * real, evolving 83-legal-risk/45-decision library is exactly the kind of thing where a
+ * real, evolving decision/legal-risk library is exactly the kind of thing where a
  * one-off combination (a specific decision's specific field name) is what actually breaks,
  * not the general shape of the math. If you add a new decision whose `impacts` targets an
  * optional/derived `PlayerVariables` field, this is the test most likely to catch a

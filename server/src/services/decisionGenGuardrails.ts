@@ -8,8 +8,9 @@
  * decisions "affect only a certain number of KPIs, within certain effect limits."
  *
  * Every range in `FIELD_RANGES`/`LEGAL_RISK_FIELD_RANGES` was derived by scanning the
- * real 45-decision/83-legal-risk seed library (`server/src/data/game_engine.json`) for
- * each field's observed min/max across every decision that touches it, then padded —
+ * real seed library (`server/src/data/game_engine.json`, admin-editable and growing —
+ * see CLAUDE.md) for each field's observed min/max across every decision that touches
+ * it, then padded —
  * see CLAUDE.md's experimental "AI decision generation" section. This is intentionally
  * calibration, not a hard game-design ceiling: a legitimately strong hand-authored
  * decision could still exceed these via `/admin` directly. It only bounds what an AI
@@ -45,7 +46,7 @@ const ALLOWED_IMPACT_FIELD_SET = new Set<string>(ALLOWED_IMPACT_FIELDS);
 /** A legal risk's `impact.target` is only ever meaningful as one of these three — see
  * `LegalEngine.fileLawsuit`'s stakes calc: `'cash'` prices the schedule value directly
  * (absolute), `'equity'`/`'revenue'` scale it against the defendant's own current value
- * of that field (relative). All 83 legal risks in the real library already use only
+ * of that field (relative). Every legal risk in the real library already uses only
  * these three; nothing else has real engine precedent for pricing a lawsuit's stakes. */
 export const ALLOWED_LEGAL_RISK_TARGETS = ['cash', 'equity', 'revenue'] as const;
 type LegalRiskTarget = (typeof ALLOWED_LEGAL_RISK_TARGETS)[number];
@@ -308,8 +309,8 @@ export function clampDecisionCandidate(
 ): ClampResult {
   const warnings: ClampWarning[] = [];
 
-  const impacts = clampImpacts((raw as any).impacts, warnings);
-  const legalRisks = clampLegalRisks((raw as any).legalRisks, warnings);
+  const impacts = clampImpacts(raw.impacts, warnings);
+  const legalRisks = clampLegalRisks(raw.legalRisks, warnings);
   const hasTargetImpacts = Object.keys(impacts).some((k) => k.startsWith('target.'));
 
   const level = raw.level === 'Strategic' || raw.level === 'Operational' || raw.level === 'Financial' ? raw.level : 'Operational';
@@ -352,7 +353,7 @@ export function clampDecisionCandidate(
     if (category !== raw.cashFlowCategory) {
       warnings.push({ path: 'cashFlowCategory', message: `missing/invalid — defaulted to "${category}"` });
     }
-    (decision as any).cashFlowCategory = category;
+    decision.cashFlowCategory = category;
   }
 
   return { decision, warnings };

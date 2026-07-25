@@ -202,7 +202,8 @@ suetheirasses/
 │   │   │   ├── GamePhase.tsx        # The GAME_PHASE loop UI (KPIs, decisions, lawsuits)
 │   │   │   ├── GameOver.tsx         # AFTERMATH: winner + final standings
 │   │   │   ├── GameTimelineView.tsx # Civilization-style replay/live spectator view
-│   │   │   └── AdminPortal.tsx      # /admin — token-gated room monitoring + config view
+│   │   │   └── AdminPortal.tsx      # /admin — token-gated room monitoring + config/decisions/
+│   │   │                            # formulas/feedback/analytics view
 │   │   ├── stores/                  # Zustand state stores
 │   │   │   ├── gameStore.ts         # Game state (room, phase, timer, turn results)
 │   │   │   ├── socketStore.ts       # Socket.IO connection & events
@@ -235,12 +236,14 @@ suetheirasses/
 │   │   │   └── defaultFormulas.ts   # The 23 seed formula expressions — shared by
 │   │   │                            # prisma/seed.ts and the engine test fixtures
 │   │   ├── data/                    # Seed-only now — see Decisions & Game Config below
-│   │   │   ├── game_engine.json     # 45 decisions: impacts, legal risks, exclusions
+│   │   │   ├── game_engine.json     # Decision library: impacts, legal risks, exclusions
 │   │   │   └── game_config.json     # Starting values + admin-tunable variables
 │   │   ├── validation/              # Zod schemas
 │   │   │   └── schemas.ts           # All input validation
-│   │   ├── services/                # External service clients (real network I/O, no game math)
-│   │   │   └── llmService.ts        # Local llama.cpp client — AI-narrated annual report text
+│   │   ├── services/                # External service clients + persistence helpers
+│   │   │   ├── llmService.ts        # Local llama.cpp client — AI-narrated annual report text
+│   │   │   ├── eventLogService.ts   # Best-effort EventLog writer (see EventLog below)
+│   │   │   └── analyticsService.ts  # Pure aggregation behind the Analytics tab's dashboards
 │   │   ├── middleware/
 │   │   │   └── adminAuth.ts         # ADMIN_TOKEN gate for /api/admin/* (see Admin Portal below)
 │   │   └── index.ts                 # Server entry point + REST endpoints (/health, /api/room,
@@ -482,7 +485,7 @@ model Feedback {
 | `rooms:list` | `{ rooms: RoomInfo[] }` | List of available rooms (Quick Play) — never includes invite-only rooms |
 | `phase:changed` | `{ phase, round, timeLimit }` | Room advanced phase, or looped into another GAME_PHASE round |
 | `timer:update` | `{ timeLeft }` | Countdown tick |
-| `game:deck` | `{ decisions: DecisionDefinition[], gameSettings: GameSettings }` | Sent once, right when GAME_PHASE starts — the full 45-decision library and per-turn limits, static for the whole game. Also re-sent on a successful `room:rejoin` during GAME_PHASE. |
+| `game:deck` | `{ decisions: DecisionDefinition[], gameSettings: GameSettings }` | Sent once, right when GAME_PHASE starts — this game's own fixed, randomly-drawn 50-decision set (see *Business Decisions* below) and per-turn limits, static for the whole game. Also re-sent on a successful `room:rejoin` during GAME_PHASE, with the identical set the game started with. |
 | `turn:resolved` | `TurnResolutionResult` (`{ round, players: PlayerTurnResult[], gameOver, winnerId? }`) | Sent twice per round-1: once immediately when the game starts (starting-position preview, `GameLoop.getInitialSnapshot`), and again whenever a GAME_PHASE turn actually finishes resolving (`GameLoop.resolveTurn`) — full per-player state either way. `GameEngine` caches the most recent one per room and re-sends it on a successful `room:rejoin` during GAME_PHASE, so a reconnecting player doesn't wait for the next turn to see where things stand. |
 | `player:bankrupt` | `{ playerId, playerName }` | Player eliminated — either their cash went below $0 this turn, or they voluntarily forfeited via `game:leave` |
 | `game:over` | `{ winner, finalStandings }` | Only one player remains; room moved to AFTERMATH. Also re-sent on a successful `room:rejoin` during AFTERMATH. |
@@ -914,9 +917,14 @@ legal-risk line the deck's own cards render, so confirming what a still-maturing
 queued pick actually does never requires reopening the deck.
 
 Each 120s GAME_PHASE round, every player submits up to 1 strategic + 2 operational +
-2 financial decision from a shared library of 45 decisions — spanning `Traditional`,
-`Grey Area`, and `Dirty` in nature. `Financial` is a decision-type category of its own
-(currently just Buy Shares/Sell Shares), capped independently of strategic/operational
+2 financial decision from that game's own fixed decision set — spanning `Traditional`,
+`Grey Area`, and `Dirty` in nature. Every new game randomly draws its own 50-decision set
+from the full admin-editable library (48 random decisions plus every share-transaction
+decision — Buy Shares/Sell Shares — always included, regardless of the draw) the moment
+the game starts; that set never changes for the rest of the game, survives reconnects,
+and is different from game to game. `Financial` is a decision-type category of its own
+(Buy Shares/Sell Shares plus a handful of financial-engineering content decisions — bond
+issuances, futures plays, and worse), capped independently of strategic/operational
 by `gameSettings.maxFinancialDecisionsPerTurn` — see *Share Ownership & Takeover* below.
 When the timer expires, `GameLoop` resolves the turn for all players simultaneously:
 
@@ -1600,7 +1608,7 @@ It has two parts:
 - **Room monitoring** — every in-memory room in every phase (not just WAITING/joinable
   ones, unlike Quick Play's `room:list`), each with its players' host/bankrupt/connected
   status. Polled every 5 seconds while open.
-- **Decision library + game config editing** — the full 45-decision list and the
+- **Decision library + game config editing** — the full decision list and the
   `GameConfig` (`gameSettings`/`playerStartingValues`/`adminVariables`) are edited as raw
   JSON in a textarea (client-validated for parseable JSON, then server-validated against
   a Zod schema before being written) rather than a structured form per field — the
@@ -1618,6 +1626,20 @@ It has two parts:
   first. Nothing here is editable — feedback is collected anonymously via a public
   endpoint and only ever read back here. Polled every 5 seconds alongside the rooms
   table, since new rows can arrive at any time.
+- **Analytics (read-only)** — durable, cross-game telemetry for balance analysis and bug
+  tracing (see CLAUDE.md's *"EventLog + the admin Analytics tab"* for the full design).
+  Four sub-views: a filterable/paginated raw **Event Feed** (turn resolutions, decision
+  deployments/rejections with their real reason, player eliminations/disconnects/
+  reconnects/kicks, room cleanups, completed games, local-LLM calls, and previously
+  console.error-only failures now also logged with `severity: 'error'`) — the only
+  sub-view that polls, since it's genuinely live data; a **Decision Balance** dashboard
+  cross-referencing real deployments against real game outcomes for a live win/loss
+  correlation per decision (the productionized version of this project's earlier
+  randomized-simulation balance work); a **Lawsuit Win Rates** dashboard grouped by
+  decision + ground; and a **Performance & Errors** view (turn-resolution duration, local
+  LLM call latency/success rate, and an error-context breakdown). The three dashboards
+  are fetched once when opened plus a manual Refresh button, not polled — each is a real
+  multi-thousand-row server-side scan, admin-portal scale rather than hot-path.
 
 The decision library, game config, and formulas are all **stored in Postgres, not static
 JSON** (see *Decisions & Game Config* and *Formulas* below) — every save here takes
@@ -1637,7 +1659,7 @@ deliberately the simplest thing that works: one token, no users, no expiry.
 
 ### Decisions & Game Config (database-backed)
 
-The 45-decision library and `GameConfig` used to be static JSON files
+The decision library and `GameConfig` used to be static JSON files
 (`server/src/data/game_engine.json`/`game_config.json`) loaded once at server startup.
 They're now rows in Postgres (`Decision`, `GameConfigRow`) — authoritative at runtime,
 editable live from `/admin` above, with changes taking effect on the next turn resolved
@@ -2057,6 +2079,10 @@ docker-compose up -d --build
 | GET | `/api/admin/formulas` | All 23 pure-math formulas, from the DB. Requires `x-admin-token`. See *Formulas* above. |
 | PUT | `/api/admin/formulas/:key` | Update one formula's expression/description. Body validated by `formulaUpdateSchema` — real syntax parse plus a per-key variable whitelist; 400 on either failure, 404 if the key is unknown. No create/delete — the key set is fixed. Requires `x-admin-token`. |
 | GET | `/api/admin/feedback` | Every submitted feedback row, newest first. Read-only — nothing here is ever written from the admin side. Requires `x-admin-token`. See *Player Feedback* above. |
+| GET | `/api/admin/events` | Filterable/paginated raw `EventLog` feed. Query params: `eventType`, `severity`, `roomId`, `playerId`, `before` (ISO timestamp cursor), `limit` (default 100, capped at 500). Requires `x-admin-token`. See *Admin Portal → Analytics* above and CLAUDE.md's *"EventLog + the admin Analytics tab"*. |
+| GET | `/api/admin/analytics/decisions` | Per-decision deploy/reject counts, top rejection reasons, and a real win/loss correlation cross-referenced against completed games. Requires `x-admin-token`. |
+| GET | `/api/admin/analytics/lawsuits` | Per (decision, ground) filed/resolved/won counts, win rate, and average stakes — read from `LegalCaseHistory`. Requires `x-admin-token`. |
+| GET | `/api/admin/analytics/performance` | Turn-resolution duration stats, local-LLM call latency/success rate by kind, and an error-context breakdown. Requires `x-admin-token`. |
 
 ### WebSocket API
 

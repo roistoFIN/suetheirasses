@@ -20,13 +20,41 @@ function mockFetchOk(content: string) {
 
 describe('generateAnnualReportBlurb', () => {
   const originalFetch = global.fetch;
+  const originalEnabled = process.env.ANNUAL_REPORT_LLM_ENABLED;
 
   beforeEach(() => {
     vi.resetAllMocks();
+    // Real generation is opt-in (see llmService.ts's `isLlmEnabled` doc comment) — every
+    // test below except the "disabled by default" one explicitly turns it on so it can
+    // still exercise the actual fetch/sanitize/cache plumbing.
+    process.env.ANNUAL_REPORT_LLM_ENABLED = 'true';
   });
 
   afterEach(() => {
     global.fetch = originalFetch;
+    if (originalEnabled === undefined) delete process.env.ANNUAL_REPORT_LLM_ENABLED;
+    else process.env.ANNUAL_REPORT_LLM_ENABLED = originalEnabled;
+  });
+
+  it('is disabled by default — never calls fetch, returns the fallback immediately (regression)', async () => {
+    delete process.env.ANNUAL_REPORT_LLM_ENABLED;
+    const fetchMock = mockFetchOk('Should never be seen.');
+    global.fetch = fetchMock as any;
+    const req = makeRequest({ decisionName: 'Unique Decision Disabled' });
+
+    const text = await generateAnnualReportBlurb(req);
+
+    expect(text).toBe(req.fallback);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('does not report telemetry when disabled (no call was attempted)', async () => {
+    delete process.env.ANNUAL_REPORT_LLM_ENABLED;
+    const onComplete = vi.fn();
+
+    await generateAnnualReportBlurb(makeRequest({ decisionName: 'Unique Decision Disabled Telemetry' }), onComplete);
+
+    expect(onComplete).not.toHaveBeenCalled();
   });
 
   it('returns the sanitized LLM response on success', async () => {

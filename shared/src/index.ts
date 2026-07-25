@@ -252,7 +252,7 @@ export interface PhaseChangedResponse {
   timeLimit: number;
 }
 
-/** The 45-decision library + per-turn limits, sent once when GAME_PHASE starts. */
+/** The shared decision library + per-turn limits, sent once when GAME_PHASE starts. */
 export interface GameDeckResponse {
   decisions: DecisionDefinition[];
   gameSettings: GameSettings;
@@ -341,6 +341,82 @@ export interface FeedbackEntry {
 
 export interface FeedbackListResponse {
   feedback: FeedbackEntry[];
+}
+
+// ============================================================
+// EventLog / admin Analytics tab — see server's EventLog Prisma model and
+// eventLogService.ts for the fixed EVENT_TYPES vocabulary these read from.
+// Read-only from the client's point of view (AdminPortal.tsx); nothing here is ever
+// written by the client — every write happens server-side, from GameEngine.
+// ============================================================
+
+export type EventSeverity = 'info' | 'warning' | 'error';
+
+/** One row from the `EventLog` table, as read back by `GET /api/admin/events`. */
+export interface EventLogEntry {
+  id: string;
+  eventType: string;
+  severity: EventSeverity;
+  roomId: string | null;
+  playerId: string | null;
+  payload: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface EventLogListResponse {
+  events: EventLogEntry[];
+}
+
+/** One decision's aggregate stats across every logged `decision.deployed`/
+ * `decision.rejected` event, cross-referenced against `game.completed` events to
+ * compute a real win/loss correlation from actually-played games — the productionized
+ * version of the one-off randomized-simulation balance analysis described in
+ * CLAUDE.md's decision-balance sections. `winRate` is `null` until at least one
+ * deployment of this decision happened in a room whose game has since completed. */
+export interface DecisionAnalyticsEntry {
+  decisionName: string;
+  deployCount: number;
+  rejectCount: number;
+  topRejectReasons: Array<{ reason: string; count: number }>;
+  winCount: number;
+  lossCount: number;
+  winRate: number | null;
+}
+
+export interface DecisionAnalyticsResponse {
+  decisions: DecisionAnalyticsEntry[];
+  /** How many completed games (`game.completed` events) the win/loss correlation is drawn from. */
+  gamesConsidered: number;
+}
+
+/** One (decision, ground) pair's aggregate stats, from the durable `LegalCaseHistory`
+ * table — not EventLog, since lawsuit lifecycle is already fully captured there (see
+ * CLAUDE.md's LegalCaseHistory section). */
+export interface LawsuitAnalyticsEntry {
+  groundName: string;
+  decisionName: string;
+  filedCount: number;
+  resolvedCount: number;
+  wonCount: number;
+  winRate: number | null;
+  avgStakes: number | null;
+}
+
+export interface LawsuitAnalyticsResponse {
+  grounds: LawsuitAnalyticsEntry[];
+}
+
+export interface PerformanceLlmStat {
+  kind: string;
+  count: number;
+  avgLatencyMs: number;
+  successRate: number;
+}
+
+export interface PerformanceAnalyticsResponse {
+  turns: { count: number; avgComputeMs: number; avgTotalMs: number; maxTotalMs: number };
+  llm: PerformanceLlmStat[];
+  errorCounts: Array<{ context: string; count: number }>;
 }
 
 /** Response for `game:digDeeperResult` — sent only to the socket that paid for the dig. */
@@ -449,6 +525,14 @@ export interface RoomState {
   readyPlayerIds: Set<string>;
   /** Names kicked from this room — blocks a fresh `room:join` (invite-link or Quick Play) reusing that name, for the lifetime of the room. Not a real ban system (no auth in this app — see README's trust model); a determined player could still rejoin under a different name. */
   kickedNames: Set<string>;
+  /** This room's fixed, randomly-drawn decision set for the game about to start (or in
+   * progress) — decision names only, resolved back to full definitions via
+   * `GameEngine.getRoomDeck`. Empty until `GameEngine.startGame` picks it (see
+   * `pickRandomDecisionSubset`); never recomputed after that for the life of the game,
+   * so every player sees the same set for the whole game, survives reconnects, and
+   * SUE THEIR ASSES' ground catalog is implicitly scoped to it too, since the client
+   * only ever knows about decisions it received via `game:deck`. */
+  decisionSubset: string[];
 }
 
 

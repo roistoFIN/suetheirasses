@@ -7,6 +7,7 @@ import GamePhase from './pages/GamePhase';
 import GameOver from './pages/GameOver';
 import GameTimelineView from './pages/GameTimelineView';
 import AdminPortal from './pages/AdminPortal';
+import ConsentBanner from './components/ConsentBanner';
 
 const LOST_COPY: Record<'bankrupt' | 'forfeit' | 'merged', { title: string; body: (acquirerName?: string) => string }> = {
   bankrupt: {
@@ -225,6 +226,7 @@ const App: React.FC = () => {
     <>
       <NotificationBanner />
       {page}
+      <ConsentBanner />
       {bankruptcyEvents.length > 0 && (
         <BankruptcyModal
           playerName={bankruptcyEvents[0].playerName}

@@ -69,7 +69,6 @@ export const useSocketStore = create<SocketState>((set, get) => ({
     });
 
     socket.on('connect', () => {
-      console.log('Socket connected:', socket.id);
       set({ isConnected: true });
 
       // Fires on the first connect AND on every Socket.IO-driven auto-reconnect after
@@ -83,12 +82,10 @@ export const useSocketStore = create<SocketState>((set, get) => ({
     });
 
     socket.on('disconnect', () => {
-      console.log('Socket disconnected');
       set({ isConnected: false });
     });
 
     socket.on(ServerEvents.ROOM_JOINED, (data: RoomJoinedResponse) => {
-      console.log('Room joined:', data);
       const { updateRoom, updatePlayer, setCompanies, setIsRejoining } = useGameStore.getState();
       updateRoom(data.room);
       updatePlayer(data.player);
@@ -106,7 +103,6 @@ export const useSocketStore = create<SocketState>((set, get) => ({
     });
 
     socket.on(ServerEvents.ROOM_PLAYER_KICKED, (data: { kickedPlayerId: string; kickedPlayerName: string }) => {
-      console.log('Player kicked:', data);
       const { kickPlayer, player, resetSession, setNotification } = useGameStore.getState();
       // If I'm the one who got kicked, there's no session left to resume — wipe
       // room/player state back to the landing page instead of just removing my
@@ -121,7 +117,6 @@ export const useSocketStore = create<SocketState>((set, get) => ({
     });
 
     socket.on(ServerEvents.ROOM_PLAYER_LEFT, (data: { playerId: string; playerName: string; roomId: string }) => {
-      console.log('Player left (reconnect grace period expired):', data);
       const { kickPlayer, setNotification } = useGameStore.getState();
       kickPlayer(data.playerId); // same "remove from roster" logic as a kick
       setNotification(`${data.playerName}'s connection timed out`);
@@ -136,7 +131,6 @@ export const useSocketStore = create<SocketState>((set, get) => ({
     // roster — the only way `isHost` correctly reaches the newly-promoted host's own view
     // of themselves too, not just how others see them.
     socket.on(ServerEvents.ROOM_UPDATED, (data: RoomUpdatedResponse) => {
-      console.log('Room updated:', data);
       const { player, updateRoom, updatePlayer } = useGameStore.getState();
       updateRoom(data.room);
       if (player) {
@@ -148,7 +142,6 @@ export const useSocketStore = create<SocketState>((set, get) => ({
     // Ack for my own voluntary room:leave — reset straight to the landing page, same
     // shape as being kicked, just with a different message.
     socket.on(ServerEvents.ROOM_LEFT, () => {
-      console.log('Left the room');
       const { resetSession, setNotification } = useGameStore.getState();
       clearSession();
       resetSession();
@@ -156,7 +149,6 @@ export const useSocketStore = create<SocketState>((set, get) => ({
     });
 
     socket.on(ServerEvents.ROOM_PLAYER_JOINED, (data: { playerId: string; playerName: string; isHost: boolean; roomId: string }) => {
-      console.log('Player joined:', data);
       const { addPlayer, room } = useGameStore.getState();
       // Guard against duplicate players (e.g., from reconnection or stale events)
       if (room && room.players.some((p) => p.id === data.playerId)) {
@@ -173,31 +165,26 @@ export const useSocketStore = create<SocketState>((set, get) => ({
     });
 
     socket.on(ServerEvents.PHASE_CHANGED, (data: PhaseChangedResponse) => {
-      console.log('Phase changed:', data);
       const { updatePhase } = useGameStore.getState();
       updatePhase(data);
     });
 
     socket.on(ServerEvents.TURN_RESOLVED, (data: TurnResolutionResult) => {
-      console.log('Turn resolved:', data);
       const { handleTurnResolved } = useGameStore.getState();
       handleTurnResolved(data);
     });
 
     socket.on(ServerEvents.GAME_DECK, (data: GameDeckResponse) => {
-      console.log('Game deck loaded:', data.decisions.length, 'decisions');
       const { setGameDeck } = useGameStore.getState();
       setGameDeck(data);
     });
 
     socket.on(ServerEvents.TIMER_UPDATE, (data: { timeLeft: number }) => {
-      console.log('Timer update:', data);
       const { updateTimer } = useGameStore.getState();
       updateTimer(data.timeLeft);
     });
 
     socket.on(ServerEvents.PLAYER_BANKRUPT, (data: { playerId: string; playerName: string; reason?: 'bankruptcy' | 'merger' | 'forfeit'; acquirerId?: string; acquirerName?: string }) => {
-      console.log('Player bankrupt:', data);
       const { markPlayerBankrupt, player, setSelfEliminationReason, enqueueBankruptcyEvent } = useGameStore.getState();
       markPlayerBankrupt(data.playerId);
       if (player && data.playerId === player.id) {
@@ -221,7 +208,6 @@ export const useSocketStore = create<SocketState>((set, get) => ({
     });
 
     socket.on(ServerEvents.GAME_OVER, (data: GameOverResponse) => {
-      console.log('Game over:', data);
       const { setGameOver } = useGameStore.getState();
       setGameOver(data);
       // Game's truly over — nothing left to reconnect to.
@@ -240,7 +226,6 @@ export const useSocketStore = create<SocketState>((set, get) => ({
     });
 
     socket.on(ServerEvents.GAME_DIG_DEEPER_RESULT, (data: DigDeeperResultPayload) => {
-      console.log('Dig deeper result:', data);
       const { player, applyDigDeeperResult } = useGameStore.getState();
       if (player) applyDigDeeperResult(player.id, data);
     });
@@ -250,7 +235,6 @@ export const useSocketStore = create<SocketState>((set, get) => ({
     // this same event (and for a failed `error`) to decide whether to queue the filing;
     // this handler only keeps the CASH KPI in sync, same reasoning as digDeeperResult.
     socket.on(ServerEvents.GAME_FILE_LAWSUIT_RESULT, (data: FileLawsuitResultPayload) => {
-      console.log('Lawsuit filing fee charged:', data);
       const { player, applyFileLawsuitResult } = useGameStore.getState();
       if (player) applyFileLawsuitResult(player.id, data.newCash);
     });
@@ -261,13 +245,11 @@ export const useSocketStore = create<SocketState>((set, get) => ({
     // client's own cash if newCash is set (a settlement) — CaseCard/CounterOfferPanel
     // read straight from turnResults, so nothing else needs to react to this directly.
     socket.on(ServerEvents.GAME_LEGAL_CASE_UPDATE, (data: LegalCaseUpdatePayload) => {
-      console.log('Legal case update:', data.case.id, data.case.status);
       const { applyLegalCaseUpdate } = useGameStore.getState();
       applyLegalCaseUpdate(data.case, data.newCash);
     });
 
     socket.on(ServerEvents.GAME_ANNUAL_REPORT_RESULT, (data: AnnualReportResultPayload) => {
-      console.log('Annual report result:', data.rivalPlayerId, data.entries.length, 'entries');
       const { applyAnnualReportResult } = useGameStore.getState();
       applyAnnualReportResult(data.rivalPlayerId, data.entries);
     });
@@ -283,7 +265,6 @@ export const useSocketStore = create<SocketState>((set, get) => ({
     });
 
     socket.on(ServerEvents.GAME_LEFT, () => {
-      console.log('Left the game (forfeited)');
       // Fires right after player:bankrupt (and, if that forfeit ended the game,
       // game:over + phase:changed too) — upgrade the reason to 'forfeit' so the
       // "lost" takeover screen (see App.tsx) shows the right message. The takeover's

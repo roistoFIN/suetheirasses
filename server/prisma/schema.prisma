@@ -223,3 +223,37 @@ model Feedback {
   @@index([createdAt])
   @@map("feedback")
 }
+
+// Durable, append-only analytics/debugging log for the admin portal's Analytics tab —
+// the "why did X happen in room Y" and "how does decision Z actually perform across real
+// games" data source. Deliberately has NO FK to Room or Player at all, unlike
+// LegalCaseHistory's Room-only FK: Room rows are hard-deleted outright (the stale-room
+// heartbeat sweep, the disconnect-grace-period cleanup — see gameEngine.ts's various
+// `prisma.room.delete` calls), which would cascade away anything FK'd to it. The whole
+// point of this table is to outlive individual games, so `roomId`/`playerId` are plain,
+// unconstrained strings — a query can still filter/group by them, it just can't join.
+// Anything a query might want to display alongside an id (player/decision/ground names)
+// is denormalized directly into `payload` at write time instead, same principle
+// LegalCaseHistory already uses for plaintiff/defendant names.
+//
+// `eventType` is a small fixed vocabulary (not enforced at the DB level, same pragmatic
+// style as `LegalCaseData.verdict`'s string union) — see eventLogService.ts's
+// `EventType` union for the authoritative list and what each one's `payload` shape is.
+// `severity` ('info' | 'warning' | 'error') exists so the admin Analytics tab's Errors
+// view can filter without inspecting every payload — anything logged from a catch block
+// that used to be console.error-only should be 'error' or 'warning', never 'info'.
+model EventLog {
+  id        String   @id @default(cuid())
+  eventType String
+  severity  String   @default("info")
+  roomId    String?
+  playerId  String?
+  payload   Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  @@index([eventType])
+  @@index([roomId])
+  @@index([severity])
+  @@index([createdAt])
+  @@map("event_log")
+}

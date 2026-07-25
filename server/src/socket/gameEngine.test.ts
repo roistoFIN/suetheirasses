@@ -223,6 +223,35 @@ const createMockPrisma = () => {
     }),
   };
 
+  // In-memory-backed, stateful mock so tests can assert on which EventLog rows a given
+  // action actually wrote — see eventLogService.ts's own "never throws" doc comment for
+  // why `create`/`createMany` never reject here (a real `eventLog.create` failure must
+  // never abort the caller, so nothing about this mock needs to simulate that).
+  const eventLogRows: Record<string, unknown>[] = [];
+  const mockEventLog = {
+    _rows: eventLogRows,
+    create: vi.fn().mockImplementation(({ data }: any) => {
+      const row = { id: `event-${eventLogRows.length + 1}`, createdAt: new Date(), ...data };
+      eventLogRows.push(row);
+      return Promise.resolve(row);
+    }),
+    createMany: vi.fn().mockImplementation(({ data }: any) => {
+      for (const d of data) {
+        eventLogRows.push({ id: `event-${eventLogRows.length + 1}`, createdAt: new Date(), ...d });
+      }
+      return Promise.resolve({ count: data.length });
+    }),
+    findMany: vi.fn().mockImplementation(({ where }: any = {}) => {
+      return Promise.resolve(
+        eventLogRows.filter((r: any) => {
+          if (where?.eventType && r.eventType !== where.eventType) return false;
+          if (where?.roomId && r.roomId !== where.roomId) return false;
+          return true;
+        }),
+      );
+    }),
+  };
+
   const mockPrisma: Partial<PrismaClient> = {
     room: mockRoom,
     player: mockPlayer,
@@ -238,6 +267,7 @@ const createMockPrisma = () => {
       findMany: vi.fn().mockResolvedValue([]),
     } as any,
     legalCaseHistory: mockLegalCaseHistory as any,
+    eventLog: mockEventLog as any,
     $transaction: vi.fn().mockImplementation(async (fn: (tx: Partial<PrismaClient>) => Promise<unknown>) => {
       return fn(mockPrisma as Partial<PrismaClient>);
     }),
@@ -245,6 +275,20 @@ const createMockPrisma = () => {
 
   return mockPrisma as unknown as PrismaClient;
 };
+
+/** Typed accessor for `createMockPrisma`'s in-memory `eventLog._rows` — a single, named
+ * assertion helper instead of repeating `(prisma.eventLog as any)._rows` at every call
+ * site (see the many EventLog regression tests below). */
+interface LoggedEventRow {
+  eventType: string;
+  severity: string;
+  roomId: string | null;
+  playerId: string | null;
+  payload: Record<string, unknown>;
+}
+function getLoggedEvents(prisma: PrismaClient): LoggedEventRow[] {
+  return (prisma as unknown as { eventLog: { _rows: LoggedEventRow[] } }).eventLog._rows;
+}
 
 describe('GameEngine', () => {
   let engine: GameEngine;
@@ -794,6 +838,15 @@ describe('GameEngine', () => {
       expect(room!.players.get(playerId)!.socketId).toBeNull();
       expect(mockPrisma.player.delete).not.toHaveBeenCalled();
       expect(mockPrisma.company.delete).not.toHaveBeenCalled();
+
+      // See CLAUDE.md's EventLog section — a disconnect is a lifecycle event the admin
+      // Analytics tab's raw feed surfaces, distinct from the later, terminal removal.
+      const eventRows = getLoggedEvents(mockPrisma);
+      expect(eventRows).toContainEqual(expect.objectContaining({
+        eventType: 'player.disconnected',
+        roomId: roomState.room.id,
+        playerId,
+      }));
     });
 
     it('should do nothing for unknown socket', async () => {
@@ -1036,6 +1089,13 @@ describe('GameEngine', () => {
       expect(result.gameDeck).toBeUndefined();
       expect(result.turnResolved).toBeUndefined();
       expect(result.gameOver).toBeUndefined();
+
+      const eventRows = getLoggedEvents(mockPrisma);
+      expect(eventRows).toContainEqual(expect.objectContaining({
+        eventType: 'player.reconnected',
+        roomId: roomState.room.id,
+        playerId,
+      }));
     });
 
     it('resends the game deck + cached last-turn snapshot when rejoining mid-GAME_PHASE', async () => {
@@ -1421,6 +1481,38 @@ describe('GameEngine', () => {
         (call: [string, ...unknown[]]) => call[0] === ServerEvents.PHASE_CHANGED,
       );
       expect(phaseChangedCalls.some((call) => (call[1] as any).round === 2)).toBe(true);
+
+      // See CLAUDE.md's EventLog section — one turn.resolved row per resolveGameTurn
+      // call, carrying round/duration/counts for the admin Analytics tab's Performance view.
+      const eventRows = getLoggedEvents(mockPrisma);
+      const turnResolvedEvents = eventRows.filter((r: any) => r.eventType === 'turn.resolved');
+      expect(turnResolvedEvents).toHaveLength(1);
+      expect(turnResolvedEvents[0]).toMatchObject({
+        roomId: roomState.room.id,
+        payload: expect.objectContaining({ round: 1, activePlayerCount: 2, bankruptedCount: 0 }),
+      });
+      expect(typeof turnResolvedEvents[0].payload.computeDurationMs).toBe('number');
+      expect(typeof turnResolvedEvents[0].payload.totalDurationMs).toBe('number');
+    });
+
+    it('logs a decision.deployed EventLog row for a decision that actually deploys this turn', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+      const aliceId = Array.from(roomState.players.values()).find((p) => p.name === 'Alice')!.id;
+      roomState.room.status = RoomStatus.GAME_PHASE;
+      roomState.room.currentPhaseRound = 1;
+
+      engine.submitDecisions(roomState.room.id, aliceId, { strategic: [{ name: 'New Factory' }], operational: [], financial: [], lawsuits: [] });
+      await engine.resolveGameTurn(roomState.room.id);
+
+      const eventRows = getLoggedEvents(mockPrisma);
+      expect(eventRows).toContainEqual(expect.objectContaining({
+        eventType: 'decision.deployed',
+        roomId: roomState.room.id,
+        playerId: aliceId,
+        payload: expect.objectContaining({ bucket: 'strategic', decisionName: 'New Factory' }),
+      }));
     });
 
     it('should transition to AFTERMATH and emit GAME_OVER when only one player remains', async () => {
@@ -1456,6 +1548,18 @@ describe('GameEngine', () => {
       expect(gameOverCalls).toHaveLength(1);
       expect(gameOverCalls[0][1]).toHaveProperty('winner');
       expect(gameOverCalls[0][1]).toHaveProperty('finalStandings');
+
+      // See CLAUDE.md's EventLog section — game.completed is logged exactly once, at the
+      // one moment a game actually just ended, never from buildGameOverPayload itself
+      // (which rejoinRoom also calls on every reconnect to an already-finished room).
+      const eventRows = getLoggedEvents(mockPrisma);
+      const completedEvents = eventRows.filter((r: any) => r.eventType === 'game.completed');
+      expect(completedEvents).toHaveLength(1);
+      expect(completedEvents[0]).toMatchObject({
+        roomId: roomState.room.id,
+        playerId: 'db-player-1',
+        payload: expect.objectContaining({ winnerName: 'Alice', endReason: 'natural' }),
+      });
     });
 
     it('should skip concurrent resolveGameTurn calls for the same room (race condition guard)', async () => {
@@ -1516,6 +1620,18 @@ describe('GameEngine', () => {
 
       expect(consoleErrorSpy).toHaveBeenCalled();
       consoleErrorSpy.mockRestore();
+
+      // The same failure is also logged to EventLog (severity 'error') — the admin
+      // Analytics tab's Errors view surfaces exactly this class of previously-
+      // console.error-only failure. See CLAUDE.md's EventLog section.
+      const eventRows = getLoggedEvents(mockPrisma);
+      expect(eventRows).toContainEqual(expect.objectContaining({
+        eventType: 'error.persistence',
+        severity: 'error',
+        roomId: roomState.room.id,
+        playerId: bobId,
+        payload: expect.objectContaining({ context: 'resolveGameTurn:companyUpdate' }),
+      }));
     });
 
     it('carries the annual-report blurb into the turn:resolved broadcast for an attack still sitting at investigationLevel 1 (not just right after the dig that reached it)', async () => {
@@ -1787,6 +1903,17 @@ describe('GameEngine', () => {
         data: { bankrupt: true, eliminatedRound: 4 },
       });
       expect(roomState.players.get(aliceId)!.eliminatedRound).toBe(4);
+
+      // See CLAUDE.md's EventLog section — a forfeit is one of the three
+      // player.eliminated reasons (bankruptcy/merger/forfeit), logged the same way
+      // regardless of which one it is.
+      const eventRows = getLoggedEvents(mockPrisma);
+      expect(eventRows).toContainEqual(expect.objectContaining({
+        eventType: 'player.eliminated',
+        roomId: roomState.room.id,
+        playerId: aliceId,
+        payload: expect.objectContaining({ reason: 'forfeit', round: 4 }),
+      }));
     });
 
     // Regression: a forfeit used to broadcast `player:bankrupt` with no `reason` field at
@@ -1878,6 +2005,19 @@ describe('GameEngine', () => {
       expect(timeline).not.toBeNull();
       expect(timeline!.gameOver).toBe(true);
       expect(timeline!.winnerId).toBe(bobId);
+
+      // See CLAUDE.md's EventLog section — logged once, right at forfeitGame's own
+      // game-ending branch, with endReason: 'forfeit' distinguishing it from a natural
+      // resolveGameTurn-driven completion. getGameTimeline (a read-only reconnect/replay
+      // path) must not have triggered a second one.
+      const eventRows = getLoggedEvents(mockPrisma);
+      const completedEvents = eventRows.filter((r: any) => r.eventType === 'game.completed');
+      expect(completedEvents).toHaveLength(1);
+      expect(completedEvents[0]).toMatchObject({
+        roomId: roomState.room.id,
+        playerId: bobId,
+        payload: expect.objectContaining({ winnerName: 'Bob', endReason: 'forfeit' }),
+      });
     });
   });
 
@@ -1893,6 +2033,61 @@ describe('GameEngine', () => {
       // and should reflect the submission was accepted without error.
       roomState.room.status = RoomStatus.GAME_PHASE;
       await expect(engine.resolveGameTurn(roomState.room.id)).resolves.not.toThrow();
+    });
+
+    it('silently drops a decision naming something outside this game\'s fixed decision set, but still deploys one that is in it (regression)', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+      await engine.startGame(roomState.room.id);
+      const [aliceId] = Array.from(roomState.players.keys());
+
+      const included = engine.getDecisionsSnapshot().find((d) => roomState.decisionSubset.includes(d.decision) && d.level === 'Operational')!;
+      const excluded = engine.getDecisionsSnapshot().find((d) => !roomState.decisionSubset.includes(d.decision))!;
+      expect(excluded).toBeDefined(); // sanity: the library is bigger than the 50-decision draw
+
+      engine.submitDecisions(roomState.room.id, aliceId, {
+        strategic: [], operational: [{ name: included.decision }, { name: excluded.decision }], financial: [], lawsuits: [],
+      });
+
+      await engine.resolveGameTurn(roomState.room.id);
+
+      // .filter().pop() — not .find() — since startGame's own initial-snapshot
+      // broadcast already emitted one earlier (empty-decisions) TURN_RESOLVED; the
+      // one from this resolveGameTurn call (the one that actually reflects the
+      // submission above) is the LAST one emitted.
+      const turnResolvedCalls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (call: [string, ...unknown[]]) => call[0] === ServerEvents.TURN_RESOLVED,
+      );
+      const alice = (turnResolvedCalls.pop()![1] as any).players.find((p: any) => p.playerId === aliceId);
+      const deployedNames = alice.activeDecisions.map((d: any) => d.decisionName);
+      expect(deployedNames).toContain(included.decision);
+      expect(deployedNames).not.toContain(excluded.decision);
+    });
+
+    it('silently drops a lawsuit citing a decision outside this game\'s fixed decision set (regression)', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+      await engine.startGame(roomState.room.id);
+      const [aliceId, bobId] = Array.from(roomState.players.keys());
+
+      const excluded = engine.getDecisionsSnapshot().find((d) => !roomState.decisionSubset.includes(d.decision) && (d.legalRisks?.length ?? 0) > 0)!;
+      expect(excluded).toBeDefined();
+
+      engine.submitDecisions(roomState.room.id, aliceId, {
+        strategic: [], operational: [], financial: [],
+        lawsuits: [{ targetId: bobId, decisionName: excluded.decision, groundName: excluded.legalRisks![0].name }],
+      });
+
+      await engine.resolveGameTurn(roomState.room.id);
+
+      // .filter().pop() — see the sibling test above for why not .find().
+      const turnResolvedCalls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (call: [string, ...unknown[]]) => call[0] === ServerEvents.TURN_RESOLVED,
+      );
+      const alice = (turnResolvedCalls.pop()![1] as any).players.find((p: any) => p.playerId === aliceId);
+      expect(alice.legalCases.some((c: any) => c.decisionName === excluded.decision)).toBe(false);
     });
   });
 
@@ -1970,6 +2165,57 @@ describe('GameEngine', () => {
     it('is a no-op for a room id that does not exist', async () => {
       await expect(engine.startGame('nonexistent-room')).resolves.toBeUndefined();
       expect(mockIo.emit).not.toHaveBeenCalled();
+    });
+
+    it('picks a fixed random decision set (48 + every share-transaction decision) and broadcasts exactly that set as the deck (regression)', async () => {
+      const roomState = await makeTwoPlayerWaitingRoom();
+      const fullLibrary = engine.getDecisionsSnapshot();
+      const shareDecisionNames = fullLibrary.filter((d) => !!d.shareTransactionType).map((d) => d.decision);
+      expect(shareDecisionNames.length).toBeGreaterThan(0); // sanity: the seed data actually has Buy/Sell Shares
+
+      await engine.startGame(roomState.room.id);
+
+      expect(roomState.decisionSubset).toHaveLength(48 + shareDecisionNames.length);
+      // Every share-transaction decision must be present, regardless of the random draw.
+      for (const name of shareDecisionNames) expect(roomState.decisionSubset).toContain(name);
+      // No duplicates, and every name is a real decision from the full library.
+      expect(new Set(roomState.decisionSubset).size).toBe(roomState.decisionSubset.length);
+      const fullNames = new Set(fullLibrary.map((d) => d.decision));
+      for (const name of roomState.decisionSubset) expect(fullNames.has(name)).toBe(true);
+
+      const calls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
+      const deckCall = calls.find((c) => c[0] === ServerEvents.GAME_DECK)!;
+      const deckPayload = deckCall[1] as { decisions: { decision: string }[] };
+      expect(deckPayload.decisions.map((d) => d.decision).sort()).toEqual([...roomState.decisionSubset].sort());
+    });
+
+    it('gives two different rooms different random decision sets (not deterministic/identical every game)', async () => {
+      const roomA = await makeTwoPlayerWaitingRoom();
+      const roomB = await makeTwoPlayerWaitingRoom();
+
+      await engine.startGame(roomA.room.id);
+      await engine.startGame(roomB.room.id);
+
+      // Not a hard guarantee for any single seed, but with a large library and a
+      // random draw of 48, two independent draws being byte-for-byte identical is
+      // astronomically unlikely — a real regression (e.g. reverting to "always the
+      // first 48") would fail this reliably.
+      expect(roomA.decisionSubset.slice().sort()).not.toEqual(roomB.decisionSubset.slice().sort());
+    });
+
+    it('a mid-game rejoin resends the exact same decision set the game started with (fixed per game, regression)', async () => {
+      const roomState = await makeTwoPlayerWaitingRoom();
+      await engine.startGame(roomState.room.id);
+      const startingSubset = [...roomState.decisionSubset].sort();
+
+      const [aliceId] = Array.from(roomState.players.keys());
+      await engine.markPlayerDisconnected('socket-1');
+      const result = await engine.rejoinRoom(roomState.room.id, aliceId, 'socket-1-new');
+
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+      const rejoinedNames = result.gameDeck!.decisions.map((d) => d.decision).sort();
+      expect(rejoinedNames).toEqual(startingSubset);
     });
   });
 
@@ -2653,12 +2899,17 @@ describe('GameEngine', () => {
       const entries = await engine.getAnnualReport('room-1', 'player-2');
 
       expect(entries).toEqual([{ decisionName: 'Bot Attack', text: 'blurb: Bot Attack', year: 3 }]);
-      expect(generateAnnualReportBlurb).toHaveBeenCalledWith({
-        decisionName: 'Bot Attack',
-        description: "Launch a coordinated cyberattack against a competitor's digital infrastructure to disrupt their logistics and operations.",
-        elapsedYears: 1,
-        fallback: 'Proactive digital capacity-loading evaluations of external logistical networks.',
-      });
+      // Second arg is the onComplete telemetry callback (see llmService.ts's
+      // LlmCallTelemetry) — only the request shape matters here, so match it loosely.
+      expect(generateAnnualReportBlurb).toHaveBeenCalledWith(
+        {
+          decisionName: 'Bot Attack',
+          description: "Launch a coordinated cyberattack against a competitor's digital infrastructure to disrupt their logistics and operations.",
+          elapsedYears: 1,
+          fallback: 'Proactive digital capacity-loading evaluations of external logistical networks.',
+        },
+        expect.any(Function),
+      );
     });
 
     it('returns null for a rival not found among active players', async () => {
@@ -2730,12 +2981,15 @@ describe('GameEngine', () => {
       // the only hint at this tier.
       expect(outcome.attack.decisionName).toBeUndefined();
       expect(outcome.attack.annualReportBlurb).toBe('blurb: Bot Attack');
-      expect(generateAnnualReportBlurb).toHaveBeenCalledWith({
-        decisionName: 'Bot Attack',
-        description: "Launch a coordinated cyberattack against a competitor's digital infrastructure to disrupt their logistics and operations.",
-        elapsedYears: 1,
-        fallback: 'Proactive digital capacity-loading evaluations of external logistical networks.',
-      });
+      expect(generateAnnualReportBlurb).toHaveBeenCalledWith(
+        {
+          decisionName: 'Bot Attack',
+          description: "Launch a coordinated cyberattack against a competitor's digital infrastructure to disrupt their logistics and operations.",
+          elapsedYears: 1,
+          fallback: 'Proactive digital capacity-loading evaluations of external logistical networks.',
+        },
+        expect.any(Function),
+      );
     });
 
     it('does not attach a blurb once investigation goes past level 1 (the real decision is already revealed instead)', async () => {

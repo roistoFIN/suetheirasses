@@ -30,6 +30,14 @@ export default tseslint.config(
     },
   },
   {
+    // See server/eslint.config.js for why test files are exempted — same reasoning
+    // (mocked stores, partial fixtures, event payloads) applies here.
+    files: ['**/*.test.ts', '**/*.test.tsx'],
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off',
+    },
+  },
+  {
     ignores: ['dist/', 'node_modules/'],
   }
 );

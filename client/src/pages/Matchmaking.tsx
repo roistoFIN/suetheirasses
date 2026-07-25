@@ -22,10 +22,11 @@ import {
   List,
   Table,
 } from '@mantine/core';
-import { IconCheck, IconCopy, IconInfoCircle, IconShieldLock, IconMessageStar } from '@tabler/icons-react';
+import { IconCheck, IconCopy, IconInfoCircle, IconShieldLock, IconMessageStar, IconCookie } from '@tabler/icons-react';
 import { useSocketStore } from '../stores/socketStore';
 import { useGameStore } from '../stores/gameStore';
 import { useChatStore } from '../stores/chatStore';
+import { useConsentStore } from '../stores/consentStore';
 import FeedbackForm from '../components/FeedbackForm';
 import { ClientEvents, ServerEvents, type RoomInfo } from '@suetheirasses/shared';
 
@@ -114,6 +115,7 @@ const Matchmaking: React.FC = () => {
   const { send, on } = useSocketStore();
   const { room, player, error, setError } = useGameStore();
   const { messages: chatMessages, show: showChat, hide: hideChat } = useChatStore();
+  const openCookieSettings = useConsentStore((s) => s.openSettings);
 
   /** A failed join/create attempt (name taken, room full, kicked, etc.) shouldn't leave
    * the loading overlay stuck forever — there's nothing else that resets these on error. */
@@ -412,6 +414,14 @@ const Matchmaking: React.FC = () => {
             onClick={() => setFeedbackOpen(true)}
           >
             Feedback
+          </Button>
+          <Button
+            variant="subtle"
+            color="dark"
+            leftSection={<IconCookie size={16} />}
+            onClick={openCookieSettings}
+          >
+            Cookie Settings
           </Button>
         </Group>
 

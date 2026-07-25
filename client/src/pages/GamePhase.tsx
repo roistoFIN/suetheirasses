@@ -673,7 +673,7 @@ export default function GamePhase() {
       setCompetitors(newCompetitors);
       setLoading(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- myData/competitors are
+     
     // intentionally read as "previous value" via closure, not tracked as deps; the
     // ref-guard above (not this dependency array) is what gates re-execution.
   }, [turnResults, player]);
@@ -2400,7 +2400,7 @@ function NegotiationPanel({ caseData, myPlayerId, socket }: NegotiationPanelProp
   // is now often sitting right at one edge of the new range, not a useful midpoint).
   useEffect(() => {
     setAmount(Math.round((offerMin + offerMax) / 2));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [caseData.offers.length]);
 
   const sendAction = (kind: CaseActionKind, payload: Record<string, unknown>) => {
@@ -2787,7 +2787,7 @@ function MiniStatButton({ label, value, trend, invert, onClick }: MiniStatButton
 function getKpiFieldValue(point: { variables: PlayerVariables; derived: PlayerDerivedStats; riskGauge: number }, field: string): number {
   if (field === 'riskGauge') return point.riskGauge;
   const [bucket, key] = field.split('.') as ['variables' | 'derived', string];
-  return (point[bucket] as any)?.[key] ?? 0;
+  return (point[bucket] as unknown as Record<string, number | undefined>)?.[key] ?? 0;
 }
 
 /** A breakdown-view row for a field that has history/prediction data behind it — click opens the KPI graph modal for that field. */
@@ -2837,7 +2837,7 @@ function KpiHistoryGraph({ field, socket, targetPlayerId }: KpiHistoryGraphProps
     return () => {
       socket.off(ServerEvents.GAME_KPI_HISTORY_RESULT, handler);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [socket, field, targetPlayerId]);
 
   if (loading || !data) {
@@ -3559,7 +3559,7 @@ function RivalFullReportView({ rival, prevRival, decisions, myData, competitors,
     socket.emit(ClientEvents.GAME_GET_ANNUAL_REPORT, { rivalPlayerId: rival.playerId });
     // Only re-request when switching to a different rival — the store's cached
     // result (or in-flight loading flag) covers repeat opens of the same one.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [socket, rival.playerId]);
 
   return (
@@ -3695,7 +3695,7 @@ function SueModal({ competitors, decisions, gameSettings, pending, onSubmitPendi
     if (!prefillTarget) return;
     const match = getGroundsAgainst(decisions).find((g) => g.decisionName === prefillDecisionName && g.groundName === prefillGroundName);
     if (match) setSelectedGround(match);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [prefillTargetId, prefillDecisionName, prefillGroundName]);
 
   const maxLawsuits = gameSettings?.maxLawsuitsPerPlayerPerTurn ?? Infinity;

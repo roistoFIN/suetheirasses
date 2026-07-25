@@ -7,7 +7,9 @@ import { setupSocketHandlers } from './socket/gameEngine.js';
 import { requireAdminToken } from './middleware/adminAuth.js';
 import { validateDecisionDefinition, validateGameConfig, validateFormulaUpdate, validateFeedbackSubmit } from './validation/schemas.js';
 import { generateDecisionCandidate, type DecisionGenRequest } from './services/decisionGenService.js';
-import type { FeedbackEntry, FeedbackSource } from '@suetheirasses/shared';
+import { logEvent } from './services/eventLogService.js';
+import { aggregateDecisionAnalytics, aggregateLawsuitAnalytics, aggregatePerformanceAnalytics } from './services/analyticsService.js';
+import type { FeedbackEntry, FeedbackSource, EventLogEntry, EventSeverity } from '@suetheirasses/shared';
 
 const app = express();
 const httpServer = createServer(app);
@@ -84,8 +86,8 @@ app.post('/api/feedback', async (req, res) => {
       },
     });
     res.status(201).json({ ok: true });
-  } catch (error: any) {
-    res.status(400).json({ error: 'Invalid feedback', message: error.message });
+  } catch (error) {
+    res.status(400).json({ error: 'Invalid feedback', message: error instanceof Error ? error.message : String(error) });
   }
 });
 
@@ -118,8 +120,8 @@ app.post('/api/admin/decisions', requireAdminToken, async (req, res) => {
       return;
     }
     res.status(201).json(def);
-  } catch (error: any) {
-    res.status(400).json({ error: 'Invalid decision definition', message: error.message });
+  } catch (error) {
+    res.status(400).json({ error: 'Invalid decision definition', message: error instanceof Error ? error.message : String(error) });
   }
 });
 
@@ -136,8 +138,8 @@ app.put('/api/admin/decisions/:name', requireAdminToken, async (req, res) => {
       return;
     }
     res.json(def);
-  } catch (error: any) {
-    res.status(400).json({ error: 'Invalid decision definition', message: error.message });
+  } catch (error) {
+    res.status(400).json({ error: 'Invalid decision definition', message: error instanceof Error ? error.message : String(error) });
   }
 });
 
@@ -173,7 +175,15 @@ app.post('/api/admin/decisions/generate', requireAdminToken, async (req, res) =>
   const existingNames = existing.map((d) => d.decision);
   const fewShotExample = existing[Math.floor(Math.random() * existing.length)];
 
+  const genStart = Date.now();
   const result = await generateDecisionCandidate(request, existingNames, fewShotExample);
+  // Same "llm.call" event type getAnnualReport's own calls use (see GameEngine.logLlmCall)
+  // — no room/player context exists for an admin-only tool, so both are left unset.
+  await logEvent(prisma, {
+    eventType: 'llm.call',
+    severity: result.success ? 'info' : 'warning',
+    payload: { kind: 'decisionGen', latencyMs: Date.now() - genStart, success: result.success, attempts: result.attempts },
+  });
   if (!result.success) {
     res.status(502).json({ error: 'Generation failed', message: result.error, raw: result.raw, attempts: result.attempts });
     return;
@@ -186,8 +196,8 @@ app.put('/api/admin/config', requireAdminToken, async (req, res) => {
     const config = validateGameConfig(req.body);
     await engine.updateGameConfigData(config);
     res.json(config);
-  } catch (error: any) {
-    res.status(400).json({ error: 'Invalid game config', message: error.message });
+  } catch (error) {
+    res.status(400).json({ error: 'Invalid game config', message: error instanceof Error ? error.message : String(error) });
   }
 });
 
@@ -223,18 +233,92 @@ app.put('/api/admin/formulas/:key', requireAdminToken, async (req, res) => {
       return;
     }
     res.json({ key: req.params.key, expression, description });
-  } catch (error: any) {
-    res.status(400).json({ error: 'Invalid formula', message: error.message });
+  } catch (error) {
+    res.status(400).json({ error: 'Invalid formula', message: error instanceof Error ? error.message : String(error) });
   }
+});
+
+// ============================================================
+// Admin Analytics tab — raw EventLog feed + three aggregate dashboards. All read-only,
+// all built directly from the durable EventLog/LegalCaseHistory tables (never in-memory
+// engine state), since the whole point is to survive individual games and answer
+// cross-game questions ("how does decision X actually perform") after the fact. See
+// CLAUDE.md's EventLog section for what gets logged and why.
+// ============================================================
+
+// Raw, filterable event feed — the "what happened in room X" bug-tracing view.
+// `before` (an ISO timestamp) pages backward in time; `limit` is clamped to 500 so an
+// admin can't accidentally request an unbounded scan.
+app.get('/api/admin/events', requireAdminToken, async (req, res) => {
+  const { eventType, severity, roomId, playerId, before } = req.query as Record<string, string | undefined>;
+  const limitRaw = Number(req.query.limit);
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 500) : 100;
+
+  const where: Record<string, unknown> = {};
+  if (eventType) where.eventType = eventType;
+  if (severity) where.severity = severity;
+  if (roomId) where.roomId = roomId;
+  if (playerId) where.playerId = playerId;
+  if (before) {
+    const beforeDate = new Date(before);
+    if (!Number.isNaN(beforeDate.getTime())) where.createdAt = { lt: beforeDate };
+  }
+
+  const rows = await prisma.eventLog.findMany({ where, orderBy: { createdAt: 'desc' }, take: limit });
+  const events: EventLogEntry[] = rows.map((r) => ({
+    id: r.id,
+    eventType: r.eventType,
+    severity: r.severity as EventSeverity,
+    roomId: r.roomId,
+    playerId: r.playerId,
+    payload: r.payload as Record<string, unknown>,
+    createdAt: r.createdAt.toISOString(),
+  }));
+  res.json({ events });
+});
+
+// Decision-balance dashboard — productionizes the one-off randomized-simulation balance
+// analysis (see CLAUDE.md's decision-balance sections) against REAL played games instead
+// of a synthetic script. Cross-references decision.deployed/decision.rejected events
+// against game.completed events (roomId -> winning playerId) to compute a real win-rate
+// correlation. Capped scans, not a full-table aggregate query — admin-portal scale, not
+// hot-path, and JSONB payload fields aren't indexed for GROUP BY anyway.
+app.get('/api/admin/analytics/decisions', requireAdminToken, async (_req, res) => {
+  const MAX_EVENTS = 20_000;
+  const [deployedRows, rejectedRows, completedRows] = await Promise.all([
+    prisma.eventLog.findMany({ where: { eventType: 'decision.deployed' }, orderBy: { createdAt: 'desc' }, take: MAX_EVENTS }),
+    prisma.eventLog.findMany({ where: { eventType: 'decision.rejected' }, orderBy: { createdAt: 'desc' }, take: MAX_EVENTS }),
+    prisma.eventLog.findMany({ where: { eventType: 'game.completed' }, orderBy: { createdAt: 'desc' }, take: 5_000 }),
+  ]);
+  res.json(aggregateDecisionAnalytics(deployedRows, rejectedRows, completedRows));
+});
+
+// Lawsuit win-rate dashboard — read from LegalCaseHistory (already durable, already
+// denormalized), not EventLog; a lawsuit's full lifecycle is already fully captured
+// there (see CLAUDE.md's LegalCaseHistory section), so there's nothing to duplicate.
+app.get('/api/admin/analytics/lawsuits', requireAdminToken, async (_req, res) => {
+  const rows = await prisma.legalCaseHistory.findMany({ orderBy: { createdAt: 'desc' }, take: 20_000 });
+  res.json(aggregateLawsuitAnalytics(rows.map((r) => ({ ...r, stakes: Number(r.stakes) }))));
+});
+
+// Performance dashboard — turn-resolution duration (GameLoop's own internal compute time
+// vs. GameEngine's full wall-clock including persistence), LLM call latency/success rate
+// by kind (annualReport / decisionGen), and an error-context breakdown (same rows the raw
+// feed's severity=error filter shows, just pre-aggregated by `payload.context`).
+app.get('/api/admin/analytics/performance', requireAdminToken, async (_req, res) => {
+  const [turnRows, llmRows, errorRows] = await Promise.all([
+    prisma.eventLog.findMany({ where: { eventType: 'turn.resolved' }, orderBy: { createdAt: 'desc' }, take: 2_000 }),
+    prisma.eventLog.findMany({ where: { eventType: 'llm.call' }, orderBy: { createdAt: 'desc' }, take: 5_000 }),
+    prisma.eventLog.findMany({ where: { severity: 'error' }, orderBy: { createdAt: 'desc' }, take: 2_000 }),
+  ]);
+  res.json(aggregatePerformanceAnalytics(turnRows, llmRows, errorRows));
 });
 
 // Graceful shutdown
 process.on('SIGINT', async () => {
-  console.log('Shutting down...');
   engine.stop();
   await prisma.$disconnect();
   httpServer.close(() => {
-    console.log('Server closed');
     process.exit(0);
   });
 });
@@ -243,15 +327,10 @@ process.on('SIGINT', async () => {
 async function start() {
   try {
     await prisma.$connect();
-    console.log('Database connected');
     // Must complete before the port opens — no socket can connect (and no admin
     // request can land) before the decision library + game config are loaded.
     await engine.loadGameData();
-    console.log('Game data loaded from database');
-    httpServer.listen(PORT, () => {
-      console.log(`Game server running on port ${PORT}`);
-      console.log(`Socket.IO server ready`);
-    });
+    httpServer.listen(PORT);
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);

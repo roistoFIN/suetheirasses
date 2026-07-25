@@ -1,5 +1,5 @@
 import { Server, Socket } from 'socket.io';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 import {
   RoomStatus,
   ClientEvents,
@@ -30,11 +30,15 @@ import {
   type TimelinePlayerInfo,
   type TimelineDecisionEvent,
   type TimelineLawsuitEvent,
+  type PlayerVariables,
+  type PlayerDerivedStats,
 } from '@suetheirasses/shared';
+import type { PersistedDecisionInstance } from '../engine/gameLoop.js';
 import { validateRoomJoin, validateSubmitDecisions, validateDigDeeper, validateFileLawsuit, validateRoomRejoin, validateAnnualReportRequest, validateChatMessage, validateGameReady, validateRoomSetInviteOnly, validateKpiHistoryRequest, validateMakeOffer, validateAcceptOffer, validateGoToCourt, validateDigDeeperCase } from '../validation/schemas.js';
 import { GameLoop } from '../engine/gameLoop.js';
 import type { BankruptedPlayer } from '../engine/gameLoop.js';
 import { generateAnnualReportBlurb } from '../services/llmService.js';
+import { logEvent, logEvents } from '../services/eventLogService.js';
 
 export class GameEngine {
   public rooms: Map<string, RoomState> = new Map();
@@ -48,6 +52,10 @@ export class GameEngine {
   private cleanupInterval: NodeJS.Timeout | null = null;
   // How long (ms) before a room with no connected players is considered stale
   private readonly STALE_ROOM_THRESHOLD = 60_000;
+  // How many non-share decisions each game's random subset draws — always topped up
+  // with every share-transaction decision (see pickRandomDecisionSubset), so a real
+  // game's fixed set is this plus however many Buy/Sell-Shares-style decisions exist.
+  private readonly RANDOM_DECISION_COUNT = 48;
   // Reconnection grace period: players who disconnect are kept in the room (not
   // deleted) for this long, keyed by playerId since their old socketId is now dead.
   // Swept by the same heartbeat interval that cleans up stale rooms.
@@ -133,9 +141,33 @@ export class GameEngine {
     return { success: true };
   }
 
-  /** Submit one player's decisions for the current GAME_PHASE turn. */
+  /**
+   * Submit one player's decisions for the current GAME_PHASE turn — filtered first
+   * against this room's fixed decision set (`RoomState.decisionSubset`, see
+   * `pickRandomDecisionSubset`): a strategic/operational/financial entry, or a lawsuit's
+   * `decisionName`, naming a decision outside this game's assigned set is silently
+   * dropped before it ever reaches `GameLoop` — the same "silently drop, no
+   * player-facing error" convention `DecisionEngine.canDeploy` rejections already use
+   * (see `ShareTransactionRequest`'s doc comment). This is the actual server-side
+   * enforcement of "the decisions are fixed per game" — `game:deck` only ever showing
+   * the room's set stops an honest client from picking anything else, but a socket that
+   * sends a decision name from outside the set (a stale/buggy client, or a deliberately
+   * crafted payload) must not be able to deploy it anyway. An empty/unset subset (a room
+   * that hasn't gone through `startGame` yet — not a real production path, see
+   * `getRoomDeck`'s doc comment) is treated as unrestricted, not "reject everything."
+   */
   submitDecisions(roomId: string, playerId: string, decisions: import('@suetheirasses/shared').SubmittedDecisions): void {
-    this.gameLoop.submitDecisions(roomId, playerId, decisions);
+    const roomState = this.rooms.get(roomId);
+    const allowed = roomState && roomState.decisionSubset.length > 0 ? new Set(roomState.decisionSubset) : undefined;
+    const filtered = allowed
+      ? {
+          strategic: decisions.strategic.filter((e) => allowed.has(e.name)),
+          operational: decisions.operational.filter((e) => allowed.has(e.name)),
+          financial: decisions.financial.filter((e) => allowed.has(e.name)),
+          lawsuits: decisions.lawsuits.filter((l) => allowed.has(l.decisionName)),
+        }
+      : decisions;
+    this.gameLoop.submitDecisions(roomId, playerId, filtered);
   }
 
   /**
@@ -155,8 +187,8 @@ export class GameEngine {
           // GameLoop reads cash from variables.cash (JSONB), not the cash column — both
           // must be written or the next dig (or the next normal turn resolution) reads
           // stale pre-deduction cash back out.
-          variables: outcome.variables as any,
-          engineState: outcome.engineStateUpdate as any,
+          variables: outcome.variables as unknown as Prisma.InputJsonValue,
+          engineState: outcome.engineStateUpdate as unknown as Prisma.InputJsonValue,
         },
       });
       // The dig that lands exactly on investigationLevel 1 is the one that first reveals
@@ -165,9 +197,9 @@ export class GameEngine {
       // `GameLoop.digDeeper` itself.
       if (outcome.attack.investigationLevel === 1 && outcome.attack.attackerId) {
         const attackerCompany = dbPlayers.find((p) => p.id === outcome.attack.attackerId)?.company;
-        const activeDecisions = ((attackerCompany?.engineState as any)?.activeDecisions ?? []) as import('../engine/gameLoop.js').PersistedDecisionInstance[];
+        const activeDecisions = ((attackerCompany?.engineState as { activeDecisions?: PersistedDecisionInstance[] } | null | undefined)?.activeDecisions ?? []);
         const instance = activeDecisions.find((d) => d.id === outcome.attack.attackId);
-        const blurb = await this.annualReportBlurbForInstance(instance);
+        const blurb = await this.annualReportBlurbForInstance(instance, roomId);
         if (blurb) outcome.attack.annualReportBlurb = blurb;
       }
     }
@@ -191,7 +223,7 @@ export class GameEngine {
           cash: outcome.newCash,
           // GameLoop reads cash from variables.cash (JSONB), not the cash column — both
           // must be written, same requirement as digDeeper's write.
-          variables: outcome.variables as any,
+          variables: outcome.variables as unknown as Prisma.InputJsonValue,
         },
       });
     }
@@ -271,8 +303,8 @@ export class GameEngine {
       await this.prisma.company.update({
         where: { playerId: side.playerId },
         data: {
-          engineState: side.engineState as any,
-          ...(side.cash !== undefined ? { cash: side.cash, variables: side.variables as any } : {}),
+          engineState: side.engineState as unknown as Prisma.InputJsonValue,
+          ...(side.cash !== undefined ? { cash: side.cash, variables: side.variables as unknown as Prisma.InputJsonValue } : {}),
         },
       });
     }
@@ -318,33 +350,51 @@ export class GameEngine {
         .filter((x): x is { summary: typeof x.summary; def: DecisionDefinition } => !!x.def?.competitorsView?.length)
         .map(async ({ summary, def }) => {
           const fallback = def.competitorsView![summary.elapsedYears % def.competitorsView!.length];
-          const text = await generateAnnualReportBlurb({
-            decisionName: summary.decisionName,
-            description: summary.description,
-            elapsedYears: summary.elapsedYears,
-            fallback,
-          });
+          const text = await generateAnnualReportBlurb(
+            {
+              decisionName: summary.decisionName,
+              description: summary.description,
+              elapsedYears: summary.elapsedYears,
+              fallback,
+            },
+            (telemetry) => this.logLlmCall('annualReport', roomId, telemetry),
+          );
           return { decisionName: summary.decisionName, text, year: summary.deployedYear + 1 };
         }),
     );
     return entries;
   }
 
+  /** Best-effort — see eventLogService.ts's own doc comment for why this must never throw
+   * or delay the caller; fire-and-forget on purpose (the LLM call this measures already
+   * has its own latency, no reason to add the EventLog write's latency on top of it). */
+  private logLlmCall(kind: 'annualReport' | 'decisionGen', roomId: string | undefined, telemetry: import('../services/llmService.js').LlmCallTelemetry): void {
+    void logEvent(this.prisma, {
+      eventType: 'llm.call',
+      severity: telemetry.success ? 'info' : 'warning',
+      roomId,
+      payload: { kind, latencyMs: telemetry.latencyMs, success: telemetry.success, cached: telemetry.cached },
+    });
+  }
+
   /** Same AI-narrated (or `competitorsView`-fallback) blurb `getAnnualReport` generates
    * for one decision instance, reused for `IncomingAttackInfo.annualReportBlurb` (see its
    * doc comment) — `undefined` if the instance is unknown or its definition has no
    * `competitorsView` to draw a fallback from (mirrors `getAnnualReport`'s own filter). */
-  private async annualReportBlurbForInstance(instance: import('../engine/gameLoop.js').PersistedDecisionInstance | undefined): Promise<string | undefined> {
+  private async annualReportBlurbForInstance(instance: import('../engine/gameLoop.js').PersistedDecisionInstance | undefined, roomId: string): Promise<string | undefined> {
     if (!instance) return undefined;
     const def = this.decisionsByName.get(instance.definitionName);
     if (!def?.competitorsView?.length) return undefined;
     const fallback = def.competitorsView[instance.elapsedYears % def.competitorsView.length];
-    return generateAnnualReportBlurb({
-      decisionName: def.decision,
-      description: def.description,
-      elapsedYears: instance.elapsedYears,
-      fallback,
-    });
+    return generateAnnualReportBlurb(
+      {
+        decisionName: def.decision,
+        description: def.description,
+        elapsedYears: instance.elapsedYears,
+        fallback,
+      },
+      (telemetry) => this.logLlmCall('annualReport', roomId, telemetry),
+    );
   }
 
   /**
@@ -363,6 +413,7 @@ export class GameEngine {
   private async enrichIncomingAttackBlurbs(
     players: PlayerTurnResult[],
     activeDecisionsByPlayer: Map<string, import('../engine/gameLoop.js').PersistedDecisionInstance[]>,
+    roomId: string,
   ): Promise<void> {
     const tasks: Promise<void>[] = [];
     for (const player of players) {
@@ -370,7 +421,7 @@ export class GameEngine {
         if (attack.investigationLevel !== 1 || !attack.attackerId) continue;
         const instance = activeDecisionsByPlayer.get(attack.attackerId)?.find((d) => d.id === attack.attackId);
         tasks.push(
-          this.annualReportBlurbForInstance(instance).then((blurb) => {
+          this.annualReportBlurbForInstance(instance, roomId).then((blurb) => {
             if (blurb) attack.annualReportBlurb = blurb;
           }),
         );
@@ -405,8 +456,8 @@ export class GameEngine {
     });
     const history = rows.map((r) => ({
       round: r.round,
-      variables: r.variables as any,
-      derived: r.derived as any,
+      variables: r.variables as unknown as PlayerVariables,
+      derived: r.derived as unknown as PlayerDerivedStats,
       riskGauge: r.riskGauge,
     }));
 
@@ -460,7 +511,7 @@ export class GameEngine {
       playerId: p.id,
       playerName: p.name,
       bankrupt: p.bankrupt,
-      eliminatedRound: (p as any).eliminatedRound ?? undefined,
+      eliminatedRound: p.eliminatedRound ?? undefined,
     }));
 
     const kpiRows = await this.prisma.kpiSnapshot.findMany({
@@ -469,13 +520,13 @@ export class GameEngine {
     });
     const kpiHistory: Record<string, KpiSnapshotPoint[]> = {};
     for (const r of kpiRows) {
-      const point: KpiSnapshotPoint = { round: r.round, variables: r.variables as any, derived: r.derived as any, riskGauge: r.riskGauge };
+      const point: KpiSnapshotPoint = { round: r.round, variables: r.variables as unknown as PlayerVariables, derived: r.derived as unknown as PlayerDerivedStats, riskGauge: r.riskGauge };
       (kpiHistory[r.playerId] ??= []).push(point);
     }
 
     const decisions: TimelineDecisionEvent[] = [];
     for (const p of dbPlayers) {
-      const activeDecisions = ((p.company?.engineState as any)?.activeDecisions ?? []) as Array<Record<string, any>>;
+      const activeDecisions = (p.company?.engineState as { activeDecisions?: PersistedDecisionInstance[] } | null | undefined)?.activeDecisions ?? [];
       for (const d of activeDecisions) {
         decisions.push({
           instanceId: d.id,
@@ -492,7 +543,7 @@ export class GameEngine {
       where: { roomId },
       orderBy: { filedRound: 'asc' },
     });
-    const lawsuits: TimelineLawsuitEvent[] = lawsuitRows.map((c: any) => ({
+    const lawsuits: TimelineLawsuitEvent[] = lawsuitRows.map((c) => ({
       id: c.id,
       plaintiffId: c.plaintiffId,
       plaintiffName: c.plaintiffName,
@@ -504,7 +555,10 @@ export class GameEngine {
       stakes: Number(c.stakes),
       filedRound: c.filedRound,
       resolvedRound: c.resolvedRound ?? undefined,
-      verdict: c.verdict ?? undefined,
+      // `LegalCaseHistory.verdict` is a plain string column (not DB-enforced — same
+      // pragmatic style as LegalCaseData.verdict, see CLAUDE.md), but only ever written
+      // by this codebase's own resolve/settle paths, always one of the four real values.
+      verdict: (c.verdict ?? undefined) as TimelineLawsuitEvent['verdict'],
     }));
 
     // The turn:resolved cache already carries gameOver/winnerId — no need to
@@ -565,6 +619,9 @@ export class GameEngine {
     roomState.room.status = RoomStatus.GAME_PHASE;
     roomState.room.currentPhaseRound = 1;
     roomState.readyPlayerIds.clear();
+    // This game's fixed, random decision set — picked once here, never again for the
+    // life of the game (see pickRandomDecisionSubset's doc comment).
+    roomState.decisionSubset = this.pickRandomDecisionSubset();
     await this.syncRoomToDB(roomId);
 
     // Players land straight in the game room with real starting numbers — no blank
@@ -584,10 +641,10 @@ export class GameEngine {
       activePlayerCount: Array.from(roomState.players.values()).filter((p) => !p.bankrupt).length,
     });
 
-    // Send the decision library + per-turn limits once — it's static for the whole
+    // Send this game's fixed decision set + per-turn limits once — static for the whole
     // game, so the client can render the real Decision Deck immediately.
     this.broadcastRoomState(roomId, ServerEvents.GAME_DECK, {
-      decisions: this.getDecisionsSnapshot(),
+      decisions: this.getRoomDeck(roomId),
       gameSettings: this.getGameConfigSnapshot().gameSettings,
     });
   }
@@ -613,13 +670,13 @@ export class GameEngine {
           create: {
             playerId: p.playerId,
             round,
-            variables: p.variables as any,
-            derived: p.derived as any,
+            variables: p.variables as unknown as Prisma.InputJsonValue,
+            derived: p.derived as unknown as Prisma.InputJsonValue,
             riskGauge: p.riskGauge,
           },
           update: {
-            variables: p.variables as any,
-            derived: p.derived as any,
+            variables: p.variables as unknown as Prisma.InputJsonValue,
+            derived: p.derived as unknown as Prisma.InputJsonValue,
             riskGauge: p.riskGauge,
           },
         });
@@ -629,6 +686,12 @@ export class GameEngine {
         // KPI history for the rest of the room, nor the turn:resolved broadcast that
         // follows this call.
         console.error(`[persistKpiSnapshots] Failed to persist KPI snapshot for player ${p.playerId}, round ${round}:`, err);
+        await logEvent(this.prisma, {
+          eventType: 'error.persistence',
+          severity: 'error',
+          playerId: p.playerId,
+          payload: { context: 'persistKpiSnapshots', round, message: err instanceof Error ? err.message : String(err) },
+        });
       }
     }
   }
@@ -666,6 +729,12 @@ export class GameEngine {
         await this.recordLegalCaseHistory(c, round, nameById);
       } catch (err) {
         console.error(`[persistLegalCaseHistory] Failed to persist history for case ${c.id}, round ${round}:`, err);
+        await logEvent(this.prisma, {
+          eventType: 'error.persistence',
+          severity: 'error',
+          roomId: c.roomId,
+          payload: { context: 'persistLegalCaseHistory', caseId: c.id, round, message: err instanceof Error ? err.message : String(err) },
+        });
       }
     }
   }
@@ -747,6 +816,54 @@ export class GameEngine {
     return Array.from(this.decisionsByName.values());
   }
 
+  /**
+   * Picks one game's fixed, random decision set: `RANDOM_DECISION_COUNT` (48) decisions
+   * drawn at random from the library, plus EVERY share-transaction decision, always
+   * included regardless of the draw — the hostile-takeover mechanic (Buy/Sell Shares)
+   * must never be left out by chance. Selects "always include" by `shareTransactionType`
+   * presence, not by decision name — matches this codebase's standing rule against
+   * hardcoded decision-name allowlists (see CLAUDE.md's `DEPRECIATING_ASSETS`/
+   * `legalRiskConditions` history: a name-keyed check silently drifts the moment a
+   * decision is renamed or a new one of the same kind is added via `/admin`), so a
+   * future admin-added or renamed share-transaction decision is still always included
+   * automatically. Called once, from `startGame` — the result is stored on
+   * `RoomState.decisionSubset` and never recomputed for the life of that game.
+   */
+  private pickRandomDecisionSubset(): string[] {
+    const all = Array.from(this.decisionsByName.values());
+    const always = all.filter((d) => !!d.shareTransactionType);
+    const pool = all.filter((d) => !d.shareTransactionType);
+
+    const shuffled = [...pool];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    const picked = shuffled.slice(0, Math.min(this.RANDOM_DECISION_COUNT, shuffled.length));
+
+    return [...always.map((d) => d.decision), ...picked.map((d) => d.decision)];
+  }
+
+  /**
+   * This room's fixed decision set (see `pickRandomDecisionSubset`), resolved back into
+   * full definitions — what `game:deck` actually sends, on both `startGame` and a
+   * mid-game `rejoinRoom`. Everything downstream that reads "the decision library"
+   * client-side (the Decision Deck, SUE THEIR ASSES' whole-library ground catalog, Dig
+   * Deeper's suggested-ground reveal) only ever sees decisions it received this way, so
+   * scoping this one broadcast is what makes lawsuits/deploys implicitly follow the
+   * room's assigned set — no separate client-side filtering needed. Falls back to the
+   * full library when no subset has been picked yet (an empty/never-started room) —
+   * defensive, not a real production path, since `startGame` always populates this
+   * before `game:deck` is ever sent.
+   */
+  getRoomDeck(roomId: string): DecisionDefinition[] {
+    const roomState = this.rooms.get(roomId);
+    if (!roomState || roomState.decisionSubset.length === 0) return this.getDecisionsSnapshot();
+    return roomState.decisionSubset
+      .map((name) => this.decisionsByName.get(name))
+      .filter((d): d is DecisionDefinition => !!d);
+  }
+
   /** Current game config, for `GET /api/admin/config`. */
   getGameConfigSnapshot(): GameConfig {
     return this.gameConfig;
@@ -769,8 +886,8 @@ export class GameEngine {
 
     await this.prisma.decision.upsert({
       where: { name: def.decision },
-      create: { name: def.decision, data: def as any },
-      update: { data: def as any },
+      create: { name: def.decision, data: def as unknown as Prisma.InputJsonValue },
+      update: { data: def as unknown as Prisma.InputJsonValue },
     });
     this.decisionsByName.set(def.decision, def);
     this.gameLoop.loadDecisions(Array.from(this.decisionsByName.values()));
@@ -800,9 +917,9 @@ export class GameEngine {
     await this.prisma.gameConfigRow.update({
       where: { id: 1 },
       data: {
-        gameSettings: config.gameSettings as any,
-        playerStartingValues: config.playerStartingValues as any,
-        adminVariables: config.adminVariables as any,
+        gameSettings: config.gameSettings as unknown as Prisma.InputJsonValue,
+        playerStartingValues: config.playerStartingValues as unknown as Prisma.InputJsonValue,
+        adminVariables: config.adminVariables as unknown as Prisma.InputJsonValue,
       },
     });
     this.gameConfig = config;
@@ -816,8 +933,8 @@ export class GameEngine {
       select: { engineState: true },
     });
     return companies.some((c) => {
-      const activeDecisions = (c.engineState as any)?.activeDecisions ?? [];
-      return activeDecisions.some((d: any) => d.definitionName === name);
+      const activeDecisions = (c.engineState as { activeDecisions?: PersistedDecisionInstance[] } | null)?.activeDecisions ?? [];
+      return activeDecisions.some((d) => d.definitionName === name);
     });
   }
 
@@ -863,13 +980,20 @@ export class GameEngine {
             ? roomState.players.size === 0 || Array.from(roomState.players.values()).every((p) => p.bankrupt && !p.socketId)
             : false;
           if (roomState && allDisconnected) {
-            console.log(`[Heartbeat] Cleaning up stale room ${roomId} (no players for ${this.STALE_ROOM_THRESHOLD}ms)`);
+            // Logged BEFORE the room row is deleted below — EventLog has no FK to Room
+            // (see its own doc comment), but this keeps the event's payload sourced from
+            // still-live in-memory state rather than a row that's about to be gone.
+            logEvent(this.prisma, {
+              eventType: 'room.stale_cleanup',
+              roomId,
+              payload: { playerCount: roomState.players.size, status: roomState.room.status, round: roomState.room.currentPhaseRound },
+            }).catch(() => {});
             this.rooms.delete(roomId);
             this.roomLastActivity.delete(roomId);
             this.lastTurnResults.delete(roomId);
             // Also clean up from DB to prevent ghost rooms
-            this.prisma.room.delete({ where: { id: roomId } }).catch((err) => {
-              if ((err as any).code !== 'P2025') {
+            this.prisma.room.delete({ where: { id: roomId } }).catch((err: Prisma.PrismaClientKnownRequestError) => {
+              if (err.code !== 'P2025') {
                 console.error(`[Heartbeat] Failed to delete stale room ${roomId} from DB:`, err.message);
               }
             });
@@ -896,7 +1020,6 @@ export class GameEngine {
           // resolveGameTurn's bankruptcy loop and forfeitGame both now keep in sync.
           const player = this.rooms.get(roomId)?.players.get(playerId);
           if (player?.bankrupt) continue;
-          console.log(`[Heartbeat] Finalizing removal of player ${playerId} (no reconnect within ${this.RECONNECT_GRACE_PERIOD_MS}ms)`);
           this.finalizePlayerRemoval(roomId, playerId).catch((err) => {
             console.error(`[Heartbeat] Failed to finalize removal of player ${playerId}:`, err);
           });
@@ -1022,19 +1145,25 @@ export class GameEngine {
       id: dbPlayer.id,
       name: dbPlayer.name,
       roomId: room.id,
-      isHost: (dbPlayer as any).isHost ?? false,
+      isHost: dbPlayer.isHost ?? false,
       bankrupt: dbPlayer.bankrupt,
       companyId: dbPlayer.companyId ?? undefined,
       socketId: dbPlayer.socketId ?? player.socketId,
     };
 
     const roomState: RoomState = {
-      room: room as any,
+      // Bridges the raw Prisma result (players: (Player & { company })[]) into the
+      // app-level `Room` shape (players: Player[]) — safe because `roomState.room.players`
+      // is never actually read; it's a frozen room-creation snapshot immediately made
+      // stale by anything that joins/leaves/kicks afterward (see buildRoomSnapshot's own
+      // doc comment, and CLAUDE.md's "Room.players array" section for why).
+      room: room as unknown as Room,
       players: new Map([[dbPlayer.id, syncedPlayer]]),
       timer: null,
       timerValue: 0,
       readyPlayerIds: new Set(),
       kickedNames: new Set(),
+      decisionSubset: [],
     };
 
     this.rooms.set(room.id, roomState);
@@ -1087,7 +1216,7 @@ export class GameEngine {
       id: dbPlayer.id,
       name: dbPlayer.name,
       roomId,
-      isHost: (dbPlayer as any).isHost ?? false,
+      isHost: dbPlayer.isHost ?? false,
       bankrupt: dbPlayer.bankrupt,
       companyId: dbPlayer.companyId ?? undefined,
       socketId: dbPlayer.socketId ?? player.socketId,
@@ -1127,6 +1256,13 @@ export class GameEngine {
     player.socketId = null;
     this.disconnectedPlayers.set(player.id, { roomId, disconnectedAt: Date.now() });
     this.touchRoomActivity(roomId);
+
+    await logEvent(this.prisma, {
+      eventType: 'player.disconnected',
+      roomId,
+      playerId: player.id,
+      payload: { playerName: player.name },
+    });
   }
 
   /**
@@ -1165,6 +1301,13 @@ export class GameEngine {
       });
     } catch (error) {
       console.error(`Failed to clean up player ${playerId} from DB:`, error);
+      await logEvent(this.prisma, {
+        eventType: 'error.persistence',
+        severity: 'error',
+        roomId,
+        playerId,
+        payload: { context: 'finalizePlayerRemoval', message: error instanceof Error ? error.message : String(error) },
+      });
     }
 
     roomState.players.delete(playerId);
@@ -1249,6 +1392,7 @@ export class GameEngine {
   async resolveGameTurn(roomId: string): Promise<void> {
     if (this.advancingRooms.has(roomId)) return;
     this.advancingRooms.add(roomId);
+    const wallStart = Date.now();
 
     try {
       const roomState = this.rooms.get(roomId);
@@ -1307,18 +1451,25 @@ export class GameEngine {
             create: {
               playerId: bankrupted.playerId,
               round,
-              variables: bankrupted.finalVariables as any,
-              derived: bankrupted.finalDerived as any,
+              variables: bankrupted.finalVariables as unknown as Prisma.InputJsonValue,
+              derived: bankrupted.finalDerived as unknown as Prisma.InputJsonValue,
               riskGauge: bankrupted.finalRiskGauge,
             },
             update: {
-              variables: bankrupted.finalVariables as any,
-              derived: bankrupted.finalDerived as any,
+              variables: bankrupted.finalVariables as unknown as Prisma.InputJsonValue,
+              derived: bankrupted.finalDerived as unknown as Prisma.InputJsonValue,
               riskGauge: bankrupted.finalRiskGauge,
             },
           });
         } catch (err) {
           console.error(`[resolveGameTurn] Failed to persist elimination for player ${bankrupted.playerId} (room ${roomId}):`, err);
+          await logEvent(this.prisma, {
+            eventType: 'error.persistence',
+            severity: 'error',
+            roomId,
+            playerId: bankrupted.playerId,
+            payload: { context: 'resolveGameTurn:bankruptcy', round, message: err instanceof Error ? err.message : String(err) },
+          });
         }
         // Keep the in-memory roster's bankrupt flag in sync too — forfeitGame already
         // does this for a voluntary forfeit, but this natural-elimination path (covers
@@ -1338,6 +1489,21 @@ export class GameEngine {
           acquirerId: bankrupted.acquirerId,
           acquirerName: bankrupted.acquirerName,
         });
+        // See CLAUDE.md's Analytics section — one event per elimination, any reason,
+        // is the source for the admin portal's "how do games actually end" breakdown.
+        await logEvent(this.prisma, {
+          eventType: 'player.eliminated',
+          roomId,
+          playerId: bankrupted.playerId,
+          payload: {
+            playerName: bankrupted.playerName,
+            reason: bankrupted.reason,
+            round,
+            finalCash: bankrupted.finalCash,
+            acquirerId: bankrupted.acquirerId,
+            acquirerName: bankrupted.acquirerName,
+          },
+        });
       }
 
       for (const update of outcome.companyUpdates) {
@@ -1346,25 +1512,61 @@ export class GameEngine {
             where: { playerId: update.playerId },
             data: {
               cash: update.cash,
-              variables: update.variables as any,
-              engineState: update.engineState as any,
+              variables: update.variables as unknown as Prisma.InputJsonValue,
+              engineState: update.engineState as unknown as Prisma.InputJsonValue,
             },
           });
         } catch (err) {
           console.error(`[resolveGameTurn] Failed to persist company update for player ${update.playerId} (room ${roomId}):`, err);
+          await logEvent(this.prisma, {
+            eventType: 'error.persistence',
+            severity: 'error',
+            roomId,
+            playerId: update.playerId,
+            payload: { context: 'resolveGameTurn:companyUpdate', round, message: err instanceof Error ? err.message : String(err) },
+          });
         }
       }
 
       // POST-turn engine state (companyUpdates), not the pre-turn dbPlayers loaded above —
       // see enrichIncomingAttackBlurbs's doc comment for why.
       const activeDecisionsByPlayer = new Map(outcome.companyUpdates.map((u) => [u.playerId, u.engineState.activeDecisions]));
-      await this.enrichIncomingAttackBlurbs(outcome.result.players, activeDecisionsByPlayer);
+      await this.enrichIncomingAttackBlurbs(outcome.result.players, activeDecisionsByPlayer, roomId);
 
       await this.persistKpiSnapshots(outcome.result.players, round);
       await this.persistLegalCaseHistory(outcome.result.players, outcome.bankruptedPlayers, round);
 
       this.lastTurnResults.set(roomId, outcome.result);
       this.io.to(roomId).emit(ServerEvents.TURN_RESOLVED, outcome.result);
+
+      // Analytics/bug-tracing telemetry (admin portal Analytics tab) — see CLAUDE.md's
+      // EventLog section. `outcome.decisionEvents` is what makes a repeat of the
+      // "canDeploy silently dropped a decision for the rest of the game" bug class
+      // visible without a manual repro: every rejection's real reason is logged, not
+      // just silently `continue`d past the way the player-facing behavior always has.
+      await logEvents(this.prisma, outcome.decisionEvents.map((e) => ({
+        eventType: e.outcome === 'deployed' ? 'decision.deployed' as const : 'decision.rejected' as const,
+        roomId,
+        playerId: e.playerId,
+        payload: { bucket: e.bucket, decisionName: e.decisionName, targetId: e.targetId, reason: e.reason, round },
+      })));
+
+      const lawsuitCaseIds = new Set<string>();
+      for (const p of outcome.result.players) for (const c of p.legalCases) lawsuitCaseIds.add(c.id);
+      await logEvent(this.prisma, {
+        eventType: 'turn.resolved',
+        roomId,
+        payload: {
+          round,
+          activePlayerCount: outcome.result.players.length,
+          bankruptedCount: outcome.bankruptedPlayers.length,
+          decisionsDeployed: outcome.decisionEvents.filter((e) => e.outcome === 'deployed').length,
+          decisionsRejected: outcome.decisionEvents.filter((e) => e.outcome === 'rejected').length,
+          openLawsuitCount: lawsuitCaseIds.size,
+          computeDurationMs: outcome.durationMs,
+          totalDurationMs: Date.now() - wallStart,
+        },
+      });
 
       const result = outcome.result;
       if (result.gameOver) {
@@ -1373,6 +1575,21 @@ export class GameEngine {
 
         const gameOverPayload = await this.buildGameOverPayload(roomId, result.winnerId);
         this.io.to(roomId).emit(ServerEvents.GAME_OVER, gameOverPayload);
+        // Logged here, at the one moment a game actually just ended — NOT inside
+        // buildGameOverPayload itself, which rejoinRoom also calls on every reconnect to
+        // an already-finished room; logging there would double/triple-count one real
+        // completion as one event per reconnect.
+        await logEvent(this.prisma, {
+          eventType: 'game.completed',
+          roomId,
+          playerId: gameOverPayload.winner.id,
+          payload: {
+            winnerName: gameOverPayload.winner.name,
+            round,
+            playerCount: gameOverPayload.finalStandings.length,
+            endReason: 'natural',
+          },
+        });
 
         this.broadcastRoomState(roomId, ServerEvents.PHASE_CHANGED, {
           phase: RoomStatus.AFTERMATH,
@@ -1404,6 +1621,16 @@ export class GameEngine {
       this.startTimer(roomId, PHASE_TIMERS[RoomStatus.GAME_PHASE]);
     } catch (error) {
       console.error(`Failed to resolve game turn for room ${roomId}:`, error);
+      await logEvent(this.prisma, {
+        eventType: 'error.persistence',
+        severity: 'error',
+        roomId,
+        payload: {
+          context: 'resolveGameTurn:outer',
+          message: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack?.slice(0, 2000) : undefined,
+        },
+      });
     } finally {
       this.advancingRooms.delete(roomId);
     }
@@ -1456,6 +1683,12 @@ export class GameEngine {
         playerName: player.name,
         reason: 'forfeit',
       });
+      await logEvent(this.prisma, {
+        eventType: 'player.eliminated',
+        roomId,
+        playerId: player.id,
+        payload: { playerName: player.name, reason: 'forfeit', round: forfeitRound },
+      });
 
       const stillActive = await this.prisma.player.findMany({ where: { roomId, bankrupt: false } });
       if (stillActive.length <= 1) {
@@ -1465,6 +1698,19 @@ export class GameEngine {
 
         const gameOverPayload = await this.buildGameOverPayload(roomId, stillActive[0]?.id);
         this.io.to(roomId).emit(ServerEvents.GAME_OVER, gameOverPayload);
+        // Same one-time-only placement rationale as resolveGameTurn's own game.completed
+        // log — never inside buildGameOverPayload itself (see that comment).
+        await logEvent(this.prisma, {
+          eventType: 'game.completed',
+          roomId,
+          playerId: gameOverPayload.winner.id,
+          payload: {
+            winnerName: gameOverPayload.winner.name,
+            round: roomState.room.currentPhaseRound,
+            playerCount: gameOverPayload.finalStandings.length,
+            endReason: 'forfeit',
+          },
+        });
         // getGameTimeline() reads winnerId from this same cache, normally kept current by
         // every resolveGameTurn call — a forfeit that itself ends the game never goes
         // through resolveGameTurn at all, so without this the cache stays stale (whatever
@@ -1539,9 +1785,9 @@ export class GameEngine {
       id: p.id,
       name: p.name,
       roomId: p.roomId,
-      isHost: (p as any).isHost ?? false,
+      isHost: p.isHost ?? false,
       bankrupt: p.bankrupt,
-      eliminatedRound: (p as any).eliminatedRound ?? undefined,
+      eliminatedRound: p.eliminatedRound ?? undefined,
       companyId: p.companyId ?? undefined,
       socketId: p.socketId ?? null,
     });
@@ -1783,6 +2029,13 @@ export class GameEngine {
     this.disconnectedPlayers.delete(playerId);
     this.touchRoomActivity(roomId);
 
+    await logEvent(this.prisma, {
+      eventType: 'player.reconnected',
+      roomId,
+      playerId,
+      payload: { playerName: player.name },
+    });
+
     const result: {
       success: true;
       roomJoined: { room: Room; player: Player; companies: Company[] };
@@ -1796,7 +2049,7 @@ export class GameEngine {
 
     if (roomState.room.status === RoomStatus.GAME_PHASE) {
       result.gameDeck = {
-        decisions: Array.from(this.decisionsByName.values()),
+        decisions: this.getRoomDeck(roomId),
         gameSettings: this.gameConfig.gameSettings,
       };
       const lastTurn = this.lastTurnResults.get(roomId);
@@ -1813,10 +2066,8 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
   const engine = new GameEngine(io, prisma);
 
   io.on('connection', (socket: Socket) => {
-    console.log(`Player connected: ${socket.id}`);
-
     // Matchmaking handlers
-    socket.on(ClientEvents.ROOM_JOIN, async (payload: any) => {
+    socket.on(ClientEvents.ROOM_JOIN, async (payload: unknown) => {
       try {
         const validated = validateRoomJoin(payload);
         const player: Player = {
@@ -1927,8 +2178,10 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
 
         // Join socket room
         socket.join(roomState.room.id);
-      } catch (error: any) {
-        console.error(`Room join failed for ${payload.playerName}:`, error.message);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const attemptedName = (payload as { playerName?: string } | null)?.playerName ?? 'unknown';
+        console.error(`Room join failed for ${attemptedName}:`, message);
         const codeByMessage: Record<string, string> = {
           'Player name already taken': 'NAME_TAKEN',
           'Room is full': 'ROOM_FULL',
@@ -1936,8 +2189,8 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
           'You were removed from this room and cannot rejoin': 'KICKED_FROM_ROOM',
         };
         socket.emit(ServerEvents.ERROR, {
-          code: codeByMessage[error.message] ?? 'JOIN_FAILED',
-          message: error.message || 'Failed to join room',
+          code: codeByMessage[message] ?? 'JOIN_FAILED',
+          message: message || 'Failed to join room',
         });
       }
     });
@@ -1962,10 +2215,10 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
         if (result.gameDeck) socket.emit(ServerEvents.GAME_DECK, result.gameDeck);
         if (result.turnResolved) socket.emit(ServerEvents.TURN_RESOLVED, result.turnResolved);
         if (result.gameOver) socket.emit(ServerEvents.GAME_OVER, result.gameOver);
-      } catch (error: any) {
+      } catch (error) {
         socket.emit(ServerEvents.ERROR, {
           code: 'REJOIN_FAILED',
-          message: error.message || 'Failed to rejoin room',
+          message: error instanceof Error ? error.message : 'Failed to rejoin room',
         });
       }
     });
@@ -2099,6 +2352,12 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
         kickedPlayerId: playerToKick.id,
         kickedPlayerName: playerToKick.name,
       });
+      await logEvent(prisma, {
+        eventType: 'player.kicked',
+        roomId,
+        playerId: playerToKick.id,
+        payload: { playerName: playerToKick.name, kickedBy: host.id },
+      });
 
       // Disconnect the kicked player's socket if connected
       if (kickedSocketId) {
@@ -2166,10 +2425,10 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
       let inviteOnly: boolean;
       try {
         ({ inviteOnly } = validateRoomSetInviteOnly(payload));
-      } catch (error: any) {
+      } catch (error) {
         socket.emit(ServerEvents.ERROR, {
           code: 'INVALID_INVITE_ONLY',
-          message: error.message || 'Invalid invite-only payload',
+          message: error instanceof Error ? error.message : 'Invalid invite-only payload',
         });
         return;
       }
@@ -2235,10 +2494,10 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
       try {
         const validated = validateSubmitDecisions(payload);
         engine.submitDecisions(roomId, player.id, validated);
-      } catch (error: any) {
+      } catch (error) {
         socket.emit(ServerEvents.ERROR, {
           code: 'INVALID_DECISIONS',
-          message: error.message || 'Invalid decision submission',
+          message: error instanceof Error ? error.message : 'Invalid decision submission',
         });
       }
     });
@@ -2273,10 +2532,10 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
           newCash: outcome.newCash,
           attack: outcome.attack,
         });
-      } catch (error: any) {
+      } catch (error) {
         socket.emit(ServerEvents.ERROR, {
           code: 'INVALID_DIG_DEEPER',
-          message: error.message || 'Invalid dig deeper request',
+          message: error instanceof Error ? error.message : 'Invalid dig deeper request',
         });
       }
     });
@@ -2311,10 +2570,10 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
           cost: outcome.cost,
           newCash: outcome.newCash,
         });
-      } catch (error: any) {
+      } catch (error) {
         socket.emit(ServerEvents.ERROR, {
           code: 'INVALID_FILE_LAWSUIT',
-          message: error.message || 'Invalid lawsuit filing request',
+          message: error instanceof Error ? error.message : 'Invalid lawsuit filing request',
         });
       }
     });
@@ -2344,10 +2603,10 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
             message: outcome.reason,
           });
         }
-      } catch (error: any) {
+      } catch (error) {
         socket.emit(ServerEvents.ERROR, {
           code: 'INVALID_MAKE_OFFER_REQUEST',
-          message: error.message || 'Invalid offer request',
+          message: error instanceof Error ? error.message : 'Invalid offer request',
         });
       }
     });
@@ -2375,10 +2634,10 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
             message: outcome.reason,
           });
         }
-      } catch (error: any) {
+      } catch (error) {
         socket.emit(ServerEvents.ERROR, {
           code: 'INVALID_ACCEPT_OFFER_REQUEST',
-          message: error.message || 'Invalid accept-offer request',
+          message: error instanceof Error ? error.message : 'Invalid accept-offer request',
         });
       }
     });
@@ -2407,10 +2666,10 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
             message: outcome.reason,
           });
         }
-      } catch (error: any) {
+      } catch (error) {
         socket.emit(ServerEvents.ERROR, {
           code: 'INVALID_GO_TO_COURT_REQUEST',
-          message: error.message || 'Invalid go-to-court request',
+          message: error instanceof Error ? error.message : 'Invalid go-to-court request',
         });
       }
     });
@@ -2439,10 +2698,10 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
             message: outcome.reason,
           });
         }
-      } catch (error: any) {
+      } catch (error) {
         socket.emit(ServerEvents.ERROR, {
           code: 'INVALID_DIG_DEEPER_CASE_REQUEST',
-          message: error.message || 'Invalid dig-deeper-on-case request',
+          message: error instanceof Error ? error.message : 'Invalid dig-deeper-on-case request',
         });
       }
     });
@@ -2473,10 +2732,10 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
           return;
         }
         socket.emit(ServerEvents.GAME_ANNUAL_REPORT_RESULT, { rivalPlayerId, entries });
-      } catch (error: any) {
+      } catch (error) {
         socket.emit(ServerEvents.ERROR, {
           code: 'INVALID_ANNUAL_REPORT_REQUEST',
-          message: error.message || 'Invalid annual report request',
+          message: error instanceof Error ? error.message : 'Invalid annual report request',
         });
       }
     });
@@ -2503,10 +2762,10 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
         const response = await engine.getKpiHistory(roomId, isSelf ? player.id : targetPlayerId, isSelf);
         if (!response) return;
         socket.emit(ServerEvents.GAME_KPI_HISTORY_RESULT, response);
-      } catch (error: any) {
+      } catch (error) {
         socket.emit(ServerEvents.ERROR, {
           code: 'INVALID_KPI_HISTORY_REQUEST',
-          message: error.message || 'Invalid KPI history request',
+          message: error instanceof Error ? error.message : 'Invalid KPI history request',
         });
       }
     });
@@ -2587,10 +2846,10 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
       let ready: boolean;
       try {
         ({ ready } = validateGameReady(payload));
-      } catch (error: any) {
+      } catch (error) {
         socket.emit(ServerEvents.ERROR, {
           code: 'INVALID_READY',
-          message: error.message || 'Invalid ready payload',
+          message: error instanceof Error ? error.message : 'Invalid ready payload',
         });
         return;
       }
@@ -2613,10 +2872,10 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
     socket.on(ClientEvents.CHAT_MESSAGE, (payload: unknown) => {
       try {
         engine.sendChatMessage(socket.id, payload);
-      } catch (error: any) {
+      } catch (error) {
         socket.emit(ServerEvents.ERROR, {
           code: 'INVALID_CHAT_MESSAGE',
-          message: error.message || 'Invalid chat message',
+          message: error instanceof Error ? error.message : 'Invalid chat message',
         });
       }
     });
@@ -2624,7 +2883,6 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
     // Disconnect — don't delete immediately, give them RECONNECT_GRACE_PERIOD_MS to
     // reconnect via room:rejoin (network hiccup, accidental back button, refresh).
     socket.on('disconnect', async () => {
-      console.log(`Player disconnected: ${socket.id}`);
       await engine.markPlayerDisconnected(socket.id);
     });
   });

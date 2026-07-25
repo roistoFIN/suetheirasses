@@ -61,7 +61,7 @@ function fewShotBlock(example: DecisionDefinition): string {
     excludes: example.excludes,
     impacts: example.impacts,
     legalRisks: example.legalRisks,
-    cashFlowCategory: (example as any).cashFlowCategory,
+    cashFlowCategory: example.cashFlowCategory,
   };
   return JSON.stringify(trimmed, null, 2);
 }
@@ -164,7 +164,7 @@ async function callModel(system: string, user: string): Promise<string> {
       }),
     });
     if (!response.ok) throw new Error(`LLM server responded with status ${response.status}`);
-    const data: any = await response.json();
+    const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
     const content: string = data?.choices?.[0]?.message?.content ?? '';
     if (!content) throw new Error('Empty LLM response');
     return content;
@@ -208,8 +208,8 @@ export async function generateDecisionCandidate(
       }
 
       return { success: true, decision: clamped.decision, warnings: clamped.warnings, attempts: attempt };
-    } catch (error: any) {
-      lastError = error?.message || String(error);
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
     }
   }
 

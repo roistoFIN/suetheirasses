@@ -34,9 +34,6 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Prisma
-server/prisma/migrations/
-
 # Coverage
 coverage/
 .nyc_output/

@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 "Sue Their Asses" — a multiplayer, server-authoritative business strategy game. Players
-run companies for 120s rounds, deploy decisions from a shared 45-decision library, sue
+run companies for 120s rounds, deploy decisions from a shared, admin-editable decision library, sue
 each other over risky moves, buy up rivals' shares to force a hostile takeover, and get
 eliminated the instant their cash goes negative or another player crosses 50% ownership of
 their company. Last player standing wins. Real-time via Socket.IO; React/Vite client;
@@ -625,8 +625,8 @@ composing a small shared piece into two simpler ones.
 `buildIncomingAttacks` used to only ever surface a decision with real `target.*`
 impacts (`getTargetImpacts(...).size > 0`) — a genuine "attack" aimed at exactly one
 other player. That left the majority of the decision library completely invisible to
-everyone but its deployer: ~30 of 45 decisions (New Factory, Water Pumping, Night
-Dumping, Maintenance Neglect, Artificial Greenwashing, and more) have no `target.*`
+everyone but its deployer: roughly two-thirds of the decision library (New Factory, Water
+Pumping, Night Dumping, Maintenance Neglect, Artificial Greenwashing, and more) have no `target.*`
 concept at all but still carry `legalRisks` — any player could already sue over one
 "blind" via SUE THEIR ASSES' whole-library ground list (see *SUE THEIR ASSES offers the
 whole decision library's grounds* below), but had zero signal that a rival had even
@@ -1261,7 +1261,7 @@ of flavor text.
 (mirroring `DecisionDefinition`+inline `LegalRiskDefinition`), an explicit whitelist of
 the ~30 `impacts` field names it may use (never a free-form field), the `absolute`
 (flat add) vs. `relative` (×(1+value)) semantics, a compact magnitude cheat-sheet derived
-from scanning the real 45-decision library's own observed ranges per field, a rule that
+from scanning the real decision library's own observed ranges per field, a rule that
 `legalRisks[].impact.target` may only be `cash`/`equity`/`revenue` (the only three the
 engine actually knows how to price stakes from — see `LegalEngine.fileLawsuit`), a
 "touch 2-4 fields, not more" instruction, and one real decision (picked fresh at random
@@ -1280,7 +1280,7 @@ decision can still be a bad one:
 - Every schedule value is clamped into `FIELD_RANGES[field][type]` — the same real-data-
   derived ranges the prompt's cheat-sheet describes, so the prompt and the enforcement
   agree on what's "normal" for a field.
-- **A field that only ever appears as ONE of `absolute`/`relative` in the real 45-decision
+- **A field that only ever appears as ONE of `absolute`/`relative` in the real decision
   library (true of every field except `operatingExpenses`/`capacityUtilization`) has its
   `type` coerced to that one real type if the model picked the other** — `resolveImpactType`
   exists specifically because a magnitude clamp alone can't catch this: a flat `+100`
@@ -1308,7 +1308,7 @@ decision can still be a bad one:
 **Live eval against the actual container** (Qwen3-1.7B-Q4_K_M, CPU-only, no GPU — the
 same model/container the annual-report feature uses): 6 generation requests spanning a
 mix of themes/levels/natures/offensive hints, each candidate then dropped into a real
-`GameLoop` alongside the full 45-decision seed library and played for 20 rounds across 2
+`GameLoop` alongside the full decision seed library and played for 20 rounds across 2
 random seeds (240 simulated turns total) to check for crashes/NaN/out-of-range values —
 a smaller version of this file's own "randomized-simulation bug hunt" methodology, aimed
 at one specific new decision instead of the whole deck.
@@ -1518,6 +1518,146 @@ in-progress edit — see the comment at the top of `AdminPortal.tsx`. Editing is
 given `DecisionDefinition.impacts` is an open-ended nested record; if you're tempted to
 build a bespoke form for one field, prefer improving the Zod error messages instead.
 
+### EventLog + the admin Analytics tab — durable, cross-game telemetry for balance analysis and bug-tracing
+
+Requested directly: an admin-facing way to answer "how does decision X actually perform
+across real games" and "what happened in room Y right before it broke," without falling
+back to one-off `tsx` scripts (this session's own randomized-simulation balance work —
+see the decision-balance sections below — started exactly that way, against synthetic
+play, never real games). A new `EventLog` Prisma model plus a 5th `AdminPortal.tsx` tab
+("Analytics") closes that gap.
+
+**`EventLog` deliberately has no FK to `Room` or `Player` at all — not even a loose,
+Room-only one like `LegalCaseHistory` has.** Room rows are hard-deleted outright (the
+stale-room heartbeat sweep, the disconnect-grace-period cleanup — see this file's own
+`prisma.room.delete` call sites), which would cascade away anything FK'd to it. The
+entire point of this table is to outlive individual games and answer questions across
+many of them, so `roomId`/`playerId` are plain, unconstrained strings — good enough to
+filter/group by, deliberately incapable of joining. Anything a query wants to show
+alongside an id (player names, decision names, rejection reasons) is denormalized
+straight into the JSONB `payload` at write time, the same principle `LegalCaseHistory`
+already established for plaintiff/defendant names.
+
+**`server/src/services/eventLogService.ts`'s `logEvent`/`logEvents` are best-effort, same
+"must degrade invisibly" convention `llmService.ts` already follows for its own external
+calls** — a DB hiccup while writing telemetry must never abort a turn resolution or
+surface as a socket error to a player who did nothing wrong. Both catch internally and
+console.error rather than propagating. `EVENT_TYPES` (a fixed, documented `as const`
+tuple, same "one shared constant, not scattered string literals" principle
+`DECISION_BUCKETS` already established after the level-limit bug) is the vocabulary every
+writer uses: `turn.resolved`, `decision.deployed`/`decision.rejected`, `player.eliminated`
+(bankruptcy/merger/forfeit, same three reasons `PLAYER_BANKRUPT` already carries),
+`player.disconnected`/`reconnected`/`kicked`, `room.stale_cleanup`, `game.completed`,
+`llm.call`, and `error.persistence` (severity `'error'`, one per already-existing
+swallowed catch block this session wired up — see below).
+
+**`GameLoop.resolveTurn` gained two purely additive, server-only fields on
+`TurnResolutionOutcome`** (never part of `TurnResolutionResult`, the client-facing
+broadcast — the client has no use for either): `durationMs` (the same wall-clock timing
+`console.log(`[GameLoop] Turn ${round} resolved in ...`)` already computed internally,
+now also returned) and `decisionEvents: DecisionDeployEvent[]` — one entry per submitted
+decision `processNewDecisions` actually attempted this turn, `{ playerId, bucket,
+decisionName, targetId?, outcome: 'deployed' | 'rejected', reason? }`. This is **not** a
+new computation — `DecisionEngine.canDeploy` already returned a human-readable `reason`
+string for every rejection (`processNewDecisions` used to just discard it via a bare
+`continue`, per `ShareTransactionRequest`'s own doc comment on this codebase's
+established "silent drop, no player-facing error" convention for level-limit/maturity/
+exclusion rejections) — `decisionEvents` only starts *collecting* what already existed.
+The player-facing behavior (a rejected decision just silently doesn't appear, no error
+surfaced) is completely unchanged; this is purely a parallel telemetry channel for
+`GameEngine` to log. Directly relevant to bug-tracing: this is the exact shape of signal
+that would have made the *"canDeploy's level-limit check counted a player's entire
+lifetime of active decisions"* bug (this file's own section above) visible in production
+immediately, instead of requiring a manual repro from a user's bug report.
+
+**`GameEngine.resolveGameTurn` logs one `turn.resolved` row per call** (round, active/
+bankrupted counts, deployed/rejected decision counts, distinct open-lawsuit count,
+`computeDurationMs` from `GameLoop`, `totalDurationMs` measured around the whole method
+including persistence) plus a batched `logEvents` call for every `decisionEvents` entry,
+right after the `TURN_RESOLVED` broadcast. Every existing per-player try/catch this
+session's earlier bug-fix passes already isolated (the bankruptcy-persistence loop, the
+`companyUpdates` loop, `persistKpiSnapshots`, `persistLegalCaseHistory`, and the outer
+catch) now also calls `logEvent` with `severity: 'error'` and a `context` string
+identifying which loop failed — the exact same failures that were already
+console.error-only are now also queryable/filterable in the admin feed, nothing about
+their actual handling changed.
+
+**`game.completed` is logged from exactly two call sites — inside `resolveGameTurn`'s and
+`forfeitGame`'s own game-ending branches — never from inside `buildGameOverPayload`
+itself,** even though that's the function that actually builds the payload both branches
+broadcast. `buildGameOverPayload` has a third caller, `rejoinRoom` (re-fetching the
+standings for a reconnect to an already-*finished* room), which is not a new completion —
+logging there would double/triple-count one real game-over as one event per reconnect.
+`endReason: 'natural' | 'forfeit'` distinguishes the two real call sites.
+
+**Local-LLM latency/success telemetry needed a narrow, opt-in addition to
+`llmService.ts`'s `generateAnnualReportBlurb`, not a return-type change** — every existing
+caller only ever wanted the resolved blurb text itself, and changing the return shape to
+`{ text, ... }` would force all of them to unwrap it for no benefit. Instead it takes an
+optional second `onComplete?: (telemetry: LlmCallTelemetry) => void` callback, fired with
+`{ latencyMs, success, cached }` right before returning either the real response or the
+fallback — `GameEngine.logLlmCall(kind, roomId, telemetry)` is the one place that turns
+this into an `llm.call` EventLog write, called from both `getAnnualReport` and
+`annualReportBlurbForInstance` (which needed a new `roomId` parameter threaded through
+its three call sites — `digDeeper`, `getAnnualReport`, `enrichIncomingAttackBlurbs` — purely
+so the log entry can be filtered by room). `decisionGenService.ts`'s
+`generateDecisionCandidate` — called only from the admin-only `/api/admin/decisions/generate`
+route, never from `GameEngine` — is timed and logged directly in that route handler
+instead, with no room/player context (there is none for an admin tool).
+
+**The three aggregate dashboards' actual aggregation logic lives in
+`server/src/services/analyticsService.ts`, not inline in the `index.ts` route
+handlers** — `aggregateDecisionAnalytics`/`aggregateLawsuitAnalytics`/
+`aggregatePerformanceAnalytics` are pure functions over plain row arrays (no
+`@prisma/client` import), so they're unit-testable without a database, the same
+"thin handler, tested method" split this codebase uses everywhere else (`GameEngine`'s
+methods vs. its socket handlers). Each admin route (`GET /api/admin/analytics/decisions`
+/ `.../lawsuits` / `.../performance`) does nothing but fetch the relevant rows (capped
+scans — 20k/5k/2k row `take` limits, admin-portal scale, not hot-path; JSONB payload
+fields aren't indexed for `GROUP BY` anyway) and hand them to the matching function.
+
+- **Decision balance**: cross-references `decision.deployed`/`decision.rejected` events
+  against `game.completed` events (`roomId → winning playerId`) to compute a real
+  win/loss correlation from actually-played games — the direct productionized successor
+  to this session's one-off randomized-simulation scripts (see the decision-balance
+  sections above), now running continuously against real data instead of a synthetic
+  script run on request. `winRate` stays `null` until a decision has been deployed in at
+  least one room whose game has since completed — never a misleading `0`.
+- **Lawsuit win rates**: reads `LegalCaseHistory` directly, not `EventLog` — a lawsuit's
+  full filed/resolved lifecycle is already fully captured there (see this file's own
+  `LegalCaseHistory` section), so there's nothing to duplicate. Grouped by
+  `(decisionName, groundName)`.
+- **Performance**: turn-resolution duration (`GameLoop`'s own internal compute time vs.
+  `GameEngine`'s full wall-clock including persistence), LLM call latency/success rate
+  bucketed by `kind` (`annualReport` / `decisionGen`), and an error-context breakdown
+  (the same rows the raw feed's `severity=error` filter shows, pre-aggregated by
+  `payload.context`).
+
+**`AdminPortal.tsx`'s Analytics tab is deliberately the only tab that polls only its
+"raw feed" sub-view, not its three aggregate dashboards.** The raw Event Feed is
+genuinely live data (new rows arrive continuously while games are in progress), so it
+polls every 5s like Rooms/Feedback already do. The three dashboards run real
+multi-thousand-row scans server-side — fetched once when the tab mounts, plus a manual
+Refresh button per view, not continuously polled; nothing here is ever edited from the
+client (unlike Config/Decisions/Formulas), so there's no clobber risk to guard against,
+only an unnecessary-server-load one. Win-rate/success-rate numbers are colored via a
+small fixed threshold function (`winRateColor` — green ≥0.55, yellow ≥0.35, red below),
+deliberately a plain Mantine `Progress`/`Badge` status-color convention rather than a new
+chart/palette system — this is an internal table-based dashboard, not a published
+visualization.
+
+`server/src/services/eventLogService.test.ts` (never-throws-on-write-failure,
+default-field behavior), `analyticsService.test.ts` (each aggregation function exercised
+directly with hand-built fixture rows — win-rate correlation, top-reject-reason ranking,
+lawsuit grouping, LLM per-kind success rate, error-context counting), `gameLoop.test.ts`'s
+"decisionEvents/durationMs telemetry (regression)" describe block, and
+`gameEngine.test.ts`'s EventLog assertions threaded through the existing
+`resolveGameTurn`/`forfeitGame`/`markPlayerDisconnected`/`rejoinRoom` describe blocks
+(extending real existing tests, not just adding new ones — e.g. the pre-existing
+"one player's row disappeared mid-resolution" regression test now also asserts the
+matching `error.persistence` row) are the coverage — extend those, not just the happy
+path, if you touch any part of this feature again.
+
 ### Decisions/config are DB-backed, not static JSON — live-reloaded on every admin edit
 
 `game_engine.json`/`game_config.json` (`server/src/data/`) used to be loaded once at
@@ -1680,7 +1820,7 @@ any already-seeded `Formula` row (see *Formulas are DB-backed* below).
 **The simulation itself is kept as a permanent regression test**
 (`server/src/engine/gameLoop.simulation.test.ts`), not just a one-off bug-hunting script —
 a hand-written fixture library can only ever cover fields/decisions someone thought to
-write a test for; a real, evolving 45-decision/83-legal-risk library is exactly the kind of
+write a test for; a real, evolving decision/legal-risk library is exactly the kind of
 surface where a specific field-name collision is what actually breaks, not the general
 shape of the math. It runs the identical random-play simulation against the real seed data
 across several fixed seeds (deterministic, no flakiness) and asserts the same invariants
@@ -2149,7 +2289,7 @@ Clearing Buy Shares' `impacts` to `{}` means `extractTargetImpacts(...).size ===
 exact condition `isIndirectEffect` used to treat as "no single target, tell everyone." Fixed
 by threading the instance's own `targetId` through: it's only classified indirect when
 `targetImpacts.size === 0 && targetId === undefined`. This changes behavior for exactly one
-case in the whole 45-decision library (Buy Shares now/Sell Shares never, since its
+case in the whole decision library (Buy Shares now/Sell Shares never, since its
 `legalRisks` is empty regardless) — every other decision either has real `target.*` fields
 (never indirect) or has neither `target.*` nor a `targetId` at all (unaffected). The three
 call sites that read this classification (`buildIncomingAttacks`, Step 8's
@@ -3965,3 +4105,272 @@ newest first, no player/room fields) — run via a scratch `tsx` process on a th
 against the already-running dev Postgres, specifically to avoid touching the Docker
 containers already running the (now-stale) built images. Extend all three, not just the
 happy path, if you touch this feature again.
+
+### 24 new decisions added (round 3 of content), leaning explicitly into the chicken-manure/fertilizer domain the engine's field names already implied
+
+Requested directly: "a lot more decisions," across every `level`/`nature` combination,
+explicitly and unapologetically chicken-manure/fertilizer-industry flavored with black
+humor, every one carrying at least one legal risk, and with risk sized to correlate with
+gain — plus an explicit requirement that they actually be checked with this codebase's
+own analysis tooling rather than hand-waved as balanced. The domain itself wasn't new:
+`PlayerVariables` already has `moistureContent`/`nutrientConsistency`/`contaminationRisk`/
+`odorComplaints`, and the real library already had `Laxatives in Feed`/`Fox Release`/
+`Water Pumping`/`Night Dumping` — this was a request to lean into flavor the engine
+already supported, not a new mechanic. `server/src/data/game_engine.json` gained 24 new
+decisions: 6 new Strategic (2 each of Traditional/Grey Area/Dirty), 12 new Operational
+(4 each), and 6 new Financial (2 each) —
+the last of these is the first time `Financial` has had any content beyond Buy/Sell
+Shares (`Manure Futures Hedge`, `Manure-Backed Bond Issuance`, `Manure Futures
+Speculation`, `Golden Parachute Pre-Fund`, `Manure Derivatives Shell Game`, `Pump-and-Dump
+Stock Tip Leak`) — none of them `shareTransactionType`, just ordinary schedule-driven
+decisions filed under the `Financial` per-turn budget, which the engine already supported
+generically (nothing about `Financial` was ever hardcoded to mean "share trade only").
+
+**Every new decision has at least one `legalRisks` entry** (the one existing exception in
+the whole decision library, `Sell Shares`, predates this round and was deliberately
+left alone — see *SUE THEIR ASSES offers the whole decision library's grounds* above for
+why a decision with no legal angle at all is a legitimate, if rare, shape). Verified
+directly, not assumed: a scratch Vitest file ran every decision in the file through the
+real `decisionDefinitionSchema` and asserted a non-empty `legalRisks` array for every
+name except `Sell Shares`, then was deleted — this codebase doesn't otherwise unit-test
+individual decisions' content (see *Test layers* above), so this was a one-off check, not
+new permanent coverage.
+
+**"Risk correlates with gain" was applied the same way the existing library already
+does it, not as a new formula** — a cheap, legitimate decision (e.g. `Manure Moisture
+Control System`, a straightforward capex dryer upgrade) gets a low-probability
+(0.01–0.05), modest-impact legal risk, the same tier `Preventive Maintenance`/`Energy
+Efficiency Retrofit` already sit at; a `Grey Area` decision with a real but disguised
+benefit (`Manure Weight Padding`, `Ghost Farm Invoicing`, `Manure Futures Speculation`)
+sits in the 0.1–0.5 probability band with real dollar/equity/revenue stakes, matching
+`Channel Stuffing`/`Tax Planning`'s tier; and the most severe `Dirty` attacks
+(`Salmonella Scapegoat Frame-Up`, `Falsified Contamination Report`) sit at the same
+0.3–0.8 probability, six-figure-stakes tier `Laxatives in Feed`/`Water Pumping`/`Fox
+Release` already occupy — new decisions were calibrated against `FIELD_RANGES`/
+`LEGAL_RISK_FIELD_RANGES` in `decisionGenGuardrails.ts` (the real-data-derived magnitude
+cheat sheet built for the AI-generation guardrail — see that section above), even though
+these were hand-authored, specifically so the new content doesn't quietly exceed what the
+existing, already-balanced library ever does per field.
+
+**Balance was checked with this codebase's own randomized-simulation methodology, not
+asserted.** `gameLoop.simulation.test.ts`/`.simulation.smart.test.ts` (the permanent
+regression suites — see their own section above) were run unmodified against the grown
+decision library: both passed, meaning 4-player random-decision-and-lawsuit play
+across many seeds (both the "blind" and Dig-Deeper-informed "smart" suing strategies)
+still produces zero NaN/Infinity variables, zero out-of-range `riskGauge` values, zero
+ownership drift, and the idle-player-breaks-even invariant still holds — the new content
+didn't destabilize the engine. Beyond "doesn't crash," a temporary (uncommitted, same
+"scratch tsx harness" convention as this file's own earlier balance rounds) 200-game,
+4-player randomized simulation tracked each new decision's win-rate/elimination-rate
+association specifically to check none of them reads as a dominant or a trap pick. First
+pass flagged two real outliers against a 25%-win/75%-elimination baseline (the
+mathematical baseline for any decision in a 4-player game, since exactly one player wins
+each game): `Composting Innovation Lab` at 17.6% win / 80.7% elimination — an all-cost,
+no-direct-payoff decision (its R&D only fed `nutrientConsistency`/`processingLevel`,
+second-order competitiveness inputs, against a heavy front-loaded cash cost with no
+direct price/demand line, unlike `New Factory`/`Pelleting R&D`'s own direct capacity/price
+payoffs) — and `Regional Manure Cartel` at 42.1% win / 54.2% elimination, a self-buff with
+real price upside and no real cost. Fixed the same way this file's earlier balance rounds
+fixed comparable gaps: `Composting Innovation Lab`'s cash cost was cut (`-45000/-45000` →
+`-30000/-30000`, matching `Pelleting Research and Development`'s own cost) and it gained a
+direct `price` line it previously lacked (`+0.15` default, phased in at `+0.08` in year 2)
+so the payoff isn't purely indirect; `Regional Manure Cartel`'s price boost was trimmed
+(`+0.12` → `+0.08`) and it gained a real ongoing `operatingExpenses` cost (`+6000`, the
+"hauler kickback maintenance" the flavor text always implied but the numbers never
+charged for). Re-running the same 200-game check afterward put `Composting Innovation
+Lab` at 34.1% win / 64.4% elimination and left `Regional Manure Cartel` at 41.6% —
+**then cross-checked against the exact same script run over the full, already-shipped
+decision library** (old + new decisions together) to calibrate what "normal" spread
+actually looks like in this game: the *existing*, already-balanced library alone spans
+win rates from 18.1% (`Business-to-Business Key Accounts`) to 47.5% (`Venture Capital
+Shadow Money`) and elimination rates from 47.5% to 78.5% purely from ordinary variance —
+every one of the 24 new decisions' final numbers falls well inside that pre-existing
+spread, with `Regional Manure Cartel`'s 41.6% landing in the same neighborhood as
+existing, un-flagged decisions like `Union Agitation` (44.1%) and `Maintenance Neglect`
+(43.2%). This comparison-against-the-existing-baseline step is the actual answer to "does
+not lead to certain victory or loss" — an absolute win-rate threshold picked in isolation
+would have kept flagging decisions the shipped library itself already exhibits at the
+same magnitude, which is this methodology's own documented survivorship-bias/small-sample
+caveat (see the earlier *Randomized-simulation comparison* section) applying exactly as
+much to new content as old.
+
+As with every other data-only decision-library change in this file, this is exercised
+automatically by `gameLoop.simulation.test.ts`/`.simulation.smart.test.ts` against the
+real seed data with no dedicated per-decision unit test (matching this codebase's
+standing convention that individual decisions' balance numbers aren't unit-tested
+directly). **An already-seeded dev database needs `npm run db:seed` re-run** to pick up
+the 24 new decisions — until then `/admin`'s decision list and any running game still
+only offer the pre-existing set.
+
+### 143 more decisions added (round 4 of content) — generated via a tier-based template system, not hand-authored one at a time
+
+Requested directly: "even more decisions," a minimum of 200 total, focused mainly on
+`Strategic`/`Operational` (not `Financial`), plus more `competitorsView` (annual-report
+flavor) lines per decision. At this volume, hand-authoring each one individually (round
+3's approach for 24 decisions) doesn't scale — this round built a small, deliberately
+throwaway generator script (not committed, same "temporary tsx harness" convention as
+this file's own balance-round scripts) that splits the work into a creative half and a
+mechanical half:
+
+- **Creative, hand-written per decision**: name, one-sentence description, `level`,
+  `nature`, `offensiveAction`, and which 2-4 `PlayerVariables` fields it touches (with
+  sign — e.g. `cash-`, `target.outrage+`). This is genuinely a large batch of individual
+  ideas — the actual creative work didn't shrink, it just stopped requiring hand-tuned
+  numbers per idea.
+- **Mechanical, generated from the above**: every impact's exact magnitude, every legal
+  risk's name/description/probability/stakes, and 6 `competitorsView` lines, all computed
+  from a `nature`-derived tier (`Traditional` → small, `Grey Area` → medium, `Dirty` →
+  large) that scales BOTH a decision's own impact magnitude AND its legal risk's
+  probability/stakes together from the same tier fraction — a direct, mechanical
+  enforcement of "risk correlates with gain," rather than round 3's per-decision manual
+  eyeballing of the same principle. Magnitudes are drawn from the exact same
+  `FIELD_RANGES`/`LEGAL_RISK_FIELD_RANGES` real-data-derived calibration tables
+  `decisionGenGuardrails.ts` already uses for the AI-generation guardrail (see that
+  section above) — this round's generator duplicates those constants locally rather than
+  importing them, since it's a one-off script, not production code. Every number is
+  seeded off a hash of the decision's own name (`mulberry32`), so results are
+  reproducible and stable across re-runs, and every legal-risk name is drawn (without
+  repeats *within* one decision) from a ~40-entry pool of the same faux-legal-jargon
+  phrases the hand-authored library already uses — names may repeat *across* different
+  decisions, which is accepted (see *SUE THEIR ASSES offers the whole decision library's
+  grounds* above: the library already has no uniqueness constraint on legal-risk names).
+
+**Split 65 Strategic / 70 Operational / 8 Financial** — deliberately lopsided toward the
+two levels the request emphasized; `Financial` only grew by a handful of the same
+financial-engineering-flavored content round 3 introduced (bond issuances, swaps, an
+insider-trading ring), not because it's less important but because the request explicitly
+said "main focus on strategic and operational." Every decision, across all three levels,
+carries at least one legal risk (same verified-directly-via-scratch-test approach as
+round 3) and 6 `competitorsView` lines — up from round 3's 3-4, per the explicit "more the
+better" request. **The pre-existing 69 decisions' `competitorsView` arrays were also
+topped up to 6 lines each** (existing lines kept, new ones appended from the same
+corporate-jargon pool) — the request for more annual-report variety reads as a game-wide
+preference, not something to apply only to new content, and this half of the change was
+cheap and low-risk (pure additive strings, no mechanics touched).
+
+**Balance was checked the same way round 3 was — this codebase's own randomized-simulation
+tooling, not assertion.** `gameLoop.simulation.test.ts`/`.simulation.smart.test.ts` pass
+unmodified against the grown library (zero crashes, zero NaN/invariant violations, every
+decision reachable). A temporary 300-game win-rate/elimination-rate check across all 212
+decisions came back *tighter* than the pre-existing library's own baseline spread from
+round 3 (17.1%-48.7% win rate, mean 30.9%, vs. round 3's baseline of 18.1%-47.5%) — the
+tier-based generator's built-in gain/risk coupling produced content that's, if anything,
+more consistently balanced than round 3's hand-tuned numbers were, with no individual
+outlier requiring a manual fix this time (unlike round 3's `Composting Innovation Lab`/
+`Regional Manure Cartel`). One expected, non-concerning artifact: `Financial`-level
+decisions individually show up as "deployed" in nearly every simulated game (e.g. one
+`Financial` decision appeared in 293/300 games) — not a per-decision imbalance, just
+sample saturation from a small 8-decision category being picked from disproportionately
+often relative to the ~135-decision Operational/Strategic pools in a long game; the
+win-rate *numbers* for those decisions are unremarkable once deployed.
+
+**Live-verified end-to-end against the actual running dev server** (not just the mocked
+test suite) via a real Socket.IO client script: created a room, joined a second player,
+started the game, and confirmed `game:deck` carried exactly 50 decisions including both
+Buy Shares and Sell Shares, then disconnected and rejoined the second player and confirmed
+the reconnect's `game:deck` was byte-for-byte the same 50 names — see the next section for
+why that specific property (fixed, reconnect-stable, per-game) needed real end-to-end
+verification, not just unit tests.
+
+`decisionGenGuardrails.test.ts` (the schema/guardrail suite this round's generator
+borrowed calibration from) was untouched — the generator is a standalone script, not
+production code, so it has no permanent test file of its own; the actual regression
+coverage for this round's output is the same schema/simulation/win-rate checks described
+above, run once and not re-run automatically (consistent with round 3's own "no dedicated
+per-decision unit test" convention). **An already-seeded dev database needs `npm run
+db:seed` re-run** to pick up the 143 new decisions and the `competitorsView` top-up on the
+pre-existing 69 — already done for this session's own dev database as part of this work.
+
+### Every new game draws its own fixed, random 50-decision set — 48 random plus every share-transaction decision, always included
+
+A further, explicitly requested change alongside round 4's content: previously, `game:deck`
+always sent literally every decision in the admin-editable library to every game — with
+the library now past 200 entries, that's no longer "a deck," and the request was explicit
+that games should draw from a random subset instead, fixed for the life of that game, with
+lawsuits scoped to match.
+
+**`RoomState.decisionSubset: string[]`** (shared/src/index.ts) is the new piece of
+per-room state — decision names only (resolved back to full definitions on demand via
+`GameEngine.getRoomDeck`), empty until a game actually starts, then fixed for the rest of
+that game's life. `GameEngine.pickRandomDecisionSubset()` (called exactly once, from
+`startGame`, right before the room status flips to `GAME_PHASE`) draws
+`RANDOM_DECISION_COUNT` (48) decisions at random via a Fisher-Yates shuffle, then
+separately concatenates **every** decision with `shareTransactionType` set, unconditionally
+— not by decision name. This is a deliberate application of this codebase's own standing
+rule against hardcoded decision-name allowlists (see *Decisions/config are DB-backed*
+above — `DEPRECIATING_ASSETS`/`legalRiskConditions` were both real, shipped bugs of exactly
+this shape): selecting "Buy Shares" and "Sell Shares" by name would silently stop working
+the moment an admin renames either one or adds a third share-transaction decision, while
+selecting by the `shareTransactionType` field keeps working automatically regardless. With
+the seeded library's current 2 share-transaction decisions, a real game's fixed set is
+therefore 50 total — the number the request specified — but the mechanism itself doesn't
+hardcode "50" anywhere; it hardcodes "48 random + however many share-transaction decisions
+exist."
+
+**Why the hostile-takeover mechanic specifically can't be left to chance**: Buy Shares/
+Sell Shares aren't flavor content like everything else in the library — majority-ownership
+takeover is a fully independent way to lose the game (see *Share ownership &
+majority-ownership takeover* above), and a random draw that happened to omit both would
+silently remove that whole game mechanic for the rest of that game with no warning to
+anyone. Always-including every share-transaction decision, regardless of the random draw,
+is what guarantees that never happens.
+
+**`GameEngine.getRoomDeck(roomId)`** resolves a room's stored subset back into full
+`DecisionDefinition`s — the one function both `startGame`'s `GAME_DECK` broadcast and
+`rejoinRoom`'s mid-game `game:deck` resend now call, replacing what used to be
+`Array.from(this.decisionsByName.values())` (the full library) in both places. This one
+change is also the entire fix for "lawsuits must follow the decisions" — every client-side
+consumer of "the decision library" (the Decision Deck, SUE THEIR ASSES' whole-library
+ground catalog — see *SUE THEIR ASSES offers the whole decision library's grounds* above
+— Dig Deeper's suggested-ground reveal) already reads from whatever `game:deck` sent, with
+no separate concept of "the real full library" anywhere client-side. Scoping the one
+broadcast scopes everything downstream automatically; no client code changed at all for
+this feature. `getRoomDeck` falls back to the full library (`getDecisionsSnapshot()`) when
+a room's subset is still empty — defensive, not a real production path, since `startGame`
+always populates it before `game:deck` is ever sent; existing tests that flip
+`roomState.room.status` directly without calling `startGame` (a pre-existing test
+shortcut, not something this change should have to fix) rely on exactly this fallback to
+keep passing unchanged.
+
+**Server-side enforcement lives in `GameEngine.submitDecisions`, not inside `GameLoop`.**
+`GameLoop`/`DecisionEngine`/`LegalEngine` still hold the *entire* admin-editable library in
+memory, completely unaware any per-room restriction exists — deliberately: an
+already-deployed decision instance still needs its definition looked up by name regardless
+of which room it belongs to (`readEngineState` → `DecisionEngine.getDef`, unchanged), and
+turning `GameLoop` itself into a per-room-instantiated engine would have meant replacing
+this codebase's one-shared-`GameLoop`-instance-per-server architecture (see this file's own
+two-layer split at the top) with a `Map<roomId, GameLoop>`, touching every call site in
+`GameEngine` that currently does `this.gameLoop.xxx(...)` for a change that doesn't
+actually need it. Instead, `submitDecisions` — the one method every new-decision and
+new-lawsuit submission from a socket already funnels through — filters
+`decisions.strategic`/`operational`/`financial` entries by `.name` and
+`decisions.lawsuits` entries by `.decisionName` against `roomState.decisionSubset` (as a
+`Set`, built fresh per call) *before* ever calling `this.gameLoop.submitDecisions(...)` —
+anything naming a decision outside the room's assigned 50 is silently dropped, the same
+"no player-facing error" convention `DecisionEngine.canDeploy`'s own rejections already
+use. This means `GameLoop`'s own ~600-test suite needed zero changes — it's exercised
+directly, bypassing `GameEngine` entirely, so it was never touched by this restriction and
+still validates the engine against the *whole* library, which if anything is more thorough
+coverage than testing against any one game's 50-decision sample would be. An honest client
+never sees a decision outside the 50 in the first place (nothing to pick, since `game:deck`
+never sent it) — this filter exists for the socket that sends something anyway: a stale
+client that cached an older deck, or a deliberately crafted payload.
+
+**Two new regression suites in `gameEngine.test.ts`'s `startGame`/`submitDecisions`
+describe blocks**, both exercising the real production methods (not a reimplementation):
+`startGame` gained tests for the exact set size (48 + however many share-transaction
+decisions the seed data has), every share-transaction decision present regardless of the
+draw, two independently-started rooms getting different draws (not deterministic), and a
+mid-game `rejoinRoom` returning the *identical* set `startGame` produced — the actual
+"fixed per game, survives reconnect" property the request cared about most, and the one
+this file's own "found via a live Docker smoke test, not code review" precedent (see the
+`room:startGame` broadcast-ordering section above) is why this got a *live* Socket.IO
+client check against the real running dev server too, not just the mocked test suite (see
+the previous section). `submitDecisions` gained two regression tests: a decision entry
+naming something outside the room's set is silently dropped while a legitimate one still
+deploys, and a lawsuit entry citing an out-of-set `decisionName` never creates a case. Both
+needed one non-obvious fix while writing them: `mockIo.emit.mock.calls.find(...)` for
+`TURN_RESOLVED` returns `startGame`'s own initial-snapshot broadcast (always emitted
+first, always empty `activeDecisions`) rather than the real post-submission resolution —
+`.filter(...).pop()` (the *last* matching call) is required instead, the same gotcha this
+file's own `startGame` broadcast-ordering section already flags for a different reason.
