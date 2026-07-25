@@ -14,6 +14,16 @@ export default defineConfig({
       '@suetheirasses/shared': resolve(__dirname, '../shared/src/index.ts'),
     },
   },
+  // `vite preview` (used by CI's E2E job — tests/playwright.config.ts's webServer runs
+  // `npm run preview:client` when CI is set) does NOT inherit `server.port`; without its
+  // own `preview.port` it falls back to Vite's default of 4173, while Playwright's
+  // webServer.url is hardcoded to :5173 for both dev and preview — a real, reproduced
+  // bug where the E2E job's server started fine but Playwright waited 60s for the wrong
+  // port and timed out. Keep this in sync with server.port below.
+  preview: {
+    port: 5173,
+    host: true,
+  },
   server: {
     port: 5173,
     host: true,
