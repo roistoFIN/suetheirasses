@@ -9,10 +9,25 @@ import { test, expect, type Browser, type Page } from '@playwright/test';
 // public WAITING room currently has the fewest players: against a real dev/CI database
 // that can already hold other leftover WAITING rooms from earlier runs, Quick Play has
 // no guarantee of landing in THIS test's own room specifically.
+// Deliberately does NOT use real OS clipboard access (context.grantPermissions +
+// navigator.clipboard.readText) — a real, reproduced cross-browser gap: Playwright's
+// `grantPermissions` only recognizes 'clipboard-read'/'clipboard-write' for Chromium;
+// Firefox and WebKit both reject them outright with "Unknown permission". Instead,
+// this replaces `navigator.clipboard.writeText` in the page's own JS context with a
+// capturing stub *before* clicking the copy button, so the invite link is captured
+// directly from the call the button makes — no real clipboard, no permission grant,
+// and identical behavior across all three engines.
 async function copyInviteLink(page: Page): Promise<string> {
-  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.evaluate(() => {
+    (window as unknown as { __capturedClipboardText: Promise<string> }).__capturedClipboardText =
+      new Promise<string>((resolve) => {
+        navigator.clipboard.writeText = async (text: string) => {
+          resolve(text);
+        };
+      });
+  });
   await page.getByTitle('Copy invite link').click();
-  return page.evaluate(() => navigator.clipboard.readText());
+  return page.evaluate(() => (window as unknown as { __capturedClipboardText: Promise<string> }).__capturedClipboardText);
 }
 
 async function joinAsSecondPlayer(browser: Browser, inviteLink: string, name: string): Promise<Page> {
