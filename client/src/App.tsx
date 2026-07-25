@@ -8,6 +8,7 @@ import GameOver from './pages/GameOver';
 import GameTimelineView from './pages/GameTimelineView';
 import AdminPortal from './pages/AdminPortal';
 import ConsentBanner from './components/ConsentBanner';
+import { useConsentStore } from './stores/consentStore';
 
 const LOST_COPY: Record<'bankrupt' | 'forfeit' | 'merged', { title: string; body: (acquirerName?: string) => string }> = {
   bankrupt: {
@@ -165,6 +166,7 @@ const NotificationBanner: React.FC = () => {
 const App: React.FC = () => {
   const { connect, disconnect, returnToLanding } = useSocketStore();
   const { currentPhase, isRejoining, selfElimination, hasAcknowledgedElimination, acknowledgeElimination, bankruptcyEvents, dismissBankruptcyEvent } = useGameStore();
+  const { hasDecided: hasDecidedConsent, settingsOpen: consentSettingsOpen } = useConsentStore();
   const isAdminRoute = window.location.pathname.startsWith('/admin');
 
   useEffect(() => {
@@ -222,10 +224,22 @@ const App: React.FC = () => {
     }
   }
 
+  // The consent banner is `position: fixed` at the bottom of the viewport, drawn on top
+  // of whatever page is underneath — with no reserved space, it silently covers (and
+  // intercepts clicks on) anything near the bottom of a normal-height viewport, most
+  // critically Matchmaking's own name input/Create Room button, the very first thing a
+  // new visitor needs to interact with. Reserving bottom padding for exactly as long as
+  // the banner is actually visible (its own `!hasDecided || settingsOpen` condition —
+  // see ConsentBanner's doc comment) keeps that content clickable without permanently
+  // shrinking the page once a choice has been made. The pixel value is an approximation
+  // of the banner's own collapsed height, not an exact fit — same convention as this
+  // app's other fixed-height estimates (see CLAUDE.md's ACTIVE_DECISIONS_MAX_HEIGHT).
+  const consentBannerVisible = !hasDecidedConsent || consentSettingsOpen;
+
   return (
     <>
       <NotificationBanner />
-      {page}
+      <Box pb={consentBannerVisible ? 140 : 0}>{page}</Box>
       <ConsentBanner />
       {bankruptcyEvents.length > 0 && (
         <BankruptcyModal
