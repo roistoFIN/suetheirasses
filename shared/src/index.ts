@@ -530,7 +530,7 @@ export interface RoomState {
    * `GameEngine.getRoomDeck`. Empty until `GameEngine.startGame` picks it (see
    * `pickRandomDecisionSubset`); never recomputed after that for the life of the game,
    * so every player sees the same set for the whole game, survives reconnects, and
-   * SUE THEIR ASSES' ground catalog is implicitly scoped to it too, since the client
+   * SUE THEM CHICKENS' ground catalog is implicitly scoped to it too, since the client
    * only ever knows about decisions it received via `game:deck`. */
   decisionSubset: string[];
 }

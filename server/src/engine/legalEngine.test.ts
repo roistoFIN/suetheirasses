@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { LegalEngine } from './legalEngine';
-import type { AdminVariables, PlayerVariables } from '@suetheirasses/shared';
+import type { AdminVariables, PlayerVariables } from '@suethemchickens/shared';
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -83,7 +83,7 @@ function makeAdmin(overrides: Partial<AdminVariables> = {}): AdminVariables {
   };
 }
 
-function makeLegalRiskDef(overrides: Partial<import('@suetheirasses/shared').LegalRiskDefinition> = {}) {
+function makeLegalRiskDef(overrides: Partial<import('@suethemchickens/shared').LegalRiskDefinition> = {}) {
   return {
     name: 'Breach of Contract',
     description: 'Sue for breach',

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { ChatMessageBroadcast } from '@suetheirasses/shared';
+import type { ChatMessageBroadcast } from '@suethemchickens/shared';
 
 /**
  * In-room chat — one continuous conversation for as long as a player stays in a given

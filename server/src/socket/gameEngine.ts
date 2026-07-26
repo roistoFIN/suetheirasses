@@ -32,7 +32,7 @@ import {
   type TimelineLawsuitEvent,
   type PlayerVariables,
   type PlayerDerivedStats,
-} from '@suetheirasses/shared';
+} from '@suethemchickens/shared';
 import type { PersistedDecisionInstance } from '../engine/gameLoop.js';
 import { validateRoomJoin, validateSubmitDecisions, validateDigDeeper, validateFileLawsuit, validateRoomRejoin, validateAnnualReportRequest, validateChatMessage, validateGameReady, validateRoomSetInviteOnly, validateKpiHistoryRequest, validateMakeOffer, validateAcceptOffer, validateGoToCourt, validateDigDeeperCase } from '../validation/schemas.js';
 import { GameLoop } from '../engine/gameLoop.js';
@@ -156,7 +156,7 @@ export class GameEngine {
    * that hasn't gone through `startGame` yet — not a real production path, see
    * `getRoomDeck`'s doc comment) is treated as unrestricted, not "reject everything."
    */
-  submitDecisions(roomId: string, playerId: string, decisions: import('@suetheirasses/shared').SubmittedDecisions): void {
+  submitDecisions(roomId: string, playerId: string, decisions: import('@suethemchickens/shared').SubmittedDecisions): void {
     const roomState = this.rooms.get(roomId);
     const allowed = roomState && roomState.decisionSubset.length > 0 ? new Set(roomState.decisionSubset) : undefined;
     const filtered = allowed
@@ -848,7 +848,7 @@ export class GameEngine {
    * This room's fixed decision set (see `pickRandomDecisionSubset`), resolved back into
    * full definitions — what `game:deck` actually sends, on both `startGame` and a
    * mid-game `rejoinRoom`. Everything downstream that reads "the decision library"
-   * client-side (the Decision Deck, SUE THEIR ASSES' whole-library ground catalog, Dig
+   * client-side (the Decision Deck, SUE THEM CHICKENS' whole-library ground catalog, Dig
    * Deeper's suggested-ground reveal) only ever sees decisions it received this way, so
    * scoping this one broadcast is what makes lawsuits/deploys implicitly follow the
    * room's assigned set — no separate client-side filtering needed. Falls back to the

@@ -17,7 +17,7 @@
  * candidate can reach before a human reviews it.
  */
 
-import type { DecisionDefinition, ImpactEntry, LegalRiskDefinition } from '@suetheirasses/shared';
+import type { DecisionDefinition, ImpactEntry, LegalRiskDefinition } from '@suethemchickens/shared';
 
 export const MAX_IMPACT_FIELDS = 5;
 export const MAX_LEGAL_RISKS = 3;

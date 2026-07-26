@@ -62,7 +62,7 @@ export interface GameSettings {
   marketFixed: boolean;
   /** Cash cost of one "Dig Deeper" investigation click — deducted instantly, outside turn resolution. */
   digDeeperCost: number;
-  /** Flat cost of filing one lawsuit (the SUE THEIR ASSES flow) — deducted instantly the
+  /** Flat cost of filing one lawsuit (the SUE THEM CHICKENS flow) — deducted instantly the
    * moment a player files, outside turn resolution, same "instant" pattern as
    * `digDeeperCost`. Not refunded if the case is later rejected at turn resolution (e.g.
    * the target no longer has the cited decision deployed) — filing is a real, deliberate

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-"Sue Their Asses" — a multiplayer, server-authoritative business strategy game. Players
+"Sue Them Chickens" — a multiplayer, server-authoritative business strategy game. Players
 run companies for 120s rounds, deploy decisions from a shared, admin-editable decision library, sue
 each other over risky moves, buy up rivals' shares to force a hostile takeover, and get
 eliminated the instant their cash goes negative or another player crosses 50% ownership of
@@ -522,7 +522,7 @@ the exact same closing logic (`setSueModalOpen(false)` + clearing `sueSuggestion
 a shared `closeSueModal` function used by both the wrapping `<Modal onClose=...>` and
 `SueModal`'s own `onClose` prop, so there's one place that defines "what closing this
 modal means," not two independent closures that could drift. A player who wants to file a
-second lawsuit the same turn re-opens the modal via the **SUE THEIR ASSES** button, the
+second lawsuit the same turn re-opens the modal via the **SUE THEM CHICKENS** button, the
 same as opening it the first time — this was a deliberate simplification, not an
 oversight: staying open only made sense when the modal needed to keep showing its own
 queued list, and that list is gone now.
@@ -628,7 +628,7 @@ other player. That left the majority of the decision library completely invisibl
 everyone but its deployer: roughly two-thirds of the decision library (New Factory, Water
 Pumping, Night Dumping, Maintenance Neglect, Artificial Greenwashing, and more) have no `target.*`
 concept at all but still carry `legalRisks` — any player could already sue over one
-"blind" via SUE THEIR ASSES' whole-library ground list (see *SUE THEIR ASSES offers the
+"blind" via SUE THEM CHICKENS' whole-library ground list (see *SUE THEM CHICKENS offers the
 whole decision library's grounds* below), but had zero signal that a rival had even
 deployed one, short of manually checking Competitor Intel every turn.
 
@@ -2137,7 +2137,7 @@ incentive ("investigate before committing," not "sue constantly and hope").
 Final cash range narrowed at the top (max dropped ~86.6M → ~24.8M) but widened at the
 bottom (min dropped ~-2.1M → ~-4.1M) compared to the blind-suing run. Makes sense on
 reflection: a wrong blind guess is usually a 0%-probability "real but hopeless" case (see
-*"SUE THEIR ASSES offers the whole decision library's grounds"* above) — it costs the
+*"SUE THEM CHICKENS offers the whole decision library's grounds"* above) — it costs the
 plaintiff the filing fee but essentially never actually transfers real stakes from the
 defendant, since the odds are zero. A correctly-targeted, fully-investigated case has real
 odds of actually landing, so when it does, real (often large, since `stakes` for a
@@ -2827,10 +2827,10 @@ that defeats the point.
 ### Shared types live in `shared/src/`
 
 `shared/src/index.ts` — room/player/socket-event types, enums, payloads (client +
-server both import from `@suetheirasses/shared`). `shared/src/gameTypes.ts` — engine
+server both import from `@suethemchickens/shared`). `shared/src/gameTypes.ts` — engine
 types (`DecisionDefinition`, `PlayerVariables`, `LegalCaseData`, `TurnResolutionResult`,
 `GameConfig`). When adding or changing a socket event payload or engine type, edit here
-first — both workspaces resolve `@suetheirasses/shared` straight to `shared/src/index.ts`
+first — both workspaces resolve `@suethemchickens/shared` straight to `shared/src/index.ts`
 via path alias (see `vite.config.ts` / `vitest.config.ts` in client and server), so no
 build step is needed to see changes during dev, only for production builds.
 
@@ -2891,7 +2891,7 @@ build step is needed to see changes during dev, only for production builds.
   the plaintiff earned it* above. `legalEngine.test.ts`'s `fileLawsuit` describe block and
   `gameLoop.test.ts`'s "should still create a case ... when the cited decision was never
   deployed by the target (a guess)" test are the regression coverage for the wrong-guess-
-  still-creates-a-0%-case behavior described in *SUE THEIR ASSES offers the whole decision
+  still-creates-a-0%-case behavior described in *SUE THEM CHICKENS offers the whole decision
   library's grounds* above — extend those, not just the "target actually did it" happy
   path, if you touch `fileLawsuit` again. `decisionEngine.test.ts`'s `hasPermanentEffect`
   describe block and its `canDeploy` describe block's "permanent-effect redeploy lock"
@@ -2964,7 +2964,7 @@ via a probability draw. This codebase's richer `'negotiating'` status, with a re
 settlement negotiation flow on top (offer/counter/accept/go-to-court — see *"Settlement
 negotiation"* below), is a further addition beyond spec.
 
-### SUE THEIR ASSES offers the whole decision library's grounds, not just a target's actual ones — guessing wrong still creates a real (hopeless) case
+### SUE THEM CHICKENS offers the whole decision library's grounds, not just a target's actual ones — guessing wrong still creates a real (hopeless) case
 
 `GamePhase.tsx`'s `getGroundsAgainst` used to derive the ground list from the *target's*
 own `activeDecisions` — a player could only ever select something the target had
@@ -3089,7 +3089,7 @@ Not in the original design spec at all, a further addition beyond spec by the
 same kind of explicit product decision as the negotiation phase below. Once a target's
 cited decision instance has been active `elapsedYears >= statuteOfLimitationsYears`, suing
 over it is time-barred: the case still gets created — same "real but hopeless" shape a
-wrong guess already gets (see *SUE THEIR ASSES offers the whole decision library's
+wrong guess already gets (see *SUE THEM CHICKENS offers the whole decision library's
 grounds* above) — just with `baseProbability` forced to `0` rather than priced off the
 ground's real schedule. This is deliberately **independent of `isMatured`** (maturity
 governs when an impact schedule locks in — instant vs. multi-year — not legal
@@ -4128,7 +4128,7 @@ generically (nothing about `Financial` was ever hardcoded to mean "share trade o
 
 **Every new decision has at least one `legalRisks` entry** (the one existing exception in
 the whole decision library, `Sell Shares`, predates this round and was deliberately
-left alone — see *SUE THEIR ASSES offers the whole decision library's grounds* above for
+left alone — see *SUE THEM CHICKENS offers the whole decision library's grounds* above for
 why a decision with no legal angle at all is a legitimate, if rare, shape). Verified
 directly, not assumed: a scratch Vitest file ran every decision in the file through the
 real `decisionDefinitionSchema` and asserted a non-empty `legalRisks` array for every
@@ -4232,7 +4232,7 @@ mechanical half:
   reproducible and stable across re-runs, and every legal-risk name is drawn (without
   repeats *within* one decision) from a ~40-entry pool of the same faux-legal-jargon
   phrases the hand-authored library already uses — names may repeat *across* different
-  decisions, which is accepted (see *SUE THEIR ASSES offers the whole decision library's
+  decisions, which is accepted (see *SUE THEM CHICKENS offers the whole decision library's
   grounds* above: the library already has no uniqueness constraint on legal-risk names).
 
 **Split 65 Strategic / 70 Operational / 8 Financial** — deliberately lopsided toward the
@@ -4320,8 +4320,8 @@ is what guarantees that never happens.
 `rejoinRoom`'s mid-game `game:deck` resend now call, replacing what used to be
 `Array.from(this.decisionsByName.values())` (the full library) in both places. This one
 change is also the entire fix for "lawsuits must follow the decisions" — every client-side
-consumer of "the decision library" (the Decision Deck, SUE THEIR ASSES' whole-library
-ground catalog — see *SUE THEIR ASSES offers the whole decision library's grounds* above
+consumer of "the decision library" (the Decision Deck, SUE THEM CHICKENS' whole-library
+ground catalog — see *SUE THEM CHICKENS offers the whole decision library's grounds* above
 — Dig Deeper's suggested-ground reveal) already reads from whatever `game:deck` sent, with
 no separate concept of "the real full library" anywhere client-side. Scoping the one
 broadcast scopes everything downstream automatically; no client code changed at all for

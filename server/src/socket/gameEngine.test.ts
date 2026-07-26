@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { GameEngine } from './gameEngine';
-import { RoomStatus, ServerEvents, PHASE_TIMERS, PHASE_ORDER, type DecisionDefinition, type GameConfig } from '@suetheirasses/shared';
+import { RoomStatus, ServerEvents, PHASE_TIMERS, PHASE_ORDER, type DecisionDefinition, type GameConfig } from '@suethemchickens/shared';
 import type { Server } from 'socket.io';
 import type { PrismaClient, Room as PrismaRoom, Player as PrismaPlayer, Company as PrismaCompany } from '@prisma/client';
 import gameEngineData from '../data/game_engine.json' with { type: 'json' };

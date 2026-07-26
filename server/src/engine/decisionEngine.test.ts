@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { DecisionEngine, hasPermanentEffect, pickBestGround, meetsLegalRiskConditions, type DeployedDecision } from './decisionEngine';
-import type { DecisionDefinition, PlayerVariables, AdminVariables } from '@suetheirasses/shared';
+import type { DecisionDefinition, PlayerVariables, AdminVariables } from '@suethemchickens/shared';
 import { buildFormulaSet } from './formulaEngine';
 import { DEFAULT_FORMULA_SEEDS } from './defaultFormulas';
 

@@ -8,7 +8,7 @@
  * shape `index.ts` sends back as JSON.
  */
 
-import type { DecisionAnalyticsEntry, LawsuitAnalyticsEntry, PerformanceLlmStat } from '@suetheirasses/shared';
+import type { DecisionAnalyticsEntry, LawsuitAnalyticsEntry, PerformanceLlmStat } from '@suethemchickens/shared';
 
 export interface EventLogRow {
   eventType: string;

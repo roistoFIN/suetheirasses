@@ -12,7 +12,7 @@ import {
   ServerEvents, ClientEvents,
   type GameTimelineResponse, type TimelineDecisionEvent, type TimelineLawsuitEvent,
   type PlayerVariables, type PlayerDerivedStats,
-} from '@suetheirasses/shared';
+} from '@suethemchickens/shared';
 
 // ============================================================
 // The Civilization-style game-over replay / live spectator view — one shared component

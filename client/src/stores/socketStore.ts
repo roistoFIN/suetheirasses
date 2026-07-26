@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { io, Socket } from 'socket.io-client';
-import { ClientEvents, ServerEvents, type RoomJoinedResponse, type RoomRejoinPayload, type RoomUpdatedResponse, type PhaseChangedResponse, type GameOverResponse, type ErrorResponse, type TurnResolutionResult, type GameDeckResponse, type DigDeeperResultPayload, type FileLawsuitResultPayload, type AnnualReportResultPayload, type LegalCaseUpdatePayload, type ChatMessageBroadcast } from '@suetheirasses/shared';
+import { ClientEvents, ServerEvents, type RoomJoinedResponse, type RoomRejoinPayload, type RoomUpdatedResponse, type PhaseChangedResponse, type GameOverResponse, type ErrorResponse, type TurnResolutionResult, type GameDeckResponse, type DigDeeperResultPayload, type FileLawsuitResultPayload, type AnnualReportResultPayload, type LegalCaseUpdatePayload, type ChatMessageBroadcast } from '@suethemchickens/shared';
 import { useGameStore } from './gameStore';
 import { useChatStore } from './chatStore';
 

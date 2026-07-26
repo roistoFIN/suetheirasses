@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { setupTestDatabase, teardownTestDatabase, getPrisma } from '../test-setup';
-import { RoomStatus, ServerEvents, ClientEvents } from '@suetheirasses/shared';
+import { RoomStatus, ServerEvents, ClientEvents } from '@suethemchickens/shared';
 import { io as ioClient, Socket as SocketClient } from 'socket.io-client';
 import { createServer } from 'http';
 import { Server } from 'socket.io';

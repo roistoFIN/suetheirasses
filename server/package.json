@@ -1,5 +1,5 @@
 {
-  "name": "@suetheirasses/server",
+  "name": "@suethemchickens/server",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@prisma/client": "^6.18.0",
-    "@suetheirasses/shared": "*",
+    "@suethemchickens/shared": "*",
     "cors": "^2.8.5",
     "express": "^4.18.2",
     "socket.io": "^4.7.4",

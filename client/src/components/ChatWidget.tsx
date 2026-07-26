@@ -4,7 +4,7 @@ import { IconMessage, IconSend, IconX } from '@tabler/icons-react';
 import { useGameStore } from '../stores/gameStore';
 import { useSocketStore } from '../stores/socketStore';
 import { useChatStore } from '../stores/chatStore';
-import { ClientEvents } from '@suetheirasses/shared';
+import { ClientEvents } from '@suethemchickens/shared';
 
 // "Courtroom Ink" tokens, matching GamePhase.tsx's gpStyles / Matchmaking.tsx's mmStyles
 // conventions — kept local since this is a small, self-contained widget.

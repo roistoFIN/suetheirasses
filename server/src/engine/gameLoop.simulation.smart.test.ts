@@ -25,7 +25,7 @@
 import { describe, it, expect } from 'vitest';
 import { GameLoop, type EngineDataInput } from './gameLoop.js';
 import { DEFAULT_FORMULA_SEEDS } from './defaultFormulas.js';
-import type { DecisionDefinition, GameConfig, SubmittedDecisions, IncomingAttackInfo } from '@suetheirasses/shared';
+import type { DecisionDefinition, GameConfig, SubmittedDecisions, IncomingAttackInfo } from '@suethemchickens/shared';
 import gameEngineData from '../data/game_engine.json' with { type: 'json' };
 import gameConfigData from '../data/game_config.json' with { type: 'json' };
 

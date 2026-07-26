@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { PlayerVariables, PlayerDerivedStats, GameTimelineResponse, TimelineLawsuitEvent } from '@suetheirasses/shared';
+import type { PlayerVariables, PlayerDerivedStats, GameTimelineResponse, TimelineLawsuitEvent } from '@suethemchickens/shared';
 
 // ── Utility functions duplicated from GameTimelineView.tsx for testing ──────────────
 // Same "duplicate small pure logic, keep this test file lightweight (no Mantine/
