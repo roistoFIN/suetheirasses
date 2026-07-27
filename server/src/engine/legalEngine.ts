@@ -7,7 +7,7 @@
  * `gameSettings.maxLawsuitsPerPlayerPerTurn` filings per turn).
  */
 
-import type { DecisionDefinition, AdminVariables, LegalCaseData, PlayerVariables } from '@suetheirasses/shared';
+import type { DecisionDefinition, AdminVariables, LegalCaseData, PlayerVariables } from '@suethemchickens/shared';
 import { getScheduleValue } from './calcEngine.js';
 import { meetsLegalRiskConditions } from './decisionEngine.js';
 

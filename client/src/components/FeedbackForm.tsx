@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Stack, Text, Textarea, Button, ActionIcon, Group, Alert } from '@mantine/core';
 import { IconMoodCry, IconMoodSad, IconMoodNeutral, IconMoodSmile, IconMoodHappy, IconCheck, IconAlertCircle } from '@tabler/icons-react';
-import type { FeedbackSource } from '@suetheirasses/shared';
+import type { FeedbackSource } from '@suethemchickens/shared';
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
 

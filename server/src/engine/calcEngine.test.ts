@@ -19,7 +19,7 @@ import {
 } from './calcEngine';
 import { buildFormulaSet } from './formulaEngine';
 import { DEFAULT_FORMULA_SEEDS } from './defaultFormulas';
-import type { PlayerVariables, AdminVariables } from '@suetheirasses/shared';
+import type { PlayerVariables, AdminVariables } from '@suethemchickens/shared';
 
 // The real 23 seeded formula expressions, compiled once — every calcEngine function
 // that now takes a FormulaSet is exercised against the actual production formulas,

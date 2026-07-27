@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { pickBotDecisions, pickAttacksToInvestigate, shouldFileLawsuit, BOT_CASH_RESERVE } from './botService';
-import type { DecisionDefinition, IncomingAttackInfo } from '@suetheirasses/shared';
+import type { DecisionDefinition, IncomingAttackInfo } from '@suethemchickens/shared';
 
 function makeDecisionDef(overrides: Partial<DecisionDefinition> = {}): DecisionDefinition {
   return {

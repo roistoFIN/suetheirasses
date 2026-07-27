@@ -9,7 +9,7 @@ import { validateDecisionDefinition, validateGameConfig, validateFormulaUpdate, 
 import { generateDecisionCandidate, type DecisionGenRequest } from './services/decisionGenService.js';
 import { logEvent } from './services/eventLogService.js';
 import { aggregateDecisionAnalytics, aggregateLawsuitAnalytics, aggregatePerformanceAnalytics } from './services/analyticsService.js';
-import type { FeedbackEntry, FeedbackSource, EventLogEntry, EventSeverity } from '@suetheirasses/shared';
+import type { FeedbackEntry, FeedbackSource, EventLogEntry, EventSeverity } from '@suethemchickens/shared';
 
 const app = express();
 const httpServer = createServer(app);

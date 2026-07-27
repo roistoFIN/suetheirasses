@@ -44,7 +44,7 @@ import type {
   KpiSnapshotPoint,
   PlayerDerivedStats,
   SharesBoughtEvent,
-} from '@suetheirasses/shared';
+} from '@suethemchickens/shared';
 import {
   applyDepreciation,
   calculateCompetitivenessAndMarketShare,

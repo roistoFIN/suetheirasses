@@ -13,8 +13,8 @@
  */
 
 import { getScheduleValue } from '../engine/calcEngine.js';
-import type { DecisionDefinition, IncomingAttackInfo } from '@suetheirasses/shared';
-import type { SubmittedDecisionEntry } from '@suetheirasses/shared';
+import type { DecisionDefinition, IncomingAttackInfo } from '@suethemchickens/shared';
+import type { SubmittedDecisionEntry } from '@suethemchickens/shared';
 
 /** Flat cash buffer the bot never spends below — roughly one turn's baseline
  * opex+staff cost (see CLAUDE.md's idle-player-breakeven section). Not admin-configurable

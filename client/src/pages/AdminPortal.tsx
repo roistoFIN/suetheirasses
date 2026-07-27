@@ -30,7 +30,7 @@ import type {
   DecisionAnalyticsEntry,
   LawsuitAnalyticsEntry,
   PerformanceAnalyticsResponse,
-} from '@suetheirasses/shared';
+} from '@suethemchickens/shared';
 
 /**
  * Admin Portal — a real, independent URL (`/admin`), not driven by game phase state

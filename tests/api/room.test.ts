@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { setupTestDatabase, teardownTestDatabase, getPrisma } from '../test-setup';
-import { RoomStatus } from '@suetheirasses/shared';
+import { RoomStatus } from '@suethemchickens/shared';
 
 describe('Room REST API', () => {
   beforeAll(async () => {

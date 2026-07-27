@@ -1,4 +1,4 @@
-# ⚖️ Sue Their Asses
+# ⚖️ Sue Them Chickens
 
 A multiplayer web-based business strategy game where players manage companies and eliminate opponents through bankruptcy.
 
@@ -177,7 +177,7 @@ Tech stack is defined in tech-stack.md
 ## 📁 Project Structure
 
 ```
-suetheirasses/
+suethemchickens/
 ├── client/                          # React frontend application
 │   ├── public/
 │   │   └── images/                  # Static assets served as-is (Vite public/ convention)
@@ -690,7 +690,7 @@ one store.
 
 ```bash
 # 1. Clone and enter the project
-cd suetheirasses
+cd suethemchickens
 
 # 2. Start PostgreSQL via Docker
 docker-compose up -d postgres
@@ -718,7 +718,7 @@ The application will be available at:
 
 ```bash
 # 1. Clone and enter the project
-cd suetheirasses
+cd suethemchickens
 
 # 2. Build and start all services (PostgreSQL, server, client)
 docker-compose up -d --build
@@ -877,14 +877,14 @@ rather than letting a player queue a move the server would reject.
 
 The deck itself opens from a **MAKE IMPORTANT DECISIONS** button inside the **Active
 Decisions** box, rather than sitting inline as its own panel — the same "button opens a
-modal" shape the **SUE THEIR ASSES** button already uses for the Sue modal. Whatever's
+modal" shape the **SUE THEM CHICKENS** button already uses for the Sue modal. Whatever's
 queued this turn shows up in the **Active Decisions** box directly too, not just inside
 that modal — a red `QUEUED` badge alongside the already-active decisions, with its own
 **Cancel** link right there (no need to reopen the deck just to back out of a pick). The
 box's header count (`"X strategic, Y operational, and Z financial"`) includes both active and queued
 decisions together. The same goes for a filed-but-not-yet-created lawsuit in the **Open
 Lawsuits** box: it appears as a `QUEUED` entry with a **Remove** link there — the
-`SUE THEIR ASSES` modal itself shows only a queued-count line (not its own duplicate
+`SUE THEM CHICKENS` modal itself shows only a queued-count line (not its own duplicate
 list of what's queued) and closes itself automatically the instant a lawsuit is
 successfully filed, since the Open Lawsuits box is where a player actually confirms/
 cancels a queued filing from that point on. All of this reads and writes the exact same
@@ -900,7 +900,7 @@ scrolling for the rest, so a long game's accumulated decisions don't push the re
 page down. See CLAUDE.md's *"`ActiveDecisionsBox`..."* section for the implementation.
 
 Alongside the level/nature filter chips, the deck also has a **SEARCH DECISIONS** text
-field (matching by decision name or description, the same shape as SUE THEIR ASSES'
+field (matching by decision name or description, the same shape as SUE THEM CHICKENS'
 "SEARCH GROUNDS" field) and a **SORT BY KPI** control: a dropdown of every KPI field some
 decision in the library actually affects (derived from the live, admin-editable decision
 data, not a hardcoded list — an unaffected field never shows up as a useless option), plus
@@ -1056,7 +1056,7 @@ outright (no case, fee already spent) only if the decision or ground name doesn'
 the library at all, which the real client never sends.
 
 Filing also costs a flat `gameSettings.lawsuitFilingCost` ($15,000 by default), shown right
-on the **SUE THEIR ASSES** button and deducted **instantly** the moment the "File" button
+on the **SUE THEM CHICKENS** button and deducted **instantly** the moment the "File" button
 is clicked in `SueModal` — a `game:fileLawsuit` round trip, same "instant, outside turn
 resolution" pattern as Dig Deeper, not something that waits for the round timer. The case
 itself is still only created at the next turn resolution, exactly as described above — the
@@ -1259,7 +1259,7 @@ cause. Every player who currently has an active `target.*` decision aimed at the
 attacker's identity is never sent to the client below whatever tier that player has
 personally unlocked, so there's nothing to read via devtools before paying for it.
 
-The client shows a hint next to the SUE THEIR ASSES button — *"Somebody did something to
+The client shows a hint next to the SUE THEM CHICKENS button — *"Somebody did something to
 you"* — with a **🔍 Dig Deeper** button. Each click emits `game:digDeeper` and costs
 `gameSettings.digDeeperCost` ($10,000 by default), deducted **instantly** via
 `GameEngine.digDeeper`/`GameLoop.digDeeper` — a genuinely out-of-band mutation, not routed
@@ -1309,7 +1309,7 @@ at — but roughly two-thirds of those still carry `legalRisks` (New Factory's n
 suit, Water Pumping's environmental suit, Night Dumping, Maintenance Neglect, Artificial
 Greenwashing, and so on). Deploying one of these used to be completely invisible to
 everyone but the deployer, even though any player could already sue over it "blind" via
-SUE THEIR ASSES' whole-library ground list (see below). `GameLoop.isIndirectEffect`
+SUE THEM CHICKENS' whole-library ground list (see below). `GameLoop.isIndirectEffect`
 flags a decision instance as indirect whenever it has zero `target.*` impacts AND at
 least one `legalRisks` entry; `buildIncomingAttacks` then surfaces it to **every other
 active player**, not just one victim, since there's no target to route it to. A decision
@@ -1980,7 +1980,7 @@ npm test --workspace=server
 # detectNewlySuedCases, detectNewlyResolvedCases, and detectNewlySettledCases, the pure
 # diffs behind the sued/verdict/settlement News items; isAttackAlreadySuedOver, which
 # hides an incoming-attack hint once sued over with a correct/non-zero-probability case;
-# and getGroundsAgainst, confirming the SUE THEIR ASSES ground list is the whole decision
+# and getGroundsAgainst, confirming the SUE THEM CHICKENS ground list is the whole decision
 # library's legal-risk catalog, not scoped to any one target's actual deployed decisions)
 npm --workspace=client exec vitest run
 
@@ -2029,8 +2029,8 @@ The project includes a multi-stage Docker build (`Dockerfile`) that builds the e
 
 ```dockerfile
 # Build and run with the full-stack image
-docker build -t suetheirasses:latest .
-docker run -p 80:80 -p 3001:3001 suetheirasses:latest
+docker build -t suethemchickens:latest .
+docker run -p 80:80 -p 3001:3001 suethemchickens:latest
 ```
 
 Or use the provided `docker-compose.yml` for orchestrated deployment with PostgreSQL:

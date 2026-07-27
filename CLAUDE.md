@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-"Sue Their Asses" — a multiplayer, server-authoritative business strategy game. Players
+"Sue Them Chickens" — a multiplayer, server-authoritative business strategy game. Players
 run companies for 120s rounds, deploy decisions from a shared, admin-editable decision library, sue
 each other over risky moves, buy up rivals' shares to force a hostile takeover, and get
 eliminated the instant their cash goes negative or another player crosses 50% ownership of
@@ -341,7 +341,7 @@ color is unaffected and still config-driven. `RiskBreakdownView` (opened by clic
 chip) deliberately stays numeric — it recomputes live from current state every time it
 opens, so it isn't stale the way the snapshot is.
 
-### `SUE THEIR ASSES` offers the whole decision library's grounds, not just a target's actual ones
+### `SUE THEM CHICKENS` offers the whole decision library's grounds, not just a target's actual ones
 
 `getGroundsAgainst` returns every `legalRisks` entry across the *entire* library,
 regardless of who has actually deployed it — a player can sue on a hunch. `LegalEngine.
@@ -648,7 +648,7 @@ they need to be queried outside the engine.
 
 `shared/src/index.ts` — room/player/socket-event types, enums, payloads. `shared/src/
 gameTypes.ts` — engine types (`DecisionDefinition`, `PlayerVariables`, `LegalCaseData`,
-`TurnResolutionResult`, `GameConfig`). Both workspaces resolve `@suetheirasses/shared`
+`TurnResolutionResult`, `GameConfig`). Both workspaces resolve `@suethemchickens/shared`
 straight to source via path alias — no build step needed to see changes during dev.
 
 ### Client: no path-based routing for game phases — `/admin` is the one real URL

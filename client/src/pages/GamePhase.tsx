@@ -14,7 +14,7 @@ import {
   type DecisionDefinition, type GameSettings, type SubmittedDecisions,
   type IncomingAttackInfo, type TurnResolutionResult,
   type KpiHistoryResponse,
-} from '@suetheirasses/shared';
+} from '@suethemchickens/shared';
 import {
   IconClock, IconFileText,
   IconTrendingUp, IconTrendingDown, IconMinus, IconSearch, IconGavel,
@@ -28,7 +28,7 @@ import {
 //
 // Note: there is no separate, hand-maintained catalog of lawsuit grounds — every
 // decision's `legalRisks` in the (admin-editable, DB-backed) decision library is a
-// selectable ground in the SUE THEIR ASSES modal, for every decision in the game, not
+// selectable ground in the SUE THEM CHICKENS modal, for every decision in the game, not
 // just ones a specific target has actually deployed. See getGroundsAgainst() near
 // SueModal: a player can knowingly guess a ground the target may or may not have
 // actually pursued — a wrong guess still costs the filing fee (not refunded) but
@@ -872,7 +872,7 @@ export default function GamePhase() {
                   onDismiss={(attackId) => setDismissedAttackIds((prev) => new Set(prev).add(attackId))}
                 />
                 <Button variant="filled" color="red" onClick={() => setSueModalOpen(true)} style={{ ...boldStyle }}>
-                  SUE THEIR ASSES (${(gameSettings?.lawsuitFilingCost ?? 0).toLocaleString()})
+                  SUE THEM CHICKENS (${(gameSettings?.lawsuitFilingCost ?? 0).toLocaleString()})
                 </Button>
                 <Stack gap="sm">
                   {pending.lawsuits.map((entry, i) => (
@@ -940,7 +940,7 @@ export default function GamePhase() {
         {kpiSubFieldGraph && <KpiHistoryGraph field={kpiSubFieldGraph.field} label={kpiSubFieldGraph.label} socket={socket} targetPlayerId={kpiSubFieldGraph.targetPlayerId} />}
       </Modal>
 
-      <Modal opened={sueModalOpen} onClose={closeSueModal} size="lg" centered title={<Text style={{ ...boldStyle, fontSize: '0.9rem' }}>📋 SUE THEIR ASSES</Text>}>
+      <Modal opened={sueModalOpen} onClose={closeSueModal} size="lg" centered title={<Text style={{ ...boldStyle, fontSize: '0.9rem' }}>📋 SUE THEM CHICKENS</Text>}>
         <SueModal
           competitors={competitors}
           decisions={decisions}
@@ -3440,7 +3440,7 @@ function ThreatView({ data, prevData, onFieldClick }: ThreatViewProps) {
 
 interface RiskBreakdownViewProps {
   caseData: LegalCaseData;
-  vars: import('@suetheirasses/shared').PlayerVariables;
+  vars: import('@suethemchickens/shared').PlayerVariables;
 }
 
 function RiskBreakdownView({ caseData, vars }: RiskBreakdownViewProps) {

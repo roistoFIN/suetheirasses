@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { GameLoop, type EngineDataInput } from './gameLoop';
 import { DEFAULT_FORMULA_SEEDS } from './defaultFormulas';
 import { SELF_OWNERSHIP_KEY, EXTERNAL_MARKET_KEY } from './calcEngine';
-import type { GameConfig, PlayerVariables, LegalCaseData } from '@suetheirasses/shared';
+import type { GameConfig, PlayerVariables, LegalCaseData } from '@suethemchickens/shared';
 
 // ── Helpers ──────────────────────────────────────────────────
 
