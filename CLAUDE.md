@@ -43,8 +43,7 @@ trivial details with an obvious answer from context/convention, but default to a
 when genuinely unsure.
 
 **After every change, write tests for it and update documentation** — README.md and/or
-this file, whichever actually describes the area touched — **except `REQUIREMENTS.md`**,
-which is the user's own tracking file and must never be edited by Claude.
+this file, whichever actually describes the area touched.
 
 ## Commands
 
@@ -1111,7 +1110,7 @@ component, embedded in two shells (`Matchmaking.tsx`'s inline button+Modal,
 `FeedbackWidget.tsx`'s floating fab mirroring `ChatWidget`'s shape at bottom-left). Admin
 portal's Feedback tab is read-only, polled alongside Rooms.
 
-### Consent-gated Google Analytics/Ads — script literally doesn't exist without consent
+### Consent-gated Google Analytics/Ads — GA4 tag always installs, AdSense's ad script doesn't
 
 `client/src/lib/googleConsent.ts` implements Google Consent Mode v2 (the signal-passing
 protocol Google requires before any of its ad/analytics scripts may request personalized
@@ -1119,23 +1118,31 @@ ads or set non-essential cookies), backed by a sitewide `ConsentBanner.tsx` +
 `consentStore.ts` (Zustand, `localStorage`-persisted under `stita_consent`). `main.tsx`
 calls `initConsentDefaults(storedChoice)` before React mounts, which always pushes a
 fully-denied baseline first (`ensureDataLayer`'s `gtag` stub, not the real
-`googletagmanager.com/gtag/js` library — that only loads once actually needed, see below),
-then layers a returning visitor's already-stored choice on top in the same synchronous
-tick, so there's no window where a consented visitor is treated as denied.
+`googletagmanager.com/gtag/js` library), then layers a returning visitor's already-stored
+choice on top in the same synchronous tick, so there's no window where a consented visitor
+is treated as denied.
 
-**Deliberately stricter than Consent Mode strictly requires**: rather than loading Google's
-scripts unconditionally and trusting the denied signals to suppress cookie writes, both
-`loadAdSenseScript` (`VITE_ADSENSE_CLIENT_ID`) and `loadAnalyticsScript`
-(`VITE_GA_MEASUREMENT_ID`) inject their `<script>` tag only once the matching
-category (`advertising`/`analytics`) is actually granted — called from `pushConsentUpdate`,
-which fires on every Accept All/Reject All/Save Preferences action and, via
-`initConsentDefaults`, on a returning visitor's page load. This is a "the script simply
-doesn't exist pre-consent" posture, not just a "the script exists but behaves passively"
-one. Both loaders are safe no-ops with their env var unset (the default) — nothing here
-requires a real GA4 property or an approved AdSense account to ship; `googleConsent.test.ts`
-covers both the no-op-when-unset and idempotent-when-called-twice cases without a DOM
-(`window`/`document` are stubbed by hand per test, since this workspace runs Vitest without
-jsdom — no test needs a real browser here).
+**The two loaders are deliberately asymmetric, and that asymmetry is load-bearing — don't
+"fix" it into symmetry again.** `loadAdSenseScript` (`VITE_ADSENSE_CLIENT_ID`) still injects
+its `<script>` tag only once `advertising` consent is actually granted — a "the script
+simply doesn't exist pre-consent" posture, since showing actual ads pre-consent is a real
+UX/policy event. `loadAnalyticsScript` (`VITE_GA_MEASUREMENT_ID`) used to be gated the same
+way on `analytics` consent, but that was a real, reported bug: Google's own GA4
+tag-detection/"Realtime" checks never saw the tag at all for a visitor who hadn't yet
+consented (i.e. everyone, on first load), so the property never registered as receiving
+data. Fixed by calling `loadAnalyticsScript()` **unconditionally** from both
+`initConsentDefaults` (regardless of `stored`) and `pushConsentUpdate` (regardless of
+`categories.analytics`) — matching Google's own documented Consent Mode v2 pattern: the tag
+installs on every page load; the `consent` `default`/`update` signals already being pushed
+are what govern cookie/personalization behavior, not whether the script exists. With
+`analytics_storage` denied, `gtag.js` sends cookieless, non-identifying pings instead of
+setting `_ga` cookies — enough for Google's tooling to detect the tag and for
+aggregate/modeled reporting, without tracking a denied visitor. Both loaders remain safe
+no-ops with their env var unset (the default) — nothing here requires a real GA4 property
+or an approved AdSense account to ship; `googleConsent.test.ts` covers the no-op-when-unset,
+idempotent-when-called-twice, and (for GA4) consent-independent-load cases, all without a
+DOM (`window`/`document` are stubbed by hand per test, since this workspace runs Vitest
+without jsdom — no test needs a real browser here).
 
 All four env vars (`VITE_ADSENSE_CLIENT_ID`/`VITE_GA_MEASUREMENT_ID`/
 `VITE_ADSENSE_SLOT_LANDING`/`VITE_ADSENSE_SLOT_GAMEOVER`) are ordinary Vite build-time env

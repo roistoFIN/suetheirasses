@@ -258,7 +258,7 @@ describe('initConsentDefaults / pushConsentUpdate', () => {
     expect(fakeDocument.head.appendChild).toHaveBeenCalledTimes(1);
   });
 
-  it('pushConsentUpdate loads the GA4 script only when analytics is granted', () => {
+  it('pushConsentUpdate loads the GA4 script regardless of the analytics category — a real, reported bug where Google\'s own tag-detection never saw a not-yet-consented tag', () => {
     vi.stubEnv('VITE_GA_MEASUREMENT_ID', 'G-ABC123');
     // Stubbed empty (not just left ambient) so this test can't accidentally pass/fail
     // depending on a developer's own local client/.env AdSense publisher ID.
@@ -267,10 +267,39 @@ describe('initConsentDefaults / pushConsentUpdate', () => {
     const fakeDocument = createFakeDocument();
     vi.stubGlobal('document', fakeDocument);
 
-    pushConsentUpdate({ analytics: false, advertising: true });
-    expect(fakeDocument.head.appendChild).not.toHaveBeenCalled();
-
-    pushConsentUpdate({ analytics: true, advertising: true });
+    pushConsentUpdate({ analytics: false, advertising: false });
     expect(fakeDocument.head.appendChild).toHaveBeenCalledTimes(1);
+
+    pushConsentUpdate({ analytics: true, advertising: false });
+    // Idempotent — a second call, even with analytics now granted, never injects twice.
+    expect(fakeDocument.head.appendChild).toHaveBeenCalledTimes(1);
+  });
+
+  it('initConsentDefaults loads the GA4 script unconditionally, even for a first-time (fully denied) visitor', () => {
+    vi.stubEnv('VITE_GA_MEASUREMENT_ID', 'G-ABC123');
+    vi.stubEnv('VITE_ADSENSE_CLIENT_ID', '');
+    vi.stubGlobal('window', {});
+    const fakeDocument = createFakeDocument();
+    vi.stubGlobal('document', fakeDocument);
+
+    initConsentDefaults(null);
+
+    expect(fakeDocument.head.appendChild).toHaveBeenCalledTimes(1);
+    const injected = fakeDocument.head.appendChild.mock.calls[0][0];
+    expect(injected.src).toBe('https://www.googletagmanager.com/gtag/js?id=G-ABC123');
+  });
+
+  it('pushConsentUpdate never loads the AdSense script merely from the unconditional GA load', () => {
+    vi.stubEnv('VITE_GA_MEASUREMENT_ID', 'G-ABC123');
+    vi.stubEnv('VITE_ADSENSE_CLIENT_ID', 'ca-pub-12345');
+    vi.stubGlobal('window', {});
+    const fakeDocument = createFakeDocument();
+    vi.stubGlobal('document', fakeDocument);
+
+    pushConsentUpdate({ analytics: true, advertising: false });
+
+    expect(fakeDocument.head.appendChild).toHaveBeenCalledTimes(1);
+    const injected = fakeDocument.head.appendChild.mock.calls[0][0];
+    expect(injected.id).toBe('stita-ga-script');
   });
 });

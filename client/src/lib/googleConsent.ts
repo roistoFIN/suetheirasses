@@ -78,13 +78,24 @@ const GA_SCRIPT_ID = 'stita-ga-script';
 /** Injects the GA4 loader script once, only if a real measurement ID is configured
  * (`VITE_GA_MEASUREMENT_ID`) — unset by default until a GA4 property exists, so this is a
  * safe no-op in every environment until that's filled in. Mirrors `loadAdSenseScript`'s
- * shape exactly, including the DOM-id idempotency check (safe across HMR reloads). Only
- * called once analytics consent is actually granted (see `pushConsentUpdate`) — a
- * stricter bar than Consent Mode strictly requires (which would tolerate loading the
- * script pre-consent since it self-restricts to non-cookie behavior when denied), chosen
- * to match the same "script simply doesn't exist without consent" posture already used
- * for AdSense. The `config` call fires after the script's own `onload`, since `gtag.js`
- * ignores queued commands pushed before it finishes initializing. */
+ * shape exactly, including the DOM-id idempotency check (safe across HMR reloads).
+ *
+ * Deliberately called UNCONDITIONALLY from `initConsentDefaults` regardless of consent —
+ * this used to be gated on `categories.analytics` the same way `loadAdSenseScript` is
+ * gated on `advertising`, but that was a real, reported bug: Google's own GA4 tag-
+ * detection/"Realtime" checks never saw the tag at all for a visitor who hadn't yet
+ * accepted (i.e. everyone, on first load), so the property never registered as
+ * "receiving data." This matches Google's own documented Consent Mode v2 pattern: the
+ * tag is meant to be installed unconditionally on every page load; the `consent`
+ * `default`/`update` signals (already pushed via `categoriesToSignals`) are what govern
+ * cookie/personalization behavior, not whether the script exists. With
+ * `analytics_storage` denied, gtag.js sends cookieless, non-identifying pings instead of
+ * setting `_ga` cookies — still enough for Google's tooling to detect the tag and for
+ * aggregate/modeled reporting, without tracking a denied visitor. `loadAdSenseScript`
+ * keeps its stricter "doesn't exist pre-consent" gate unchanged — showing actual ads is a
+ * different, real UX/policy event, not a tag-detection heartbeat. The `config` call fires
+ * after the script's own `onload`, since `gtag.js` ignores queued commands pushed before
+ * it finishes initializing. */
 export function loadAnalyticsScript(): void {
   if (typeof document === 'undefined') return;
   const measurementId = import.meta.env.VITE_GA_MEASUREMENT_ID;
@@ -112,22 +123,25 @@ export function loadAnalyticsScript(): void {
 export function initConsentDefaults(stored: ConsentCategories | null): void {
   ensureDataLayer();
   window.gtag?.('consent', 'default', categoriesToSignals(ALL_DENIED));
+  // Unconditional — see loadAnalyticsScript's own doc comment for why GA4 must install
+  // regardless of consent, unlike AdSense below.
+  loadAnalyticsScript();
   if (stored) {
     pushConsentUpdate(stored);
   }
 }
 
 /** Called whenever the player accepts/rejects/customizes cookie categories — updates the
- * live consent signals and, if the corresponding category was just granted, loads the
- * AdSense/GA4 script (both no-ops until their respective env var is configured — see
- * `loadAdSenseScript`/`loadAnalyticsScript`). */
+ * live consent signals and, if advertising was just granted, loads the AdSense script (a
+ * no-op until `VITE_ADSENSE_CLIENT_ID` is configured — see `loadAdSenseScript`). Also
+ * re-attempts `loadAnalyticsScript` unconditionally — a harmless idempotent no-op in the
+ * normal case where `initConsentDefaults` already loaded it, but a safety net against any
+ * future call-order change. */
 export function pushConsentUpdate(categories: ConsentCategories): void {
   ensureDataLayer();
   window.gtag?.('consent', 'update', categoriesToSignals(categories));
   if (categories.advertising) {
     loadAdSenseScript();
   }
-  if (categories.analytics) {
-    loadAnalyticsScript();
-  }
+  loadAnalyticsScript();
 }
