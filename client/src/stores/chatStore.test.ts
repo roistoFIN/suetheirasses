@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useChatStore } from './chatStore';
-import type { ChatMessageBroadcast } from '@suetheirasses/shared';
+import type { ChatMessageBroadcast } from '@suethemchickens/shared';
 
 const createMessage = (overrides: Partial<ChatMessageBroadcast> = {}): ChatMessageBroadcast => ({
   playerId: 'player-1',

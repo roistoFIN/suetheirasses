@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import type { DecisionDefinition, GameConfig } from '@suetheirasses/shared';
+import type { DecisionDefinition, GameConfig } from '@suethemchickens/shared';
 import gameEngineData from '../src/data/game_engine.json' with { type: 'json' };
 import gameConfigData from '../src/data/game_config.json' with { type: 'json' };
 import { DEFAULT_FORMULA_SEEDS } from '../src/engine/defaultFormulas.js';

@@ -4,7 +4,7 @@ import path from 'path';
 export default defineConfig({
   resolve: {
     alias: {
-      '@suetheirasses/shared': path.resolve(__dirname, '../shared/src/index.ts'),
+      '@suethemchickens/shared': path.resolve(__dirname, '../shared/src/index.ts'),
     },
   },
   test: {

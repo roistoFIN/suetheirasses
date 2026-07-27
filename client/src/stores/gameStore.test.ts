@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useGameStore } from './gameStore';
-import { RoomStatus } from '@suetheirasses/shared';
-import type { Room, Player, PhaseChangedResponse, GameOverResponse, ErrorResponse, TurnResolutionResult, PlayerTurnResult } from '@suetheirasses/shared';
+import { RoomStatus } from '@suethemchickens/shared';
+import type { Room, Player, PhaseChangedResponse, GameOverResponse, ErrorResponse, TurnResolutionResult, PlayerTurnResult } from '@suethemchickens/shared';
 
 // Helper to create a mock room
 const createMockRoom = (overrides: Partial<Room> = {}): Room => ({
@@ -556,7 +556,7 @@ describe('gameStore', () => {
       ...overrides,
     });
 
-    const makeCase = (overrides: Partial<import('@suetheirasses/shared').LegalCaseData> = {}): import('@suetheirasses/shared').LegalCaseData => ({
+    const makeCase = (overrides: Partial<import('@suethemchickens/shared').LegalCaseData> = {}): import('@suethemchickens/shared').LegalCaseData => ({
       id: 'case-1',
       roomId: 'room-1',
       plaintiffId: 'player-2',

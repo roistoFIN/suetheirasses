@@ -16,7 +16,7 @@
  * error surfaced to the admin, not swallowed.
  */
 
-import type { DecisionDefinition } from '@suetheirasses/shared';
+import type { DecisionDefinition } from '@suethemchickens/shared';
 import { decisionDefinitionSchema } from '../validation/schemas.js';
 import { clampDecisionCandidate, isViableCandidate, type ClampWarning } from './decisionGenGuardrails.js';
 

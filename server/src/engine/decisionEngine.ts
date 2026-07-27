@@ -3,7 +3,7 @@
  * and impact application.
  */
 
-import type { DecisionDefinition, PlayerVariables, AdminVariables } from '@suetheirasses/shared';
+import type { DecisionDefinition, PlayerVariables, AdminVariables } from '@suethemchickens/shared';
 import {
   applyDecisionImpacts,
   calculateMaturityYears as calcMaturity,

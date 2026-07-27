@@ -11,7 +11,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': resolve(__dirname, './src'),
-      '@suetheirasses/shared': resolve(__dirname, '../shared/src/index.ts'),
+      '@suethemchickens/shared': resolve(__dirname, '../shared/src/index.ts'),
     },
   },
   // `vite preview` (used by CI's E2E job — tests/playwright.config.ts's webServer runs

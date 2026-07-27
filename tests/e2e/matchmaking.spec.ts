@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 test.describe('Matchmaking Page', () => {
   test('should load the matchmaking page', async ({ page }) => {
     await page.goto('/');
-    await expect(page).toHaveTitle(/.*Sue Their Asses.*/i);
+    await expect(page).toHaveTitle(/.*Sue Them Chickens.*/i);
   });
 
   // The landing page's title/subtitle used to be separate text elements; both are now
@@ -12,7 +12,7 @@ test.describe('Matchmaking Page', () => {
   // that image renders with its descriptive alt text covers both.
   test('should display the game title', async ({ page }) => {
     await page.goto('/');
-    await expect(page.getByRole('img', { name: /Sue Their Asses/i })).toBeVisible();
+    await expect(page.getByRole('img', { name: /Sue Them Chickens/i })).toBeVisible();
   });
 
   test('should have a name input field', async ({ page }) => {

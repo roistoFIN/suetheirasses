@@ -14,7 +14,7 @@ import {
   type DigDeeperResultPayload,
   type AnnualReportEntry,
   type LegalCaseData,
-} from '@suetheirasses/shared';
+} from '@suethemchickens/shared';
 
 interface GameState {
   // Room state

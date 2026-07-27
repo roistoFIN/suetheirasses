@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { DecisionDefinition } from '@suetheirasses/shared';
+import type { DecisionDefinition } from '@suethemchickens/shared';
 import {
   clampDecisionCandidate,
   isViableCandidate,

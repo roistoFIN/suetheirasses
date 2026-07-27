@@ -28,7 +28,7 @@ import { useGameStore } from '../stores/gameStore';
 import { useChatStore } from '../stores/chatStore';
 import { useConsentStore } from '../stores/consentStore';
 import FeedbackForm from '../components/FeedbackForm';
-import { ClientEvents, ServerEvents, type RoomInfo } from '@suetheirasses/shared';
+import { ClientEvents, ServerEvents, type RoomInfo } from '@suethemchickens/shared';
 
 /** localStorage key for remembering the player's name across visits — see `Matchmaking`'s name-entry section. */
 const NAME_STORAGE_KEY = 'stita_player_name';
@@ -386,7 +386,7 @@ const Matchmaking: React.FC = () => {
         <LoadingOverlay visible={isCreating || isSearching} />
         <Image
           src="/images/hero.png"
-          alt="Sue Their Asses — rival poultry tycoons face off in court"
+          alt="Sue Them Chickens — rival poultry tycoons face off in court"
           radius="md"
           mb="md"
         />
@@ -545,7 +545,7 @@ const Matchmaking: React.FC = () => {
       {/* Modal's own `title` prop already renders inside an <h2> — passing a Mantine
           <Title order={3}> (an <h3>) here nested an h3 inside an h2, an invalid-HTML
           hydration warning. Plain styled text avoids the nested heading entirely. */}
-      <Modal opened={aboutOpen} onClose={() => setAboutOpen(false)} title={<Text component="span" style={{ ...mmStyles.title, fontSize: '1.3rem' }}>⚖️🐔 Sue Their Asses</Text>} centered size="md">
+      <Modal opened={aboutOpen} onClose={() => setAboutOpen(false)} title={<Text component="span" style={{ ...mmStyles.title, fontSize: '1.3rem' }}>⚖️🐔 Sue Them Chickens</Text>} centered size="md">
         <Stack gap="md">
           <Text size="sm">
             Welcome to the cutthroat, deep-fried underbelly of industrial poultry. You and
@@ -566,7 +566,7 @@ const Matchmaking: React.FC = () => {
             <List.Item>
               Watches every other coop for something suspiciously fowl going on, and files a
               lawsuit over it — sometimes with real evidence, sometimes on nothing but a
-              hunch and a grudge, because SUE THEIR ASSES doesn't wait for proof
+              hunch and a grudge, because SUE THEM CHICKENS doesn't wait for proof
             </List.Item>
             <List.Item>Negotiates a settlement, or drags a rival to court and lets a judge decide who's really been up to no good in the coop</List.Item>
           </List>
@@ -593,9 +593,9 @@ const Matchmaking: React.FC = () => {
           <Text size="sm" fs="italic" style={{ color: 'var(--ink-text-soft)' }}>Last Updated: July 24, 2026</Text>
 
           <Text size="sm">
-            This Privacy Policy describes how Sue Their Asses ("we", "us", or "our")
+            This Privacy Policy describes how Sue Them Chickens ("we", "us", or "our")
             collects, uses, and protects your personal data when you play our web game at
-            suetheirasses.org. We are committed to respecting your privacy and complying
+            suethemchickens.org. We are committed to respecting your privacy and complying
             with applicable data protection laws, including the EU General Data Protection
             Regulation (GDPR) and Finnish data protection laws.
           </Text>

@@ -12,7 +12,7 @@
  * 7. Global Risk Gauge
  */
 
-import type { PlayerVariables, AdminVariables } from '@suetheirasses/shared';
+import type { PlayerVariables, AdminVariables } from '@suethemchickens/shared';
 import { evalNamed, type FormulaSet } from './formulaEngine.js';
 
 // ============================================================
