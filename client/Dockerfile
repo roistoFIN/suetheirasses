@@ -19,8 +19,14 @@ RUN npm ci
 WORKDIR /app/shared
 RUN npm run build
 
+# VITE_SERVER_URL is compiled into the client bundle at build time (Vite env vars are
+# not readable at container runtime) — the Socket.IO client connects directly to this
+# origin, so it must be the public URL the browser will actually reach, not the
+# Docker-internal server:3001 address the nginx /api proxy below still uses at runtime.
+ARG VITE_SERVER_URL=http://localhost:3001
+ENV VITE_SERVER_URL=$VITE_SERVER_URL
+
 WORKDIR /app/client
-RUN npm run build
 RUN npm run build
 
 # Production stage - serve with nginx

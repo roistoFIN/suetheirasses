@@ -826,3 +826,34 @@ entry) via `server/src/data/game_engine.json` — pure data, admin-editable, bal
 verified using the randomized-simulation methodology described above rather than unit-
 tested per decision. **Any edit to this file requires `npm run db:seed` re-run** on an
 already-seeded dev database to take effect (see *Decisions/config are DB-backed* above).
+
+### Production deployment — docker-compose.prod.yml + Caddy + GitHub Actions
+
+`suethemchickens.online` runs on a single Hetzner Ubuntu VPS: `docker-compose.prod.yml`
+(distinct from the local-dev `docker-compose.yml`) pulls pre-built GHCR images, publishes
+no ports except Caddy's 80/443 (Postgres/server/client are internal-network-only), and
+deliberately has no `llm:` service — the annual-report/decision-gen features already
+degrade invisibly without one, and running llama.cpp alongside Postgres/Node on a small
+VPS isn't worth it yet (copy the block back from `docker-compose.yml` if that changes).
+`Caddyfile` is the one public entry point and auto-provisions TLS; because
+`VITE_SERVER_URL` is compiled into the client bundle at build time and the Socket.IO
+client connects directly to that origin, everything lives on one domain — Caddy routes
+`/socket.io/*`, `/api/*`, `/health` to `server` and everything else to `client`, rather
+than letting the client's own nginx `/api` proxy (still there for local
+`docker-compose.yml` use) handle it a second time.
+
+`.github/workflows/docker.yml` builds+pushes `server`/`client` images to GHCR on every
+push to `main` (tagged by short SHA/branch/`latest`), then SSHes into the box to pull,
+run `prisma migrate deploy` via a throwaway `server` container, and restart the stack.
+Needs three repo secrets (`DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`) and the GHCR
+`server`/`client` packages set to public visibility (one-time, in repo Settings) so the
+box can pull without credentials. `deploy/server-setup.sh` is the one-time root bootstrap
+for a fresh box (hardened SSH, ufw, Docker, a `deploy` user, a passphrase-less CI-only
+SSH keypair) — meant to be run by a human watching the output, not automated, since SSH
+hardening can lock you out if it goes wrong partway through.
+
+`prisma` had to move from `server/package.json`'s `devDependencies` to `dependencies` —
+the production image's `npm ci --omit=dev` would otherwise ship without the CLI
+`prisma migrate deploy` needs. `db:migrate:deploy` (new, both root and server
+`package.json`) wraps that non-interactive command; never run `db:migrate` (`prisma
+migrate dev` — prompts, can generate new migrations) against production.

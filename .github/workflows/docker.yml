@@ -11,14 +11,32 @@ on:
       - 'server/Dockerfile'
       - 'client/Dockerfile'
       - 'docker-compose.yml'
+      - 'docker-compose.prod.yml'
   workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  # The public URL the browser will actually load — baked into the client bundle at
+  # build time (Vite env vars are compile-time only), see client/Dockerfile. Update
+  # this if the domain ever changes.
+  PUBLIC_URL: https://suethemchickens.online
 
 jobs:
+  # github.repository preserves the exact case of the GitHub owner/repo (roistoFIN has
+  # an uppercase F), but Docker/GHCR image names must be all-lowercase — pushing
+  # ghcr.io/roistoFIN/... fails outright ("invalid reference format"). Every job below
+  # needs the lowercased form, so it's computed once here rather than three times.
+  prep:
+    runs-on: ubuntu-latest
+    outputs:
+      image_base: ${{ steps.lower.outputs.name }}
+    steps:
+      - name: Compute lowercase image base
+        id: lower
+        run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
   build-server:
+    needs: prep
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -42,10 +60,11 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}/server
+          images: ${{ env.REGISTRY }}/${{ needs.prep.outputs.image_base }}/server
           tags: |
             type=sha,prefix=
             type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
 
       - name: Build and push server image
@@ -60,6 +79,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   build-client:
+    needs: prep
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -83,10 +103,11 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}/client
+          images: ${{ env.REGISTRY }}/${{ needs.prep.outputs.image_base }}/client
           tags: |
             type=sha,prefix=
             type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
 
       - name: Build and push client image
@@ -97,73 +118,46 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  build-fullstack:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}/fullstack
-          tags: |
-            type=sha,prefix=
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-
-      - name: Build and push full-stack image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VITE_SERVER_URL=${{ env.PUBLIC_URL }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   deploy:
+    needs: [build-server, build-client]
     runs-on: ubuntu-latest
-    needs: [build-server, build-client, build-fullstack]
     if: github.ref == 'refs/heads/main'
     environment:
       name: production
-      url: https://${{ github.repository }}.github.io
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Deploy via docker-compose
+      - name: Copy compose/Caddy config to server
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          source: "docker-compose.prod.yml,Caddyfile"
+          target: "/opt/suethemchickens"
+          strip_components: 0
+
+      - name: Pull images, migrate, and restart the stack
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
+          envs: GITHUB_SHA
           script: |
-            cd /opt/suetheirasses
-            echo "${{ secrets.DOCKER_REGISTRY_PASSWORD }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
-            docker pull ${{ env.REGISTRY }}/${{ github.repository }}/server:sha-${{ github.sha }}
-            docker pull ${{ env.REGISTRY }}/${{ github.repository }}/client:sha-${{ github.sha }}
-            docker compose pull
-            docker compose up -d
+            set -e
+            cd /opt/suethemchickens
+            export IMAGE_TAG=${GITHUB_SHA:0:7}
+            docker compose -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.prod.yml run --rm server npx prisma migrate deploy --schema=server/prisma/schema.prisma
+            docker compose -f docker-compose.prod.yml up -d
             docker image prune -f
+        env:
+          GITHUB_SHA: ${{ github.sha }}
