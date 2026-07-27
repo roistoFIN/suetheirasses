@@ -44,6 +44,11 @@ model Player {
   // game-timeline replay/spectator feature without relying on live broadcasts alone.
   eliminatedRound Int?
   socketId        String?
+  // True for a server-injected AI opponent (see server/src/socket/gameEngine.ts's
+  // addBotPlayer) — a bot has no real socket (socketId always null) and never counts as
+  // "disconnected" for the heartbeat/grace-period sweep the way a human's temporarily-null
+  // socketId does. Excluded from host promotion (promoteNewHostIfNeeded).
+  isBot           Boolean    @default(false)
   createdAt       DateTime   @default(now())
   companyId       String?    @unique
   company         Company?

@@ -32,6 +32,9 @@ import {
   type TimelineLawsuitEvent,
   type PlayerVariables,
   type PlayerDerivedStats,
+  type SubmittedDecisions,
+  type SubmittedLawsuitEntry,
+  type IncomingAttackInfo,
 } from '@suethemchickens/shared';
 import type { PersistedDecisionInstance } from '../engine/gameLoop.js';
 import { validateRoomJoin, validateSubmitDecisions, validateDigDeeper, validateFileLawsuit, validateRoomRejoin, validateAnnualReportRequest, validateChatMessage, validateGameReady, validateRoomSetInviteOnly, validateKpiHistoryRequest, validateMakeOffer, validateAcceptOffer, validateGoToCourt, validateDigDeeperCase } from '../validation/schemas.js';
@@ -39,6 +42,7 @@ import { GameLoop } from '../engine/gameLoop.js';
 import type { BankruptedPlayer } from '../engine/gameLoop.js';
 import { generateAnnualReportBlurb } from '../services/llmService.js';
 import { logEvent, logEvents } from '../services/eventLogService.js';
+import { pickBotDecisions, pickAttacksToInvestigate, shouldFileLawsuit, BOT_CASH_RESERVE } from '../services/botService.js';
 
 export class GameEngine {
   public rooms: Map<string, RoomState> = new Map();
@@ -61,6 +65,16 @@ export class GameEngine {
   // Swept by the same heartbeat interval that cleans up stale rooms.
   private disconnectedPlayers: Map<string, { roomId: string; disconnectedAt: number }> = new Map();
   private readonly RECONNECT_GRACE_PERIOD_MS = 120_000;
+  // Per-room "join a bot after N seconds of nobody showing up" timers — see
+  // scheduleBotJoinCheck. Not part of RoomState itself (mirrors the roomLastActivity/
+  // lastTurnResults side-Map convention) since it's ephemeral scheduling state, not
+  // anything a client ever needs reflected back to it.
+  private botJoinTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+  private readonly BOT_JOIN_DELAY_MS = 10_000;
+  // Clearly bot-flavored names, cycled at random each spawn — deliberately not a single
+  // fixed name, so a host kicking a bot never collides with `kickedNames` blocking a
+  // later, differently-named bot from joining.
+  private readonly BOT_NAMES = ['🤖 RoboRival', '🤖 CircuitCFO', '🤖 ByteBoss', '🤖 AlgoAntagonist', '🤖 SiliconShark', '🤖 MechaMogul'];
   // Each room's last resolved turn (or round-1 starting snapshot) — re-sent to a
   // reconnecting player immediately instead of making them wait for the next turn.
   private lastTurnResults: Map<string, TurnResolutionResult> = new Map();
@@ -228,6 +242,117 @@ export class GameEngine {
       });
     }
     return outcome;
+  }
+
+  /**
+   * Fires `runBotTurn` for every currently-active bot in a room, right after that round's
+   * data is settled — called from `broadcastInitialSnapshot` (round 1) and
+   * `resolveGameTurn` (every round after). Fire-and-forget from both call sites: a bot
+   * "thinking" must never delay a real broadcast (especially `broadcastInitialSnapshot`'s
+   * own must-land-before-`PHASE_CHANGED` ordering — see `startGame`'s doc comment) or hold
+   * up `resolveGameTurn`'s `advancingRooms` lock any longer than the turn resolution
+   * itself already does. Each bot is isolated in its own try/catch — one bot's failure
+   * must never affect another, or the human's own turn.
+   */
+  private runBotTurnsForRoom(roomId: string): void {
+    const roomState = this.rooms.get(roomId);
+    if (!roomState) return;
+    const bots = Array.from(roomState.players.values()).filter((p) => p.isBot && !p.bankrupt);
+    for (const bot of bots) {
+      this.runBotTurn(roomId, bot.id).catch((err) => {
+        console.error(`[Bot] runBotTurn failed for bot ${bot.id} in room ${roomId}:`, err);
+      });
+    }
+  }
+
+  /**
+   * Computes and submits one bot player's turn: dig up to 2 incoming attacks
+   * (prioritizing whichever is already partway investigated), file a lawsuit over
+   * anything that clears a 30% estimated win chance, pick 1-2 new decisions, then ready
+   * up — all via the exact same engine methods a real client's socket handlers call
+   * (`digDeeper`/`fileLawsuit`/`submitDecisions`/`toggleReady`), never a special bot-only
+   * code path into `GameLoop`. The actual picking logic is in `botService.ts` (pure,
+   * unit-tested); this method is pure orchestration — real I/O, no decisions of its own.
+   * Everything is bounded by `BOT_CASH_RESERVE` so the bot can't spend itself into a
+   * corner (see botService.ts's own doc comment).
+   *
+   * Public (not called directly outside this file otherwise — always via
+   * `runBotTurnsForRoom`) specifically so its dig → fee-charge-then-submit-before-next-
+   * charge → ready-up sequencing has real regression coverage, the same "pulled out
+   * as its own testable method" reasoning `startGame` already documents for its own
+   * broadcast-ordering tests.
+   */
+  async runBotTurn(roomId: string, botPlayerId: string): Promise<void> {
+    const roomState = this.rooms.get(roomId);
+    if (!roomState || roomState.room.status !== RoomStatus.GAME_PHASE) return;
+    const bot = roomState.players.get(botPlayerId);
+    if (!bot || bot.bankrupt) return;
+
+    const lastTurn = this.lastTurnResults.get(roomId);
+    const botResult = lastTurn?.players.find((p) => p.playerId === botPlayerId);
+    if (!botResult) return;
+
+    let cash = botResult.variables.cash ?? 0;
+    const { digDeeperCost, lawsuitFilingCost } = this.gameConfig.gameSettings;
+
+    // Dig up to 2 attacks that aren't fully revealed yet.
+    const dugAttacks: IncomingAttackInfo[] = [];
+    for (const attack of pickAttacksToInvestigate(botResult.incomingAttacks)) {
+      if (cash - digDeeperCost < BOT_CASH_RESERVE) break;
+      const outcome = await this.digDeeper(roomId, botPlayerId, attack.attackId);
+      if (outcome.success) {
+        cash = outcome.newCash;
+        dugAttacks.push(outcome.attack);
+      }
+    }
+
+    // Anything already fully revealed this turn (no dig needed) plus whatever the
+    // digging above just revealed — either can now clear the suing bar.
+    const candidateAttacks = [...botResult.incomingAttacks.filter((a) => a.suggestedGroundName !== undefined), ...dugAttacks];
+
+    const lawsuits: SubmittedLawsuitEntry[] = [];
+    for (const attack of candidateAttacks) {
+      if (!attack.attackerId || !attack.decisionName || !attack.suggestedGroundName) continue;
+      if (!shouldFileLawsuit(attack, cash, lawsuitFilingCost)) continue;
+      const feeOutcome = await this.fileLawsuit(roomId, botPlayerId);
+      if (!feeOutcome.success) continue; // per-turn cap reached, or funds changed mid-loop
+      cash = feeOutcome.newCash;
+      lawsuits.push({ targetId: attack.attackerId, decisionName: attack.decisionName, groundName: attack.suggestedGroundName });
+      // chargeLawsuitFilingFee's per-turn cap check reads the already-queued count off
+      // GameLoop's own submissions map (see its doc comment) — must be reflected here
+      // before the next fee charge, same "charge fees one at a time" requirement a real
+      // client's SueModal already follows.
+      this.submitDecisions(roomId, botPlayerId, { strategic: [], operational: [], financial: [], lawsuits });
+    }
+
+    const humanPlayerId = Array.from(roomState.players.values()).find((p) => !p.isBot)?.id;
+    const deck = this.getRoomDeck(roomId);
+    const picks = humanPlayerId ? pickBotDecisions(deck, cash, humanPlayerId) : [];
+
+    const decisions: SubmittedDecisions = { strategic: [], operational: [], financial: [], lawsuits };
+    for (const entry of picks) {
+      const def = deck.find((d) => d.decision === entry.name);
+      const bucket: 'strategic' | 'operational' | 'financial' =
+        def?.level === 'Strategic' ? 'strategic' : def?.level === 'Financial' ? 'financial' : 'operational';
+      decisions[bucket].push(entry);
+    }
+    this.submitDecisions(roomId, botPlayerId, decisions);
+
+    // Mirrors the GAME_READY socket handler exactly (broadcast the ready update, and
+    // trigger immediate resolution if that was the last player needed) — the bot has no
+    // socket of its own to route through that handler, so this is the one place that
+    // logic has to be duplicated. Without the broadcast, a human watching the room would
+    // never see "opponent is ready" reflect the bot's own readiness until their own next
+    // action independently re-broadcasts it.
+    const readyUpdate = this.toggleReady(roomId, botPlayerId, true);
+    if (!readyUpdate) return;
+    this.broadcastRoomState(roomId, ServerEvents.GAME_READY_UPDATE, readyUpdate);
+    if (readyUpdate.activePlayerCount > 0 && readyUpdate.readyPlayerIds.length >= readyUpdate.activePlayerCount) {
+      this.clearTimer(roomId);
+      this.resolveGameTurn(roomId).catch((err) => {
+        console.error(`[Bot] ready-triggered turn resolution failed for room ${roomId}:`, err);
+      });
+    }
   }
 
   /**
@@ -588,6 +713,9 @@ export class GameEngine {
     await this.persistKpiSnapshots(snapshot.players, round);
     this.lastTurnResults.set(roomId, snapshot);
     this.io.to(roomId).emit(ServerEvents.TURN_RESOLVED, snapshot);
+    // Fire-and-forget — must never delay this method's return, since startGame awaits it
+    // before broadcasting PHASE_CHANGED (see that method's doc comment on why).
+    this.runBotTurnsForRoom(roomId);
   }
 
   /**
@@ -976,8 +1104,16 @@ export class GameEngine {
           // Requiring `p.bankrupt` too means an active player's temporary disconnect
           // never counts toward "stale," only a genuinely eliminated-and-gone spectator
           // does.
+          //
+          // A bot player is exempt from the bankrupt/disconnected requirement entirely —
+          // it's never "bankrupt" just because it won (see `playersStillActive.length <=
+          // 1` in gameLoop.ts), and it never has a socketId to begin with, so it would
+          // otherwise never satisfy `p.bankrupt && !p.socketId` and a bot-only room (every
+          // human already forfeited/disconnected/left) would sit forever. Treat any
+          // remaining bot as automatically counting toward "everyone's actually gone."
           const allDisconnected = roomState
-            ? roomState.players.size === 0 || Array.from(roomState.players.values()).every((p) => p.bankrupt && !p.socketId)
+            ? roomState.players.size === 0 ||
+              Array.from(roomState.players.values()).every((p) => p.isBot || (p.bankrupt && !p.socketId))
             : false;
           if (roomState && allDisconnected) {
             // Logged BEFORE the room row is deleted below — EventLog has no FK to Room
@@ -1149,6 +1285,7 @@ export class GameEngine {
       bankrupt: dbPlayer.bankrupt,
       companyId: dbPlayer.companyId ?? undefined,
       socketId: dbPlayer.socketId ?? player.socketId,
+      isBot: false,
     };
 
     const roomState: RoomState = {
@@ -1170,6 +1307,7 @@ export class GameEngine {
     this.leaveStaleSocketRoom(player.socketId!, room.id);
     this.playerToRoom.set(player.socketId!, room.id);
     this.touchRoomActivity(room.id);
+    this.scheduleBotJoinCheck(room.id);
 
     return roomState;
   }
@@ -1220,6 +1358,7 @@ export class GameEngine {
       bankrupt: dbPlayer.bankrupt,
       companyId: dbPlayer.companyId ?? undefined,
       socketId: dbPlayer.socketId ?? player.socketId,
+      isBot: false,
     };
 
     roomState.players.set(dbPlayer.id, syncedPlayer);
@@ -1227,7 +1366,132 @@ export class GameEngine {
     this.playerToRoom.set(player.socketId!, roomId);
     this.touchRoomActivity(roomId);
 
+    // A real human just joined — the bot that was standing in for a lack of an
+    // opponent has no reason to stay (see addBotPlayer's own doc comment). Always
+    // removed, regardless of remaining room capacity — the bot only ever exists to
+    // fill a genuine absence of a human opponent.
+    await this.removeBotPlayers(roomState);
+
     return roomState;
+  }
+
+  /**
+   * (Re)schedules the "nobody's joined this public room yet, send in a bot" check for
+   * `roomId`, clearing any previously-scheduled one first. Fired 10s after a room first
+   * has exactly one (human) player in it — from `createRoom`, and again from `leaveRoom`
+   * whenever a departure leaves exactly one human alone in a still-WAITING room (e.g. a
+   * 2nd player joined and then left again, or the host kicked the bot).
+   *
+   * Deliberately re-checks every condition at fire time rather than trusting the state
+   * at schedule time — a room that filled up, started, went invite-only, or disappeared
+   * in the meantime just silently no-ops, so no separate cancel-on-every-other-path logic
+   * is needed.
+   */
+  public scheduleBotJoinCheck(roomId: string): void {
+    const existing = this.botJoinTimers.get(roomId);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(() => {
+      this.botJoinTimers.delete(roomId);
+      const roomState = this.rooms.get(roomId);
+      if (!roomState) return;
+      if (roomState.room.status !== RoomStatus.WAITING) return;
+      if (roomState.room.inviteOnly) return;
+      if (!this.gameConfig?.gameSettings.enableBotPlayers) return;
+      const players = Array.from(roomState.players.values());
+      if (players.length !== 1 || players[0].isBot) return;
+
+      this.addBotPlayer(roomId).catch((err) => {
+        console.error(`[Bot] Failed to add bot player to room ${roomId}:`, err);
+      });
+    }, this.BOT_JOIN_DELAY_MS);
+
+    this.botJoinTimers.set(roomId, timer);
+  }
+
+  private clearBotJoinCheck(roomId: string): void {
+    const existing = this.botJoinTimers.get(roomId);
+    if (existing) {
+      clearTimeout(existing);
+      this.botJoinTimers.delete(roomId);
+    }
+  }
+
+  /**
+   * Adds a server-injected AI opponent to a room that's been sitting with a lone human
+   * player — same DB shape `joinRoom` creates (Player + Company via one transaction),
+   * just with `isBot: true`, `socketId: null` (a bot has no real Socket.IO connection —
+   * never touches `playerToRoom`/`leaveStaleSocketRoom`), and a randomly-picked, always
+   * clearly-bot-flavored name (see BOT_NAMES). Removed the instant a real human joins
+   * the room (see `joinRoom`'s `removeBotPlayers` call) — the bot only exists to fill a
+   * genuine absence of a human opponent, never to occupy a seat a human might want.
+   */
+  private async addBotPlayer(roomId: string): Promise<void> {
+    const roomState = this.rooms.get(roomId);
+    if (!roomState) return;
+
+    const name = this.BOT_NAMES[Math.floor(Math.random() * this.BOT_NAMES.length)];
+
+    const dbPlayer = await this.prisma.$transaction(async (tx) => {
+      return tx.player.create({
+        data: {
+          name,
+          roomId,
+          isHost: false,
+          isBot: true,
+          socketId: null,
+          company: { create: { cash: 100000 } },
+        },
+        include: { company: true },
+      });
+    });
+
+    const syncedPlayer: Player = {
+      id: dbPlayer.id,
+      name: dbPlayer.name,
+      roomId,
+      isHost: false,
+      bankrupt: false,
+      companyId: dbPlayer.companyId ?? undefined,
+      socketId: null,
+      isBot: true,
+    };
+
+    roomState.players.set(dbPlayer.id, syncedPlayer);
+    this.touchRoomActivity(roomId);
+
+    this.broadcastRoomState(roomId, ServerEvents.ROOM_UPDATED, { room: this.buildRoomSnapshot(roomState) });
+
+    await logEvent(this.prisma, {
+      eventType: 'player.bot_joined',
+      roomId,
+      playerId: dbPlayer.id,
+      payload: { playerName: name },
+    });
+  }
+
+  /** Removes every bot player currently in `roomState` (DB-delete Company/Player rows +
+   * in-memory map entry) — at most one in the current single-bot-only design, but written
+   * generically. Used when a real human joins a room a bot is occupying. */
+  private async removeBotPlayers(roomState: RoomState): Promise<void> {
+    const bots = Array.from(roomState.players.values()).filter((p) => p.isBot);
+    if (bots.length === 0) return;
+
+    for (const bot of bots) {
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          const company = await tx.company.findUnique({ where: { playerId: bot.id } });
+          if (company) {
+            await tx.asset.deleteMany({ where: { companyId: company.id } });
+            await tx.company.delete({ where: { id: company.id } });
+          }
+          await tx.player.delete({ where: { id: bot.id } });
+        });
+      } catch (error) {
+        console.error(`Failed to clean up bot player ${bot.id} from DB:`, error);
+      }
+      roomState.players.delete(bot.id);
+    }
   }
 
   /**
@@ -1320,6 +1584,7 @@ export class GameEngine {
     });
 
     if (roomState.players.size === 0) {
+      this.clearBotJoinCheck(roomId);
       this.rooms.delete(roomId);
       this.lastTurnResults.delete(roomId);
       // Also clean up the room from the database to prevent ghost rooms
@@ -1335,6 +1600,14 @@ export class GameEngine {
       // The player whose grace period just expired might have been the host.
       await this.promoteNewHostIfNeeded(roomState);
       this.broadcastRoomState(roomId, ServerEvents.ROOM_UPDATED, { room: this.buildRoomSnapshot(roomState) });
+
+      // Same "back down to exactly one human, still WAITING" rescheduling leaveRoom does
+      // — this path can just as easily be the one that gets a lobby down to one player
+      // (e.g. a 2nd joiner's tab crashed before they ever clicked anything else).
+      const remaining = Array.from(roomState.players.values());
+      if (roomState.room.status === RoomStatus.WAITING && remaining.length === 1 && !remaining[0].isBot) {
+        this.scheduleBotJoinCheck(roomId);
+      }
     }
   }
 
@@ -1619,6 +1892,9 @@ export class GameEngine {
         timeLimit: PHASE_TIMERS[RoomStatus.GAME_PHASE],
       });
       this.startTimer(roomId, PHASE_TIMERS[RoomStatus.GAME_PHASE]);
+      // Fire-and-forget — a bot "thinking" must never hold up this turn's own
+      // advancingRooms lock any longer than resolution itself already does.
+      this.runBotTurnsForRoom(roomId);
     } catch (error) {
       console.error(`Failed to resolve game turn for room ${roomId}:`, error);
       await logEvent(this.prisma, {
@@ -1790,6 +2066,7 @@ export class GameEngine {
       eliminatedRound: p.eliminatedRound ?? undefined,
       companyId: p.companyId ?? undefined,
       socketId: p.socketId ?? null,
+      isBot: p.isBot ?? false,
     });
 
     const toSharedCompany = (p: (typeof dbPlayers)[number]): Company | null =>
@@ -1901,6 +2178,7 @@ export class GameEngine {
       bankrupt: p.bankrupt,
       companyId: p.companyId ?? undefined,
       socketId: p.socketId ?? undefined,
+      isBot: p.isBot ?? false,
     }));
 
     return {
@@ -1943,7 +2221,12 @@ export class GameEngine {
     const hasHost = Array.from(roomState.players.values()).some((p) => p.isHost);
     if (hasHost) return;
 
-    const newHost = Array.from(roomState.players.values())[0];
+    // A bot must never become host — it has no client to exercise host-only actions
+    // (Start Game, Kick, invite-only toggle) with.
+    const candidates = Array.from(roomState.players.values()).filter((p) => !p.isBot);
+    if (candidates.length === 0) return;
+
+    const newHost = candidates[0];
     newHost.isHost = true;
     await this.prisma.player.update({ where: { id: newHost.id }, data: { isHost: true } });
   }
@@ -1983,9 +2266,17 @@ export class GameEngine {
     if (player.socketId) this.playerToRoom.delete(player.socketId);
     this.touchRoomActivity(roomId);
 
-    if (roomState.players.size === 0) {
+    const remaining = Array.from(roomState.players.values());
+    // Nobody human left at all (either genuinely empty, or only the bot remains — a bot
+    // can never start its own game, so a bot-only WAITING room is just as pointless as an
+    // empty one). Tear down immediately rather than waiting on the heartbeat sweep, same
+    // as the plain "everyone left" case this already handled.
+    if (remaining.length === 0 || remaining.every((p) => p.isBot)) {
+      this.clearBotJoinCheck(roomId);
       this.rooms.delete(roomId);
       this.lastTurnResults.delete(roomId);
+      // Cascade-deletes any remaining bot's Player/Company rows too (see
+      // schema.prisma's onDelete: Cascade) — no separate bot cleanup needed.
       try {
         await this.prisma.room.delete({ where: { id: roomId } });
       } catch (error) {
@@ -1996,6 +2287,13 @@ export class GameEngine {
 
     await this.promoteNewHostIfNeeded(roomState);
     this.broadcastRoomState(roomId, ServerEvents.ROOM_UPDATED, { room: this.buildRoomSnapshot(roomState) });
+
+    // Back down to exactly one (human) player waiting alone — restart the "join a bot
+    // after 10s" clock, the same as a freshly-created room (e.g. a 2nd player joined and
+    // then left again, or the host just kicked the bot).
+    if (remaining.length === 1 && !remaining[0].isBot) {
+      this.scheduleBotJoinCheck(roomId);
+    }
 
     return { success: true };
   }
@@ -2372,6 +2670,13 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
       // buildRoomSnapshot's doc comment).
       await engine.promoteNewHostIfNeeded(roomState);
       engine.broadcastRoomState(roomId, ServerEvents.ROOM_UPDATED, { room: engine.buildRoomSnapshot(roomState) });
+
+      // If the host just kicked the bot itself, they're alone again — restart the
+      // "join a bot after 10s" clock (see leaveRoom's identical rescheduling).
+      const remainingAfterKick = Array.from(roomState.players.values());
+      if (roomState.room.status === RoomStatus.WAITING && remainingAfterKick.length === 1 && !remainingAfterKick[0].isBot) {
+        engine.scheduleBotJoinCheck(roomId);
+      }
     });
 
     // Voluntary departure from the WAITING-phase lobby — "Leave Room". Distinct from

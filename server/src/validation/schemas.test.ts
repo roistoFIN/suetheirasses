@@ -341,6 +341,7 @@ describe('Validation Schemas', () => {
         permanentEffectCooldownYears: 3,
         semaphoreGreenMax: 0.15,
         semaphoreYellowMax: 0.4,
+        enableBotPlayers: true,
       },
       playerStartingValues: {
         cash: 100000, assets: 50000, intangibleAssets: 10000, debt: 20000, reserves: 30000,

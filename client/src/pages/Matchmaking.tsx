@@ -260,20 +260,29 @@ const Matchmaking: React.FC = () => {
                 <Text style={{ color: 'var(--ink-text)' }}>
                   {p.name} {p.id === player.id && '(You)'}
                 </Text>
-                {isHost && p.id !== player.id ? (
-                  <Button
-                    size="compact-xs"
-                    color="red"
-                    variant="outline"
-                    onClick={() => send(ClientEvents.ROOM_KICK, { playerId: p.id })}
-                  >
-                    Kick
-                  </Button>
-                ) : (
-                  <Badge color={p.isHost ? 'orange' : 'gray'} size="sm">
-                    {p.isHost ? 'Host' : 'Player'}
-                  </Badge>
-                )}
+                <Flex gap="xs" align="center">
+                  {/* A bot's badge always shows, host or not — kicking it (below) is still
+                      available to the host the same as for any other player. */}
+                  {p.isBot && (
+                    <Badge color="teal" size="sm">🤖 Bot</Badge>
+                  )}
+                  {isHost && p.id !== player.id ? (
+                    <Button
+                      size="compact-xs"
+                      color="red"
+                      variant="outline"
+                      onClick={() => send(ClientEvents.ROOM_KICK, { playerId: p.id })}
+                    >
+                      Kick
+                    </Button>
+                  ) : (
+                    !p.isBot && (
+                      <Badge color={p.isHost ? 'orange' : 'gray'} size="sm">
+                        {p.isHost ? 'Host' : 'Player'}
+                      </Badge>
+                    )
+                  )}
+                </Flex>
               </Flex>
             ))}
           </Stack>

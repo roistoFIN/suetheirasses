@@ -50,6 +50,9 @@ export interface Player {
   eliminatedRound?: number;
   companyId?: string | null;
   socketId?: string | null;
+  /** True for a server-injected AI opponent — see GameEngine.addBotPlayer. Always false/
+   * undefined for a real player. Drives the client's "🤖 Bot" roster badge. */
+  isBot?: boolean;
 }
 
 // ============================================================

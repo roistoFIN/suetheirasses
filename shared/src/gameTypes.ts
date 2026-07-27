@@ -108,6 +108,11 @@ export interface GameSettings {
    * these same two numbers — moved here so an admin edit actually reaches the client. */
   semaphoreGreenMax: number;
   semaphoreYellowMax: number;
+  /** Whether a lone player waiting in a public (non-invite-only) room gets joined by a
+   * server-injected AI opponent after a short wait — see `GameEngine.scheduleBotJoinCheck`/
+   * `addBotPlayer` in server/src/socket/gameEngine.ts. Admin-editable so bot-spawning can be
+   * disabled globally without a deploy. */
+  enableBotPlayers: boolean;
 }
 
 export interface PlayerStartingValues {
