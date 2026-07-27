@@ -44,6 +44,7 @@ const createMockPrisma = () => {
         isHost: (data.players.create as Record<string, unknown>).isHost as boolean,
         bankrupt: false,
         socketId: (data.players.create as Record<string, unknown>).socketId as string,
+        isBot: false,
         companyId,
         company: {
           id: companyId,
@@ -91,6 +92,7 @@ const createMockPrisma = () => {
         isHost: data.isHost as boolean,
         bankrupt: (data.bankrupt as boolean) || false,
         socketId: data.socketId as string,
+        isBot: (data.isBot as boolean) ?? false,
         companyId,
         company: {
           id: companyId,
@@ -751,6 +753,24 @@ describe('GameEngine', () => {
         expect.objectContaining({ where: { id: bob.id }, data: { isHost: true } }),
       );
     });
+
+    it('never promotes a bot to host, even as the sole remaining player', async () => {
+      const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(creator);
+      // Simulate a bot having joined and the human host having since left, leaving only
+      // the bot behind — a bot must never end up as host (it has no client to exercise
+      // host-only actions with).
+      const alice = Array.from(roomState.players.values())[0];
+      roomState.players.delete(alice.id);
+      roomState.players.set('bot-1', {
+        id: 'bot-1', name: '🤖 RoboRival', roomId: roomState.room.id, isHost: false, bankrupt: false, socketId: null, isBot: true,
+      });
+
+      await engine.promoteNewHostIfNeeded(roomState);
+
+      expect(roomState.players.get('bot-1')!.isHost).toBe(false);
+      expect(mockPrisma.player.update).not.toHaveBeenCalled();
+    });
   });
 
   describe('leaveRoom', () => {
@@ -811,6 +831,354 @@ describe('GameEngine', () => {
 
       expect(result).toEqual({ success: true });
       expect(engine.getRoom(roomId)).toBeUndefined();
+    });
+  });
+
+  describe('bot players', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    describe('scheduleBotJoinCheck / addBotPlayer', () => {
+      it('adds a clearly-named bot after 10s to a public room left with exactly one player', async () => {
+        vi.useFakeTimers();
+        const localIo = createMockIo();
+        const localPrisma = createMockPrisma();
+        const localEngine = new GameEngine(localIo, localPrisma);
+        await localEngine.loadGameData();
+
+        const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+        const roomState = await localEngine.createRoom(creator);
+        expect(roomState.players.size).toBe(1);
+
+        await vi.advanceTimersByTimeAsync(10_000);
+
+        expect(roomState.players.size).toBe(2);
+        const bot = Array.from(roomState.players.values()).find((p) => p.isBot)!;
+        expect(bot).toBeDefined();
+        expect(bot.isHost).toBe(false);
+        expect(bot.socketId).toBeNull();
+        expect(localIo.emit).toHaveBeenCalledWith(
+          ServerEvents.ROOM_UPDATED,
+          expect.objectContaining({ room: expect.objectContaining({ players: expect.arrayContaining([expect.objectContaining({ isBot: true })]) }) }),
+        );
+
+        localEngine.stop();
+      });
+
+      it('does not add a bot if a second human joins before the 10s elapses', async () => {
+        vi.useFakeTimers();
+        const localIo = createMockIo();
+        const localPrisma = createMockPrisma();
+        const localEngine = new GameEngine(localIo, localPrisma);
+        await localEngine.loadGameData();
+
+        const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+        const roomState = await localEngine.createRoom(creator);
+        await vi.advanceTimersByTimeAsync(3_000);
+        await localEngine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+
+        await vi.advanceTimersByTimeAsync(10_000);
+
+        expect(roomState.players.size).toBe(2);
+        expect(Array.from(roomState.players.values()).some((p) => p.isBot)).toBe(false);
+
+        localEngine.stop();
+      });
+
+      it('does not add a bot to an invite-only room', async () => {
+        vi.useFakeTimers();
+        const localIo = createMockIo();
+        const localPrisma = createMockPrisma();
+        const localEngine = new GameEngine(localIo, localPrisma);
+        await localEngine.loadGameData();
+
+        const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+        const roomState = await localEngine.createRoom(creator);
+        roomState.room.inviteOnly = true;
+
+        await vi.advanceTimersByTimeAsync(10_000);
+
+        expect(roomState.players.size).toBe(1);
+
+        localEngine.stop();
+      });
+
+      it('does not add a bot when enableBotPlayers is disabled', async () => {
+        vi.useFakeTimers();
+        const localIo = createMockIo();
+        const localPrisma = createMockPrisma();
+        const localEngine = new GameEngine(localIo, localPrisma);
+        await localEngine.loadGameData();
+        const snapshot = localEngine.getGameConfigSnapshot();
+        await localEngine.updateGameConfigData({ ...snapshot, gameSettings: { ...snapshot.gameSettings, enableBotPlayers: false } });
+
+        const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+        const roomState = await localEngine.createRoom(creator);
+
+        await vi.advanceTimersByTimeAsync(10_000);
+
+        expect(roomState.players.size).toBe(1);
+
+        localEngine.stop();
+      });
+
+      it('does not add a second bot to a room that already has one', async () => {
+        vi.useFakeTimers();
+        const localIo = createMockIo();
+        const localPrisma = createMockPrisma();
+        const localEngine = new GameEngine(localIo, localPrisma);
+        await localEngine.loadGameData();
+
+        const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+        const roomState = await localEngine.createRoom(creator);
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(roomState.players.size).toBe(2);
+
+        // Nothing re-schedules a check while a bot is already present, but even if it
+        // somehow fired again, the "exactly one player, not a bot" gate must hold.
+        localEngine.scheduleBotJoinCheck(roomState.room.id);
+        await vi.advanceTimersByTimeAsync(10_000);
+
+        expect(roomState.players.size).toBe(2);
+
+        localEngine.stop();
+      });
+
+      it('restarts the 10s clock once a room is back down to exactly one human (leaveRoom)', async () => {
+        vi.useFakeTimers();
+        const localIo = createMockIo();
+        const localPrisma = createMockPrisma();
+        const localEngine = new GameEngine(localIo, localPrisma);
+        await localEngine.loadGameData();
+
+        const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+        const roomState = await localEngine.createRoom(creator);
+        const bobRoomState = await localEngine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+        const bob = Array.from(bobRoomState.players.values()).find((p) => p.name === 'Bob')!;
+
+        // Two humans present well past the original 10s window — no bot should have
+        // joined, since the room was never left with exactly one player during it.
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(roomState.players.size).toBe(2);
+
+        await localEngine.leaveRoom(roomState.room.id, bob.id);
+        expect(roomState.players.size).toBe(1);
+
+        await vi.advanceTimersByTimeAsync(10_000);
+
+        expect(roomState.players.size).toBe(2);
+        expect(Array.from(roomState.players.values()).some((p) => p.isBot)).toBe(true);
+
+        localEngine.stop();
+      });
+    });
+
+    describe('removed the instant a human joins', () => {
+      it('removes the bot (DB rows + roster entry) when a real human joins the room', async () => {
+        vi.useFakeTimers();
+        const localIo = createMockIo();
+        const localPrisma = createMockPrisma();
+        const localEngine = new GameEngine(localIo, localPrisma);
+        await localEngine.loadGameData();
+
+        const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+        const roomState = await localEngine.createRoom(creator);
+        await vi.advanceTimersByTimeAsync(10_000);
+        const bot = Array.from(roomState.players.values()).find((p) => p.isBot)!;
+        expect(bot).toBeDefined();
+
+        await localEngine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+
+        expect(roomState.players.has(bot.id)).toBe(false);
+        expect(Array.from(roomState.players.values()).map((p) => p.name)).toEqual(expect.arrayContaining(['Alice', 'Bob']));
+        expect(localPrisma.player.delete).toHaveBeenCalledWith(expect.objectContaining({ where: { id: bot.id } }));
+
+        localEngine.stop();
+      });
+    });
+
+    describe('cleanup when only bots remain', () => {
+      it('leaveRoom tears the room down immediately when the departing human leaves only a bot behind', async () => {
+        vi.useFakeTimers();
+        const localIo = createMockIo();
+        const localPrisma = createMockPrisma();
+        const localEngine = new GameEngine(localIo, localPrisma);
+        await localEngine.loadGameData();
+
+        const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+        const roomState = await localEngine.createRoom(creator);
+        await vi.advanceTimersByTimeAsync(10_000);
+        const alice = Array.from(roomState.players.values()).find((p) => !p.isBot)!;
+
+        const result = await localEngine.leaveRoom(roomState.room.id, alice.id);
+
+        expect(result).toEqual({ success: true });
+        expect(localEngine.getRoom(roomState.room.id)).toBeUndefined();
+        expect(localPrisma.room.delete).toHaveBeenCalledWith({ where: { id: roomState.room.id } });
+
+        localEngine.stop();
+      });
+
+      it('the heartbeat stale-room sweep reclaims a room where every remaining player is a bot (e.g. the human disconnected mid-game and never came back)', async () => {
+        vi.useFakeTimers();
+        const localIo = createMockIo();
+        const localPrisma = createMockPrisma();
+        const localEngine = new GameEngine(localIo, localPrisma);
+        await localEngine.loadGameData();
+
+        const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+        const roomState = await localEngine.createRoom(creator);
+        await vi.advanceTimersByTimeAsync(10_000);
+        const alice = Array.from(roomState.players.values()).find((p) => !p.isBot)!;
+        // Simulate Alice having vanished mid-game already (e.g. finalizePlayerRemoval
+        // ran for her separately) — the bot is the sole remaining player, never
+        // bankrupt, with no socketId of its own.
+        roomState.players.delete(alice.id);
+        roomState.room.status = RoomStatus.GAME_PHASE;
+
+        await vi.advanceTimersByTimeAsync(70_000); // past STALE_ROOM_THRESHOLD
+
+        expect(localEngine.getRoom(roomState.room.id)).toBeUndefined();
+        expect(localPrisma.room.delete).toHaveBeenCalledWith({ where: { id: roomState.room.id } });
+
+        localEngine.stop();
+      });
+    });
+
+    describe('runBotTurn orchestration', () => {
+      async function makeWaitingRoomWithBot() {
+        vi.useFakeTimers();
+        const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+        const roomState = await engine.createRoom(creator);
+        await vi.advanceTimersByTimeAsync(10_000);
+        vi.useRealTimers();
+        return roomState;
+      }
+
+      it('submits decisions and readies up after round 1, without ever being asked to', async () => {
+        const roomState = await makeWaitingRoomWithBot();
+        const bot = Array.from(roomState.players.values()).find((p) => p.isBot)!;
+
+        await engine.startGame(roomState.room.id);
+
+        await vi.waitFor(() => {
+          expect(roomState.readyPlayerIds.has(bot.id)).toBe(true);
+        });
+      });
+
+      it('never acts for a bankrupt bot', async () => {
+        const roomState = await makeWaitingRoomWithBot();
+        const bot = Array.from(roomState.players.values()).find((p) => p.isBot)!;
+        bot.bankrupt = true;
+        const submitSpy = vi.spyOn(engine, 'submitDecisions');
+
+        await engine.startGame(roomState.room.id);
+        // Give any (there shouldn't be any) fire-and-forget bot work a chance to run.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        expect(submitSpy).not.toHaveBeenCalledWith(roomState.room.id, bot.id, expect.anything());
+      });
+
+      it('charges lawsuit filing fees one at a time, reflecting each in the submission before charging the next (regression — chargeLawsuitFilingFee\'s per-turn cap reads the already-queued count)', async () => {
+        const roomState = await makeWaitingRoomWithBot();
+        const bot = Array.from(roomState.players.values()).find((p) => p.isBot)!;
+        roomState.room.status = RoomStatus.GAME_PHASE;
+        roomState.room.currentPhaseRound = 2;
+        roomState.decisionSubset = engine.getDecisionsSnapshot().map((d) => d.decision);
+
+        // Seed two already-fully-revealed, easily-winnable incoming attacks — bypasses
+        // needing several real rounds of digging to reach this state naturally (the
+        // heads-up investigation shortcut plus this bot's own "one dig per attack per
+        // turn" pacing would otherwise take multiple rounds to fully reveal even one).
+        (engine as unknown as { lastTurnResults: Map<string, unknown> }).lastTurnResults.set(roomState.room.id, {
+          round: 1,
+          gameOver: false,
+          players: [
+            {
+              playerId: bot.id,
+              playerName: bot.name,
+              variables: { cash: 500_000 },
+              derived: {},
+              activeDecisions: [],
+              legalCases: [],
+              riskGauge: 0,
+              sharesBoughtThisTurn: [],
+              incomingAttacks: [
+                {
+                  attackId: 'attack-a', isIndirect: false, investigationLevel: 3,
+                  attackerId: 'attacker-a', attackerName: 'Attacker A',
+                  decisionName: 'Bot Attack', suggestedGroundName: 'Ground A', successProbability: 0.9,
+                },
+                {
+                  attackId: 'attack-b', isIndirect: false, investigationLevel: 3,
+                  attackerId: 'attacker-b', attackerName: 'Attacker B',
+                  decisionName: 'Bot Attack', suggestedGroundName: 'Ground B', successProbability: 0.9,
+                },
+              ],
+            },
+          ],
+        });
+
+        const fileLawsuitSpy = vi.spyOn(engine, 'fileLawsuit');
+        const submitSpy = vi.spyOn(engine, 'submitDecisions');
+
+        await engine.runBotTurn(roomState.room.id, bot.id);
+
+        expect(fileLawsuitSpy).toHaveBeenCalledTimes(2);
+
+        // Each fee charge must be reflected in a submitDecisions call (growing the
+        // lawsuits array) before the NEXT fee is charged — otherwise the 2nd charge's
+        // per-turn cap check would read a stale (too-low) queued count.
+        const fileLawsuitCallOrder = fileLawsuitSpy.mock.invocationCallOrder;
+        const submitCallOrder = submitSpy.mock.invocationCallOrder;
+        expect(submitCallOrder.some((t) => t > fileLawsuitCallOrder[0] && t < fileLawsuitCallOrder[1])).toBe(true);
+
+        // Both lawsuits ultimately end up in the final submission.
+        const lastSubmitCall = submitSpy.mock.calls[submitSpy.mock.calls.length - 1];
+        const finalDecisions = lastSubmitCall[2] as { lawsuits: { groundName: string }[] };
+        expect(finalDecisions.lawsuits.map((l) => l.groundName).sort()).toEqual(['Ground A', 'Ground B']);
+      });
+
+      it('never spends below the cash reserve on lawsuit filing fees', async () => {
+        const roomState = await makeWaitingRoomWithBot();
+        const bot = Array.from(roomState.players.values()).find((p) => p.isBot)!;
+        roomState.room.status = RoomStatus.GAME_PHASE;
+        roomState.room.currentPhaseRound = 2;
+        roomState.decisionSubset = engine.getDecisionsSnapshot().map((d) => d.decision);
+
+        (engine as unknown as { lastTurnResults: Map<string, unknown> }).lastTurnResults.set(roomState.room.id, {
+          round: 1,
+          gameOver: false,
+          players: [
+            {
+              playerId: bot.id,
+              playerName: bot.name,
+              // Barely below reserve + filing cost — cannot afford to sue at all.
+              variables: { cash: 20_000 },
+              derived: {},
+              activeDecisions: [],
+              legalCases: [],
+              riskGauge: 0,
+              sharesBoughtThisTurn: [],
+              incomingAttacks: [
+                {
+                  attackId: 'attack-a', isIndirect: false, investigationLevel: 3,
+                  attackerId: 'attacker-a', attackerName: 'Attacker A',
+                  decisionName: 'Bot Attack', suggestedGroundName: 'Ground A', successProbability: 0.9,
+                },
+              ],
+            },
+          ],
+        });
+
+        const fileLawsuitSpy = vi.spyOn(engine, 'fileLawsuit');
+
+        await engine.runBotTurn(roomState.room.id, bot.id);
+
+        expect(roomState.readyPlayerIds.has(bot.id)).toBe(true);
+        expect(fileLawsuitSpy).not.toHaveBeenCalled();
+      });
     });
   });
 
