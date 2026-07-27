@@ -33,6 +33,9 @@ export const EVENT_TYPES = [
   'player.disconnected',
   'player.reconnected',
   'player.kicked',
+  // A server-injected AI opponent joined a lone player's room — see
+  // GameEngine.addBotPlayer.
+  'player.bot_joined',
   'room.stale_cleanup',
   // One per finished game — winner + basic shape, for cross-game analytics.
   'game.completed',

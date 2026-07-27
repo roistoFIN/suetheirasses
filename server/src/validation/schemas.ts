@@ -426,6 +426,7 @@ const gameSettingsSchema = z.object({
   permanentEffectCooldownYears: z.number(),
   semaphoreGreenMax: z.number(),
   semaphoreYellowMax: z.number(),
+  enableBotPlayers: z.boolean(),
 });
 
 const playerStartingValuesSchema = z.object({
