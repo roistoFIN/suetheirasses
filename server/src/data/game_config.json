@@ -15,10 +15,15 @@
     "statuteOfLimitationsYears": 10,
     "permanentEffectCooldownYears": 3,
     "semaphoreGreenMax": 0.15,
-    "semaphoreYellowMax": 0.40,
-    "enableBotPlayers": true
+    "semaphoreYellowMax": 0.4,
+    "enableBotPlayers": true,
+    "lateGameRoundThreshold": 18,
+    "lateGameLegalProbabilityBoost": 1.5,
+    "lateGameLegalStakesBoost": 1.5,
+    "lateGameTakeoverBoost": 1.5,
+    "mergerIntegrationCostRate": 0.25,
+    "wealthScaledFeeRate": 0.03
   },
-
   "playerStartingValues": {
     "_comment_finance": "Ryhma A - Talous",
     "cash": 100000,
@@ -30,7 +35,6 @@
     "staffCost": 10000,
     "materialCostPerTon": 500,
     "otherIncome": 0,
-
     "_comment_production": "Ryhma B - Tuotanto/operaatiot",
     "price": 675,
     "capacityUtilization": 1.0,
@@ -42,11 +46,11 @@
     "logisticsCostPerTon": 50,
     "processLoss": 0.1,
     "installedCapacity": 350,
-
     "_comment_shares": "Ryhma C - Osakkeet",
     "totalSharesOutstanding": 10000,
-    "shareOwnership": { "self": 1.0 },
-
+    "shareOwnership": {
+      "self": 1.0
+    },
     "_comment_reputation_risk": "Ryhma D - pisteskaala, kaikki alkavat nollasta",
     "outrage": 0,
     "scrutiny": 0,
@@ -57,7 +61,6 @@
     "carbonFootprint": 0,
     "stockVolume": 0,
     "demand": 0,
-
     "_comment_derived": "Nama LASKETAAN, ei syoteta suoraan - ks. formulas-osio",
     "equity": "derived",
     "revenue": "derived",
@@ -68,7 +71,6 @@
     "depreciation": "derived (asset ledger)",
     "stockValue": "derived"
   },
-
   "adminVariables": {
     "competitiveness": {
       "competitivenessWeight_quality_wq": 0.3,
@@ -94,7 +96,7 @@
     "finance": {
       "baseFinanceCost": 5000,
       "interestRate": 0.05,
-      "taxRate": 0.20,
+      "taxRate": 0.2,
       "daysSalesOutstanding_DSO": 45
     },
     "depreciation": {

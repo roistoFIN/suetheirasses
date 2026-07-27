@@ -7,6 +7,7 @@ import {
   validateGameConfig,
   validateFormulaUpdate,
   validateFeedbackSubmit,
+  validateMakeOffer,
 } from './schemas';
 
 describe('Validation Schemas', () => {
@@ -342,6 +343,12 @@ describe('Validation Schemas', () => {
         semaphoreGreenMax: 0.15,
         semaphoreYellowMax: 0.4,
         enableBotPlayers: true,
+        lateGameRoundThreshold: 18,
+        lateGameLegalProbabilityBoost: 1.5,
+        lateGameLegalStakesBoost: 1.5,
+        lateGameTakeoverBoost: 1.5,
+        mergerIntegrationCostRate: 0.25,
+        wealthScaledFeeRate: 0.03,
       },
       playerStartingValues: {
         cash: 100000, assets: 50000, intangibleAssets: 10000, debt: 20000, reserves: 30000,
@@ -434,6 +441,35 @@ describe('Validation Schemas', () => {
     it('should accept MIN/MAX and reject other function calls', () => {
       expect(() => validateFormulaUpdate('volume', { expression: 'MIN(theoreticalVolume, maxSupply)', description: 'x' })).not.toThrow();
       expect(() => validateFormulaUpdate('volume', { expression: 'eval(theoreticalVolume)', description: 'x' })).toThrow();
+    });
+  });
+
+  describe('makeOfferSchema', () => {
+    it('should validate a normal positive offer', () => {
+      expect(() => validateMakeOffer({ caseId: 'case-1', amount: 50000 })).not.toThrow();
+    });
+
+    // Regression: a $0 offer is a legitimate settlement (GameLoop.computeOfferBracket's
+    // `min` can legitimately be 0 — a defendant's opening move, or a relative-type ground
+    // whose stakes computed to $0) — `.positive()` used to reject it here before it ever
+    // reached GameLoop.makeOffer's own (already-correct) bracket check, which combined
+    // with a client-side error-code mismatch left the negotiation panel permanently stuck
+    // on any rejection. See CLAUDE.md.
+    it('should accept a $0 offer (regression)', () => {
+      expect(() => validateMakeOffer({ caseId: 'case-1', amount: 0 })).not.toThrow();
+    });
+
+    it('should reject a negative offer', () => {
+      expect(() => validateMakeOffer({ caseId: 'case-1', amount: -1 })).toThrow();
+    });
+
+    it('should reject a non-finite offer', () => {
+      expect(() => validateMakeOffer({ caseId: 'case-1', amount: Infinity })).toThrow();
+      expect(() => validateMakeOffer({ caseId: 'case-1', amount: NaN })).toThrow();
+    });
+
+    it('should reject a missing caseId', () => {
+      expect(() => validateMakeOffer({ amount: 100 })).toThrow();
     });
   });
 });

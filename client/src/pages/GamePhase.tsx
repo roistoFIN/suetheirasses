@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { Socket } from 'socket.io-client';
 import {
   Modal, Stack, Text, Badge, Button, Flex, TextInput,
@@ -12,7 +12,7 @@ import {
   ServerEvents, ClientEvents,
   type PlayerTurnResult, type LegalCaseData, type PlayerVariables, type PlayerDerivedStats,
   type DecisionDefinition, type GameSettings, type SubmittedDecisions,
-  type IncomingAttackInfo, type TurnResolutionResult,
+  type IncomingAttackInfo,
   type KpiHistoryResponse,
 } from '@suethemchickens/shared';
 import {
@@ -519,8 +519,26 @@ const gpStyles = {
 export default function GamePhase() {
   const { socket } = useSocketStore();
   const { player, turnResults, timer, round, currentPhase, updateTimer, decisions, gameSettings } = useGameStore();
-  const [myData, setMyData] = useState<PlayerTurnResult | null>(null);
-  const [competitors, setCompetitors] = useState<PlayerTurnResult[]>([]);
+  // Live-derived from the store's `turnResults` on every render — NOT a separate
+  // useState snapshot. `turnResults` is also patched out-of-band by three actions that
+  // never resolve a whole new turn (`applyDigDeeperResult`, `applyFileLawsuitResult`,
+  // `applyLegalCaseUpdate` — see socketStore.ts), and a frozen local copy would only
+  // pick those patches up whenever the NEXT real turn happened to resolve. That was a
+  // real, reported bug: clicking "Dig Deeper" charged the cost and computed the reveal
+  // server-side, but the card kept showing the old investigation level (and CASH kept
+  // showing the pre-deduction figure) until the next turn resolved, making the button
+  // look broken — first noticeable in round 2, since nothing exists to dig into before
+  // round 1 has resolved at least once. See the turn-sync effect below for how the
+  // "previous value" needed for trend arrows / new-event diffing is still captured
+  // correctly despite this no longer being separately-held state.
+  const myData = useMemo<PlayerTurnResult | null>(
+    () => (player ? turnResults?.players.find((p) => p.playerId === player.id) ?? null : null),
+    [turnResults, player],
+  );
+  const competitors = useMemo<PlayerTurnResult[]>(
+    () => (player ? turnResults?.players.filter((p) => p.playerId !== player.id) ?? [] : []),
+    [turnResults, player],
+  );
   // Previous turn's snapshot — kept only to compute the "since last turn" trend arrows
   // on KPI cards and competitor intel; null/empty until a second turn has resolved.
   const [prevData, setPrevData] = useState<PlayerTurnResult | null>(null);
@@ -535,18 +553,7 @@ export default function GamePhase() {
   const [kpiSubFieldGraph, setKpiSubFieldGraph] = useState<{ field: string; label: string; targetPlayerId: string } | null>(null);
   const [sueModalOpen, setSueModalOpen] = useState(false);
   const [decisionDeckModalOpen, setDecisionDeckModalOpen] = useState(false);
-  // Set when a player jumps into the Sue flow via a fully-investigated attack's
-  // "SUE NOW" shortcut — pre-fills SueModal's target + ground, still requires the
-  // player's own "QUEUE LAWSUIT" confirmation click. decisionName disambiguates the
-  // prefill match against the now target-independent, whole-library ground catalog
-  // (see getGroundsAgainst) — two different decisions could in principle share an
-  // identically-named ground, since the admin-editable decision library has no
-  // uniqueness constraint on legal-risk names.
-  const [sueSuggestion, setSueSuggestion] = useState<{ targetId: string; decisionName: string; groundName: string } | null>(null);
-  const closeSueModal = () => {
-    setSueModalOpen(false);
-    setSueSuggestion(null);
-  };
+  const closeSueModal = () => setSueModalOpen(false);
   const [riskInfoCase, setRiskInfoCase] = useState<LegalCaseData | null>(null);
   const [loading, setLoading] = useState(true);
   const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
@@ -569,14 +576,43 @@ export default function GamePhase() {
   // not optimistic local state, so it can never drift from what every other player sees.
   const [readyPlayerIds, setReadyPlayerIds] = useState<string[]>([]);
   const [activePlayerCount, setActivePlayerCount] = useState(0);
-  // Guards the turn-sync effect below against React 18 StrictMode's dev-only double
-  // invocation of effects with no cleanup — without this, the same `turnResults` object
-  // gets processed twice, and setNewsItems' append (non-idempotent by nature) ends up
-  // adding the same event twice, producing a duplicate React key.
-  const processedTurnResultsRef = useRef<TurnResolutionResult | null>(null);
+  // Guards the turn-sync effect below against processing the same turn's results twice.
+  // Originally just React 18 StrictMode's dev-only double invocation of effects with no
+  // cleanup (the same `turnResults` object processed twice) — object-reference equality
+  // alone missed a real, reported case: `GameEngine.rejoinRoom` re-sends the room's
+  // cached last-resolved-turn via the SAME `TURN_RESOLVED` event on every reconnect (a
+  // page refresh, a brief network blip, a dev-server restart), as a FRESH object with
+  // identical content, which re-ran this effect's non-idempotent `setNewsItems` append
+  // and silently duplicated that turn's News items.
+  //
+  // Switching the guard to compare `round` alone (instead of object identity) fixed that,
+  // but broke round 1 specifically — a second, real, reported regression: round 1's
+  // always-empty `getInitialSnapshot` broadcast and round 1's REAL `resolveTurn` result
+  // both carry `round: 1` by design (`GameEngine.resolveGameTurn` reads
+  // `currentPhaseRound` — still 1 at that point — and only increments it to 2 AFTER
+  // resolving), so a round-only key made the guard treat the real round-1 resolution as
+  // an already-processed duplicate of the empty starting snapshot and skip updating
+  // `myData` entirely (back when it was a separate `useState`, since replaced by the
+  // live memo below) — the player's round-1 deployments then never appeared, not even
+  // once round 2 started, since `myData` was silently frozen on the empty snapshot. Keying on
+  // `${round}:${isInitialSnapshot ? 'i' : 'r'}` instead distinguishes the two: a genuine
+  // reconnect resend still carries the SAME key both times (still deduped), but the empty
+  // snapshot and the real resolution for the same round now have different keys and both
+  // get processed.
+  const processedTurnKeyRef = useRef<string | null>(null);
   // The last round an info window was shown for — round 1 (initial game start) never
   // gets a "turn change" window of its own, since nothing changed FROM anything yet.
   const lastAnnouncedRoundRef = useRef<number | null>(null);
+  // "What myData/competitors looked like the last time the turn-sync effect below
+  // genuinely processed a new turn" — used ONLY for diffing (new-case detection,
+  // trend-arrow "previous" capture) inside that effect. Necessary because `myData`/
+  // `competitors` are now live memos of `turnResults` (see their own declaration) rather
+  // than separately-held state — by the time this effect's closure would read `myData`,
+  // it already reflects whatever the CURRENT `turnResults` is (possibly the very update
+  // that triggered this effect), so it can no longer serve as "the value from before
+  // this turn" the way the old `useState` version could.
+  const lastProcessedMyDataRef = useRef<PlayerTurnResult | null>(null);
+  const lastProcessedCompetitorsRef = useRef<PlayerTurnResult[]>([]);
 
   // Pending decisions + lawsuits for this turn — shared between the Decision Deck and
   // the Sue modal, since both contribute to the same game:submitDecisions payload
@@ -618,33 +654,34 @@ export default function GamePhase() {
   // before overwriting, so KPI/intel trend arrows have something to compare against.
   useEffect(() => {
     if (!turnResults || !player) return;
-    // See processedTurnResultsRef's declaration — skips StrictMode's dev-only replay
-    // of this same turnResults object so non-idempotent updates below (setEventQueue's
-    // append) don't double-fire.
-    if (processedTurnResultsRef.current === turnResults) return;
-    processedTurnResultsRef.current = turnResults;
+    // See processedTurnKeyRef's declaration — skips both StrictMode's dev-only replay AND
+    // a reconnect's re-send of an already-processed turn, while still distinguishing round
+    // 1's empty initial snapshot from round 1's real resolution (same round number, must
+    // NOT be deduped against each other), so non-idempotent updates below (setNewsItems'
+    // append) fire exactly once per genuinely new turn.
+    const turnKey = `${turnResults.round}:${turnResults.isInitialSnapshot ? 'i' : 'r'}`;
+    if (processedTurnKeyRef.current === turnKey) return;
+    processedTurnKeyRef.current = turnKey;
     const myPlayer = turnResults.players.find((p) => p.playerId === player.id);
     if (myPlayer) {
-      // Read myData/competitors directly rather than via setState's functional-updater
-      // form — the ref-guard above already guarantees this effect body runs at most
-      // once per genuinely new turnResults, and updater callbacks are explicitly *not*
-      // guaranteed single-invocation by React (StrictMode intentionally double-invokes
-      // them in dev to catch impure updaters) — setNewsItems' append below is exactly
-      // the kind of non-idempotent side effect that bit us when it lived in one.
-      setPrevData(myData);
+      // Read the last-processed snapshot from the ref, not the (now live) `myData` —
+      // see lastProcessedMyDataRef's declaration for why `myData` itself can no longer
+      // serve as "the previous value" here.
+      const previousMyData = lastProcessedMyDataRef.current;
+      setPrevData(previousMyData);
       // Detect lawsuits filed against me, any of my own cases whose verdict just came
       // in, and any of my own cases that settled by negotiation, since the last turn —
-      // myData is null on the very first snapshot (nothing to have happened yet), so
-      // this only ever fires for genuinely new events appearing in a resolved turn.
-      // Tagged with turnResults.round (the round that JUST resolved, when these events
-      // actually happened) — NOT the `round` state variable, which by this point may
-      // already reflect the round phase:changed just advanced to (see the "must be keyed
-      // on round, not turnResults?.round" fix elsewhere in this file for why the two can
-      // differ within the same turn transition).
-      if (myData) {
-        const newlySued = detectNewlySuedCases(myData.legalCases, myPlayer.legalCases, player.id);
-        const newlyResolved = detectNewlyResolvedCases(myData.legalCases, myPlayer.legalCases, player.id);
-        const newlySettled = detectNewlySettledCases(myData.legalCases, myPlayer.legalCases, player.id);
+      // previousMyData is null on the very first snapshot (nothing to have happened
+      // yet), so this only ever fires for genuinely new events appearing in a resolved
+      // turn. Tagged with turnResults.round (the round that JUST resolved, when these
+      // events actually happened) — NOT the `round` state variable, which by this point
+      // may already reflect the round phase:changed just advanced to (see the "must be
+      // keyed on round, not turnResults?.round" fix elsewhere in this file for why the
+      // two can differ within the same turn transition).
+      if (previousMyData) {
+        const newlySued = detectNewlySuedCases(previousMyData.legalCases, myPlayer.legalCases, player.id);
+        const newlyResolved = detectNewlyResolvedCases(previousMyData.legalCases, myPlayer.legalCases, player.id);
+        const newlySettled = detectNewlySettledCases(previousMyData.legalCases, myPlayer.legalCases, player.id);
         // Unlike the three detectors above, sharesBoughtThisTurn needs no before/after
         // diff — the server already scopes it to exactly the trades that executed THIS
         // turn (see gameLoop.ts's Step 1b), so myPlayer's own copy IS the "what's new"
@@ -666,16 +703,13 @@ export default function GamePhase() {
           ]);
         }
       }
-      setMyData(myPlayer);
+      lastProcessedMyDataRef.current = myPlayer;
 
       const newCompetitors = turnResults.players.filter((p) => p.playerId !== player.id);
-      setPrevCompetitors(new Map(competitors.map((c) => [c.playerId, c])));
-      setCompetitors(newCompetitors);
+      setPrevCompetitors(new Map(lastProcessedCompetitorsRef.current.map((c) => [c.playerId, c])));
+      lastProcessedCompetitorsRef.current = newCompetitors;
       setLoading(false);
     }
-     
-    // intentionally read as "previous value" via closure, not tracked as deps; the
-    // ref-guard above (not this dependency array) is what gates re-execution.
   }, [turnResults, player]);
 
   // "Next turn" News item — every round after the first (round 1 is the initial game
@@ -861,11 +895,11 @@ export default function GamePhase() {
                   attacks={myData.incomingAttacks}
                   cash={vars.cash}
                   digDeeperCost={gameSettings?.digDeeperCost ?? 10000}
+                  filingCost={gameSettings?.lawsuitFilingCost ?? 0}
+                  maxLawsuits={gameSettings?.maxLawsuitsPerPlayerPerTurn ?? Infinity}
                   socket={socket}
-                  onSueNow={(targetId, decisionName, groundName) => {
-                    setSueSuggestion({ targetId, decisionName, groundName });
-                    setSueModalOpen(true);
-                  }}
+                  pending={pending}
+                  onSubmitPending={submitPending}
                   pendingLawsuits={pending.lawsuits}
                   myLegalCases={myLegalCases}
                   dismissedAttackIds={dismissedAttackIds}
@@ -947,9 +981,6 @@ export default function GamePhase() {
           gameSettings={gameSettings}
           pending={pending}
           onSubmitPending={submitPending}
-          prefillTargetId={sueSuggestion?.targetId}
-          prefillDecisionName={sueSuggestion?.decisionName}
-          prefillGroundName={sueSuggestion?.groundName}
           cash={vars.cash}
           socket={socket}
           onClose={closeSueModal}
@@ -1375,11 +1406,11 @@ function SectionCard({ title, children }: SectionCardProps) {
  * (only `decisionName`/`name`) — undefined if the lookup ever fails, in which case
  * nothing renders (defensive; shouldn't happen since a decision in use can't be deleted,
  * see CLAUDE.md's "Deleting a decision is guarded" section). */
-function DecisionDetails({ def }: { def?: DecisionDefinition }) {
+function DecisionDetails({ def, statuteOfLimitationsYears }: { def?: DecisionDefinition; statuteOfLimitationsYears?: number }) {
   const [expanded, setExpanded] = useState(false);
   if (!def) return null;
 
-  const effects = summarizeEffects(def);
+  const effects = summarizeEffects(def, statuteOfLimitationsYears);
   const hasLegalRisk = !!def.legalRisks && def.legalRisks.length > 0;
   const hasDetails = effects.length > 0 || hasLegalRisk;
 
@@ -1395,14 +1426,7 @@ function DecisionDetails({ def }: { def?: DecisionDefinition }) {
       {expanded && effects.length > 0 && (
         <div style={{ marginTop: 8, padding: 8, background: '#fffdf6', border: '1px solid #ddcda0', borderRadius: 6 }}>
           <Text size="xs" style={{ ...boldStyle, color: 'var(--ink-text)', marginBottom: 4 }}>EFFECTS</Text>
-          <Stack gap={2}>
-            {effects.map((line) => (
-              <Flex key={line.field} justify="space-between" gap="xs">
-                <Text size="xs" c="dimmed">{line.field}</Text>
-                <Text size="xs" style={boldStyle}>{line.timeline}</Text>
-              </Flex>
-            ))}
-          </Stack>
+          <EffectsList effects={effects} />
         </div>
       )}
       {expanded && hasLegalRisk && (
@@ -1483,7 +1507,7 @@ function ActiveDecisionCard({ decision, def, statuteOfLimitationsYears, targetNa
           <Box h="100%" style={{ width: `${progress}%`, background: '#fbbf24', borderRadius: 3, transition: 'width 0.3s ease' }} />
         </Box>
       )}
-      <DecisionDetails def={def} />
+      <DecisionDetails def={def} statuteOfLimitationsYears={statuteOfLimitationsYears} />
     </div>
   );
 }
@@ -1494,6 +1518,8 @@ interface QueuedDecisionCardProps {
   targetName?: string;
   /** Looked up by name against the loaded decision library at the call site — see `DecisionDetails`. */
   def?: DecisionDefinition;
+  /** Used for a `target.*` field's "Every turn until Yr N" duration label — see `summarizeEffects`. */
+  statuteOfLimitationsYears?: number;
   onCancel: () => void;
 }
 
@@ -1506,7 +1532,7 @@ interface QueuedDecisionCardProps {
  * turn resolving. Shares `DecisionDetails` (description + collapsible effects/legal-risk)
  * with `ActiveDecisionCard`, since a queued pick's own `DecisionDefinition` lookup is
  * identical — only the header row (progress vs. QUEUED badge) differs. */
-function QueuedDecisionCard({ name, targetName, def, onCancel }: QueuedDecisionCardProps) {
+function QueuedDecisionCard({ name, targetName, def, statuteOfLimitationsYears, onCancel }: QueuedDecisionCardProps) {
   return (
     <div style={gpStyles.activeDecisionCard}>
       <Flex justify="space-between" align="center">
@@ -1519,7 +1545,7 @@ function QueuedDecisionCard({ name, targetName, def, onCancel }: QueuedDecisionC
           <Text size="xs" c="red" style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={onCancel}>Cancel</Text>
         </Flex>
       </Flex>
-      <DecisionDetails def={def} />
+      <DecisionDetails def={def} statuteOfLimitationsYears={statuteOfLimitationsYears} />
     </div>
   );
 }
@@ -1668,7 +1694,7 @@ function ActiveDecisionsBox({ pending, activeDecisions, decisions, playerNames, 
         <Stack gap="sm" style={{ maxHeight: ACTIVE_DECISIONS_MAX_HEIGHT, overflowY: 'auto', paddingRight: 4 }}>
           {filtered.map((item) =>
             item.kind === 'queued' ? (
-              <QueuedDecisionCard key={item.key} name={item.name} targetName={item.targetName} def={item.def} onCancel={item.onCancel} />
+              <QueuedDecisionCard key={item.key} name={item.name} targetName={item.targetName} def={item.def} statuteOfLimitationsYears={statuteOfLimitationsYears} onCancel={item.onCancel} />
             ) : (
               <ActiveDecisionCard key={item.key} decision={item.decision} def={item.def} statuteOfLimitationsYears={statuteOfLimitationsYears} targetName={item.targetName} />
             ),
@@ -1843,12 +1869,37 @@ function getMaturityYears(def: DecisionDefinition): number {
 interface EffectLine {
   field: string;
   timeline: string;
+  /** True for a `target.*` field — routed to whichever opponent this decision was
+   * deployed against, never the deploying player's own KPIs. Lets callers render "effects
+   * on you" and "effects on target" as two visually separate groups instead of one
+   * ambiguous flat list. */
+  isTarget: boolean;
 }
 
-/** Per-field "when it starts / how long it lasts" timeline, e.g. "Yr 1: -$100,000 → Yr 2: -$100,000". */
-function summarizeEffects(def: DecisionDefinition): EffectLine[] {
+/**
+ * Per-field "when it starts / how long it lasts" timeline, e.g.
+ * "Yr 1: -$100,000 → Permanent: -$50,000" (own field) or
+ * "Every turn until Yr 10: -8" (target field).
+ *
+ * The trailing 'default' schedule value reads very differently depending on which kind of
+ * field it's attached to, and the old flat "Ongoing: X" label for both was genuinely
+ * ambiguous (a real, reported complaint — "almost all say ongoing and it's not clear how
+ * long"): a decision's own (non-`target.*`) field only ever applies its 'default' value
+ * ONCE, at the turn maturity is first reached — after that GameLoop's `advanceAndApply`
+ * deliberately never re-applies it (see CLAUDE.md's "Root historical bug" section on the
+ * runaway-compounding fix), so the field permanently holds that new value rather than
+ * ticking up/down every turn — "Permanent" says that correctly. A `target.*` field is the
+ * opposite: `collectTargetImpacts` genuinely re-applies it to the victim EVERY turn, capped
+ * only by `gameSettings.statuteOfLimitationsYears` (or a successful lawsuit voiding the
+ * instance first) — "Every turn until Yr N" says that correctly instead. `statuteOfLimitationsYears`
+ * is optional (the Decision Deck's browse-before-deploying view has it on hand via
+ * `gameSettings`; omitting it just drops the "until Yr N" qualifier, still correctly
+ * labeled "Every turn").
+ */
+function summarizeEffects(def: DecisionDefinition, statuteOfLimitationsYears?: number): EffectLine[] {
   const lines: EffectLine[] = [];
   for (const [field, impact] of Object.entries(def.impacts)) {
+    const isTarget = field.startsWith('target.');
     const keys = Object.keys(impact.schedule).filter((k) => k !== 'default').map(Number).sort((a, b) => a - b);
     const parts: string[] = [];
     for (const k of keys) {
@@ -1858,12 +1909,55 @@ function summarizeEffects(def: DecisionDefinition): EffectLine[] {
     }
     const ongoing = impact.schedule['default'];
     if (ongoing !== undefined && ongoing !== 0) {
-      parts.push(`Ongoing: ${formatImpactValue(field, impact.type, ongoing)}`);
+      const label = isTarget
+        ? `Every turn${statuteOfLimitationsYears !== undefined ? ` until Yr ${statuteOfLimitationsYears}` : ''}`
+        : 'Permanent';
+      parts.push(`${label}: ${formatImpactValue(field, impact.type, ongoing)}`);
     }
     if (parts.length === 0) continue;
-    lines.push({ field: formatFieldLabel(field), timeline: parts.join(' → ') });
+    lines.push({ field: formatFieldLabel(field), timeline: parts.join(' → '), isTarget });
   }
   return lines;
+}
+
+/** Shared render for an EFFECTS panel — splits into "EFFECTS ON YOU" (the deploying
+ * player's own KPIs) and "EFFECTS ON TARGET" (routed to whichever opponent the decision
+ * was/will be deployed against, via `target.*` fields) rather than one flat, ambiguous
+ * list. The target group only renders at all for a decision that actually has one — most
+ * of the library doesn't. Used by all three effects-detail call sites (`DecisionDetails`,
+ * shared by `ActiveDecisionCard`/`QueuedDecisionCard`, and `DecisionCard`'s own inline
+ * copy) so the grouping/labeling can't drift between them. */
+function EffectsList({ effects }: { effects: EffectLine[] }) {
+  const own = effects.filter((e) => !e.isTarget);
+  const target = effects.filter((e) => e.isTarget);
+  return (
+    <Stack gap={8}>
+      {own.length > 0 && (
+        <Stack gap={2}>
+          {target.length > 0 && (
+            <Text size="xs" c="dimmed" style={{ fontStyle: 'italic', textTransform: 'uppercase' }}>Effects on you</Text>
+          )}
+          {own.map((line) => (
+            <Flex key={line.field} justify="space-between" gap="xs">
+              <Text size="xs" c="dimmed">{line.field}</Text>
+              <Text size="xs" style={boldStyle}>{line.timeline}</Text>
+            </Flex>
+          ))}
+        </Stack>
+      )}
+      {target.length > 0 && (
+        <Stack gap={2}>
+          <Text size="xs" c="orange" style={{ fontStyle: 'italic', textTransform: 'uppercase' }}>Effects on target</Text>
+          {target.map((line) => (
+            <Flex key={line.field} justify="space-between" gap="xs">
+              <Text size="xs" c="dimmed">{line.field}</Text>
+              <Text size="xs" style={boldStyle}>{line.timeline}</Text>
+            </Flex>
+          ))}
+        </Stack>
+      )}
+    </Stack>
+  );
 }
 
 interface DecisionDeckViewProps {
@@ -1999,6 +2093,7 @@ function DecisionDeckView({ decisions, gameSettings, myData, competitors, pendin
                 disabledByLimit={!isPending && atLimit}
                 competitors={competitors}
                 myData={myData}
+                statuteOfLimitationsYears={gameSettings?.statuteOfLimitationsYears}
                 onToggle={(targetId, amount) => togglePending(def, targetId, amount)}
               />
             );
@@ -2019,6 +2114,8 @@ interface DecisionCardProps {
    * cash; Sell Shares bounds by the current value of the holding in whichever company
    * is targeted, own included) and for offering "Myself" as a target option. */
   myData: PlayerTurnResult;
+  /** Used for a `target.*` field's "Every turn until Yr N" duration label — see `summarizeEffects`. */
+  statuteOfLimitationsYears?: number;
   onToggle: (targetId?: string, amount?: number) => void;
 }
 
@@ -2041,7 +2138,7 @@ function shareholdingValue(target: PlayerTurnResult, holderId: string): number {
   return fraction * (target.variables.totalSharesOutstanding ?? 0) * (target.variables.stockValue ?? 0);
 }
 
-function DecisionCard({ def, isPending, blocked, disabledByLimit, competitors, myData, onToggle }: DecisionCardProps) {
+function DecisionCard({ def, isPending, blocked, disabledByLimit, competitors, myData, statuteOfLimitationsYears, onToggle }: DecisionCardProps) {
   const [targetId, setTargetId] = useState('');
   const [expanded, setExpanded] = useState(false);
   const needsTarget = decisionNeedsTarget(def);
@@ -2063,7 +2160,7 @@ function DecisionCard({ def, isPending, blocked, disabledByLimit, competitors, m
     || (needsTarget && !isPending && !targetId)
     || (needsAmount && !isPending && (!amountBounds || amountBounds.max <= 0));
   const maturityYears = getMaturityYears(def);
-  const effects = summarizeEffects(def);
+  const effects = summarizeEffects(def, statuteOfLimitationsYears);
   const hasLegalRisk = !!def.legalRisks && def.legalRisks.length > 0;
   const hasDetails = effects.length > 0 || hasLegalRisk;
 
@@ -2103,14 +2200,7 @@ function DecisionCard({ def, isPending, blocked, disabledByLimit, competitors, m
               {maturityYears === 0 ? 'INSTANT' : `MATURES IN ${maturityYears}T`}
             </Badge>
           </Flex>
-          <Stack gap={2}>
-            {effects.map((line) => (
-              <Flex key={line.field} justify="space-between" gap="xs">
-                <Text size="xs" c="dimmed">{line.field}</Text>
-                <Text size="xs" style={boldStyle}>{line.timeline}</Text>
-              </Flex>
-            ))}
-          </Stack>
+          <EffectsList effects={effects} />
         </div>
       )}
 
@@ -2330,10 +2420,17 @@ const CASE_ACTION_EVENT: Record<CaseActionKind, ClientEvents> = {
   court: ClientEvents.GAME_GO_TO_COURT,
 };
 
-const CASE_ACTION_ERROR_CODE: Record<CaseActionKind, string> = {
-  offer: 'MAKE_OFFER_FAILED',
-  accept: 'ACCEPT_OFFER_FAILED',
-  court: 'GO_TO_COURT_FAILED',
+// Two error codes per action: `X_FAILED` when the request reached GameLoop and its
+// outcome was rejected (e.g. 'invalid_amount', 'not_your_turn'), `INVALID_X_REQUEST` when
+// it never got that far — a payload validation failure caught in the socket handler
+// (server/src/socket/gameEngine.ts). A real, reported bug: this used to check only the
+// first code, so a validation rejection (e.g. the now-fixed $0-offer case) left `onError`
+// returning early without ever clearing `submitting` — every button in NegotiationPanel
+// stayed permanently disabled/unresponsive after that (reads as "the game crashed").
+const CASE_ACTION_ERROR_CODES: Record<CaseActionKind, string[]> = {
+  offer: ['MAKE_OFFER_FAILED', 'INVALID_MAKE_OFFER_REQUEST'],
+  accept: ['ACCEPT_OFFER_FAILED', 'INVALID_ACCEPT_OFFER_REQUEST'],
+  court: ['GO_TO_COURT_FAILED', 'INVALID_GO_TO_COURT_REQUEST'],
 };
 
 /** Friendly copy for a failed `game:makeOffer`/`game:acceptOffer`/`game:goToCourt` — keyed by `LegalCaseActionOutcome`'s `reason`. */
@@ -2418,7 +2515,7 @@ function NegotiationPanel({ caseData, myPlayerId, socket }: NegotiationPanelProp
       setSubmitting(null);
     };
     const onError = (data: { code: string; message: string }) => {
-      if (data.code !== CASE_ACTION_ERROR_CODE[kind]) return;
+      if (!CASE_ACTION_ERROR_CODES[kind].includes(data.code)) return;
       cleanup();
       setSubmitting(null);
       setActionError(CASE_ACTION_ERROR_COPY[data.message] ?? 'Something went wrong — please try again.');
@@ -2571,8 +2668,13 @@ interface IncomingAttackHintsProps {
   attacks: IncomingAttackInfo[];
   cash: number;
   digDeeperCost: number;
+  /** Flat lawsuit filing fee — shown on the "SUE NOW" button itself and charged the
+   * instant it's clicked, same "instant, outside turn resolution" pattern as Dig Deeper. */
+  filingCost: number;
+  maxLawsuits: number;
   socket: Socket | null;
-  onSueNow: (targetId: string, decisionName: string, groundName: string) => void;
+  pending: SubmittedDecisions;
+  onSubmitPending: (next: SubmittedDecisions) => void;
   pendingLawsuits: SubmittedDecisions['lawsuits'];
   myLegalCases: LegalCaseData[];
   /** attackId set of hints this player has explicitly dismissed — see the `useState` doc
@@ -2581,28 +2683,89 @@ interface IncomingAttackHintsProps {
   onDismiss: (attackId: string) => void;
 }
 
-function IncomingAttackHints({ attacks, cash, digDeeperCost, socket, onSueNow, pendingLawsuits, myLegalCases, dismissedAttackIds, onDismiss }: IncomingAttackHintsProps) {
+function IncomingAttackHints({ attacks, cash, digDeeperCost, filingCost, maxLawsuits, socket, pending, onSubmitPending, pendingLawsuits, myLegalCases, dismissedAttackIds, onDismiss }: IncomingAttackHintsProps) {
   const visibleAttacks = attacks.filter((a) => !isAttackAlreadySuedOver(a, pendingLawsuits, myLegalCases) && !dismissedAttackIds.has(a.attackId));
   if (visibleAttacks.length === 0) return null;
   return (
     <Stack gap={6}>
       {visibleAttacks.map((attack) => (
-        <AttackHintCard key={attack.attackId} attack={attack} cash={cash} digDeeperCost={digDeeperCost} socket={socket} onSueNow={onSueNow} onDismiss={onDismiss} />
+        <AttackHintCard
+          key={attack.attackId}
+          attack={attack}
+          cash={cash}
+          digDeeperCost={digDeeperCost}
+          filingCost={filingCost}
+          maxLawsuits={maxLawsuits}
+          socket={socket}
+          pending={pending}
+          onSubmitPending={onSubmitPending}
+          onDismiss={onDismiss}
+        />
       ))}
     </Stack>
   );
 }
 
-function AttackHintCard({ attack, cash, digDeeperCost, socket, onSueNow, onDismiss }: {
+/**
+ * A fully-investigated hint's "SUE NOW" button files the lawsuit DIRECTLY — no modal, no
+ * further confirmation step. By the time an attack reaches full investigation, every piece
+ * of information `SueModal` would otherwise ask the player to pick (target, decision,
+ * ground, and now which exact instance) is already known and already shown right on this
+ * card (suggested ground, estimated success, stakes) — routing through the modal again
+ * would just be re-asking the player to confirm what they already dug up and are already
+ * looking at. `SueModal` itself is untouched and still the only way to sue on a hunch
+ * before/without full investigation (the separate red "SUE THEM CHICKENS" button).
+ */
+function AttackHintCard({ attack, cash, digDeeperCost, filingCost, maxLawsuits, socket, pending, onSubmitPending, onDismiss }: {
   attack: IncomingAttackInfo;
   cash: number;
   digDeeperCost: number;
+  filingCost: number;
+  maxLawsuits: number;
   socket: Socket | null;
-  onSueNow: (targetId: string, decisionName: string, groundName: string) => void;
+  pending: SubmittedDecisions;
+  onSubmitPending: (next: SubmittedDecisions) => void;
   onDismiss: (attackId: string) => void;
 }) {
   const fullyInvestigated = attack.investigationLevel >= 3;
   const canAfford = cash >= digDeeperCost;
+  const canAffordSue = cash >= filingCost;
+  const atLawsuitLimit = pending.lawsuits.length >= maxLawsuits;
+  const [suing, setSuing] = useState(false);
+  const [sueError, setSueError] = useState<string | null>(null);
+
+  // Same "charge the flat fee instantly, only queue into pending once that succeeds"
+  // pattern as SueModal's own handleFile — see that function's doc comment. attackId is
+  // always known here (this card's own instance), unlike SueModal's general flow.
+  const handleSueNow = () => {
+    if (!socket || suing || !canAffordSue || atLawsuitLimit) return;
+    const targetId = attack.attackerId!;
+    const decisionName = attack.decisionName!;
+    const groundName = attack.suggestedGroundName!;
+    const attackId = attack.attackId;
+    setSuing(true);
+    setSueError(null);
+
+    const cleanup = () => {
+      socket.off(ServerEvents.GAME_FILE_LAWSUIT_RESULT, onResult);
+      socket.off(ServerEvents.ERROR, onError);
+    };
+    const onResult = () => {
+      cleanup();
+      setSuing(false);
+      onSubmitPending({ ...pending, lawsuits: [...pending.lawsuits, { targetId, decisionName, groundName, attackId }] });
+    };
+    const onError = (data: { code: string; message: string }) => {
+      if (data.code !== 'FILE_LAWSUIT_FAILED' && data.code !== 'INVALID_FILE_LAWSUIT') return;
+      cleanup();
+      setSuing(false);
+      setSueError(FILE_LAWSUIT_ERROR_COPY[data.message] ?? 'Could not file lawsuit — please try again.');
+    };
+
+    socket.on(ServerEvents.GAME_FILE_LAWSUIT_RESULT, onResult);
+    socket.on(ServerEvents.ERROR, onError);
+    socket.emit(ClientEvents.GAME_FILE_LAWSUIT, { targetId, decisionName, groundName, attackId });
+  };
   // Direct (target.*) attacks keep the original alarmed orange/⚠️ treatment — they're
   // aimed specifically at you. Indirect ones (no target.* impacts at all, just a
   // legalRisks-bearing decision some other player deployed — New Factory, Water Pumping,
@@ -2663,11 +2826,16 @@ function AttackHintCard({ attack, cash, digDeeperCost, socket, onSueNow, onDismi
             color="red"
             fullWidth
             mt={6}
+            loading={suing}
+            disabled={!canAffordSue || atLawsuitLimit}
             leftSection={<IconGavel size={12} />}
-            onClick={() => onSueNow(attack.attackerId!, attack.decisionName!, attack.suggestedGroundName!)}
+            onClick={handleSueNow}
           >
-            SUE NOW
+            SUE NOW ({fmt(filingCost)}){!canAffordSue ? ' — not enough cash' : atLawsuitLimit ? ' — limit reached' : ''}
           </Button>
+          {sueError && (
+            <Text size="xs" c="red" style={{ marginTop: 4 }}>{sueError}</Text>
+          )}
         </Box>
       )}
 
@@ -3657,13 +3825,6 @@ interface SueModalProps {
   gameSettings: GameSettings | null;
   pending: SubmittedDecisions;
   onSubmitPending: (next: SubmittedDecisions) => void;
-  /** Pre-select a target + ground — set via a fully-investigated attack's "SUE NOW" shortcut. */
-  prefillTargetId?: string;
-  /** Disambiguates prefillGroundName against the whole-library ground catalog (see
-   * getGroundsAgainst) — two different decisions could in principle share an identically
-   * named ground. */
-  prefillDecisionName?: string;
-  prefillGroundName?: string;
   /** This player's current cash — used to disable filing (and explain why) when the flat filing fee isn't affordable. */
   cash: number;
   socket: Socket | null;
@@ -3673,7 +3834,11 @@ interface SueModalProps {
   onClose: () => void;
 }
 
-function SueModal({ competitors, decisions, gameSettings, pending, onSubmitPending, prefillTargetId, prefillDecisionName, prefillGroundName, cash, socket, onClose }: SueModalProps) {
+// This is always the general "sue over any ground, on a hunch" flow — a fully-
+// investigated attack's "SUE NOW" shortcut (AttackHintCard) files directly, bypassing
+// this modal entirely, since every piece of information it would otherwise ask the
+// player to pick has already been dug up (see AttackHintCard's own doc comment).
+function SueModal({ competitors, decisions, gameSettings, pending, onSubmitPending, cash, socket, onClose }: SueModalProps) {
   const [query, setQuery] = useState('');
   const [selectedGround, setSelectedGround] = useState<DerivedGround | null>(null);
   const [targetRival, setTargetRival] = useState<string>('');
@@ -3684,19 +3849,6 @@ function SueModal({ competitors, decisions, gameSettings, pending, onSubmitPendi
   const grounds = target ? getGroundsAgainst(decisions) : [];
   const q = query.trim().toLowerCase();
   const results = q === '' ? grounds : grounds.filter((g) => g.groundName.toLowerCase().includes(q) || g.description.toLowerCase().includes(q));
-
-  // Applied via a useEffect (not a useState initializer) so it works regardless of
-  // whether Mantine keeps this component mounted across modal open/close cycles.
-  useEffect(() => {
-    if (!prefillTargetId) return;
-    setTargetRival(prefillTargetId);
-    if (!prefillGroundName) return;
-    const prefillTarget = competitors.find((c) => c.playerId === prefillTargetId);
-    if (!prefillTarget) return;
-    const match = getGroundsAgainst(decisions).find((g) => g.decisionName === prefillDecisionName && g.groundName === prefillGroundName);
-    if (match) setSelectedGround(match);
-     
-  }, [prefillTargetId, prefillDecisionName, prefillGroundName]);
 
   const maxLawsuits = gameSettings?.maxLawsuitsPerPlayerPerTurn ?? Infinity;
   const atLimit = pending.lawsuits.length >= maxLawsuits;
@@ -3710,7 +3862,8 @@ function SueModal({ competitors, decisions, gameSettings, pending, onSubmitPendi
   // turn resolution" pattern as Dig Deeper) — only once that charge actually succeeds
   // does the lawsuit get queued into `pending` for the case itself to be created at the
   // next turn resolution. Not refunded if that later validation rejects it (by product
-  // decision) — see GameLoop.chargeLawsuitFilingFee's doc comment.
+  // decision) — see GameLoop.chargeLawsuitFilingFee's doc comment. No attackId here — a
+  // hunch never has a specific instance in mind (see AttackHintCard for the flow that does).
   const handleFile = () => {
     if (!selectedGround || !targetRival || atLimit || !canAfford || filing || !socket) return;
     setFiling(true);

@@ -323,6 +323,45 @@ describe('LegalEngine', () => {
       expect(result?.plaintiffFullyInvestigated).toBe(true);
     });
 
+    describe('attackId disambiguation (regression)', () => {
+      // Real, reported bug: a target with two live, un-sued instances of the same decision
+      // (normal, intended play — stacking a permanent-effect decision is explicitly
+      // allowed) used to always resolve a filing to the FIRST name-matching instance,
+      // regardless of which one the plaintiff actually investigated and meant to sue —
+      // letting the instance they really dug into dodge `everSued` forever. See CLAUDE.md.
+      const twoInstances = [
+        { id: 'inst-OLD', decisionName: 'Water Pumping', elapsedYears: 5 },
+        { id: 'inst-NEW', decisionName: 'Water Pumping', elapsedYears: 0 },
+      ];
+
+      it('without an attackId, falls back to the first name match (pre-existing behavior, unchanged)', () => {
+        const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', twoInstances, TARGET_VARS, 'room-1', false);
+        expect(result?.defendantDecisionInstanceId).toBe('inst-OLD');
+      });
+
+      it('with an attackId, attaches to that EXACT instance, not just the first name match', () => {
+        const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', twoInstances, TARGET_VARS, 'room-1', false, Infinity, 'inst-NEW');
+        expect(result?.defendantDecisionInstanceId).toBe('inst-NEW');
+      });
+
+      it('with an attackId that does not resolve, treats it as a hopeless case — does NOT fall back to a name match on some other instance', () => {
+        const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', twoInstances, TARGET_VARS, 'room-1', false, Infinity, 'inst-GONE');
+        expect(result).not.toBeNull();
+        expect(result?.defendantDecisionInstanceId).toBeUndefined();
+        expect(result?.baseProbability).toBe(0);
+      });
+
+      it('with an attackId belonging to a DIFFERENT decision name, treats it as a hopeless case (safety check against a tampered/mismatched id)', () => {
+        const mixedInstances = [
+          { id: 'inst-OTHER', decisionName: 'Buy Shares', elapsedYears: 0 },
+          ...twoInstances,
+        ];
+        const result = engine.fileLawsuit('player-2', 'player-1', 'Water Pumping', 'Environmental Violation', mixedInstances, TARGET_VARS, 'room-1', false, Infinity, 'inst-OTHER');
+        expect(result?.defendantDecisionInstanceId).toBeUndefined();
+        expect(result?.baseProbability).toBe(0);
+      });
+    });
+
     describe('statute of limitations', () => {
       it('should still price a real probability just under the limit', () => {
         const targetActive = [{ id: 'inst-1', decisionName: 'Water Pumping', elapsedYears: 9 }];

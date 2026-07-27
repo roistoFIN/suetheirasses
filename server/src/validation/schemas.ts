@@ -174,6 +174,11 @@ export const lawsuitEntrySchema = z.object({
   targetId: z.string().min(1).max(50),
   decisionName: z.string().min(1).max(100),
   groundName: z.string().min(1).max(200),
+  /** The specific attacking decision instance being sued, when filing originates from an
+   * incoming-attack hint's "Sue Now" — see `SubmittedLawsuitEntry.attackId`'s doc comment
+   * (shared/src/gameTypes.ts) for why this matters (a target can have two live, un-sued
+   * instances of the same decision at once). Left absent for a general SueModal filing. */
+  attackId: z.string().min(1).max(100).optional(),
 });
 
 export const submitDecisionsSchema = z.object({
@@ -277,10 +282,18 @@ export function validateKpiHistoryRequest(data: unknown): KpiHistoryRequestPaylo
   return kpiHistoryRequestSchema.parse(data);
 }
 
-/** Zod schema for the `game:makeOffer` Socket.IO event payload — propose or counter a settlement amount on a case. */
+/** Zod schema for the `game:makeOffer` Socket.IO event payload — propose or counter a
+ * settlement amount on a case. `amount` allows exactly 0 — `GameLoop.computeOfferBracket`'s
+ * `min` legitimately starts at (and can stay at) 0, e.g. a defendant's opening move on a
+ * near-worthless case, or a relative-type ground whose stakes computed to $0 against the
+ * defendant's own field value — `.positive()` used to reject those as invalid before this
+ * even reached `GameLoop.makeOffer`'s own (already-correct) `amount < min` bracket check,
+ * which was a real, reported bug: a $0 offer got rejected by this schema, and the client's
+ * error-code mismatch (see `GamePhase.tsx`'s `CASE_ACTION_ERROR_CODES`) then left the
+ * negotiation panel permanently stuck on any rejection, not just this one. */
 export const makeOfferSchema = z.object({
   caseId: z.string().min(1).max(100),
-  amount: z.number().positive(),
+  amount: z.number().nonnegative().finite(),
 });
 
 /** Inferred TypeScript type for validated make-offer payloads. */
@@ -427,6 +440,12 @@ const gameSettingsSchema = z.object({
   semaphoreGreenMax: z.number(),
   semaphoreYellowMax: z.number(),
   enableBotPlayers: z.boolean(),
+  lateGameRoundThreshold: z.number(),
+  lateGameLegalProbabilityBoost: z.number(),
+  lateGameLegalStakesBoost: z.number(),
+  lateGameTakeoverBoost: z.number(),
+  mergerIntegrationCostRate: z.number(),
+  wealthScaledFeeRate: z.number(),
 });
 
 const playerStartingValuesSchema = z.object({

@@ -78,6 +78,20 @@ export class LegalEngine {
    * off `PlayerVariables`, never hardcoded to `'equity'`/`'revenue'` specifically, so an
    * admin adding a new relative-type ground against a different field works without a
    * code change.
+   *
+   * `attackId`, when supplied, is the SPECIFIC attacking instance the plaintiff means to
+   * sue — set when filing originates from an incoming-attack hint's "Sue Now" (see
+   * `SubmittedLawsuitEntry.attackId`'s doc comment). Matching then requires an EXACT id
+   * hit (plus a same-`decisionName` sanity check, guarding against a tampered/stale id
+   * pointing at some other decision) — deliberately NOT falling back to a plain
+   * `decisionName` match if the id doesn't resolve, since a target can legitimately have
+   * two live, un-sued instances of the same decision at once (stacking a permanent-effect
+   * decision is normal, intended play — see `DecisionEngine.canDeploy`), and silently
+   * reattaching to whichever one happens to match by name is exactly the bug this
+   * parameter exists to prevent (a real, reported incident — see CLAUDE.md). Left
+   * `undefined` for the general "sue over any ground, on a hunch" flow (SueModal without a
+   * specific hint), which keeps the original name-only match — there's no specific
+   * instance in mind by design there.
    */
   fileLawsuit(
     plaintiffId: string,
@@ -89,6 +103,7 @@ export class LegalEngine {
     roomId: string,
     plaintiffFullyInvestigated: boolean,
     statuteOfLimitationsYears = Infinity,
+    attackId?: string,
   ): LegalCaseData | null {
     const def = this.definitions.get(decisionName);
     if (!def?.legalRisks) return null;
@@ -96,7 +111,9 @@ export class LegalEngine {
     const risk = def.legalRisks.find(r => r.name === groundName);
     if (!risk) return null;
 
-    const targetInstance = targetActiveDecisions.find(d => d.decisionName === decisionName);
+    const targetInstance = attackId !== undefined
+      ? targetActiveDecisions.find(d => d.id === attackId && d.decisionName === decisionName)
+      : targetActiveDecisions.find(d => d.decisionName === decisionName);
     const timeBarred = !!targetInstance && targetInstance.elapsedYears >= statuteOfLimitationsYears;
     // A transaction too small to cross a decision's own legalRiskConditions (e.g. Buy
     // Shares' minPercentAcquiredInSingleTransaction) never had real legal risk to begin

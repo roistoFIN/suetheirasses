@@ -1179,6 +1179,62 @@ describe('GameEngine', () => {
         expect(roomState.readyPlayerIds.has(bot.id)).toBe(true);
         expect(fileLawsuitSpy).not.toHaveBeenCalled();
       });
+
+      it('accepts a favorable settlement offer instead of leaving it to sit until the turn-boundary timeout (regression — bot used to never actively negotiate)', async () => {
+        const roomState = await makeWaitingRoomWithBot();
+        const bot = Array.from(roomState.players.values()).find((p) => p.isBot)!;
+        const human = Array.from(roomState.players.values()).find((p) => !p.isBot)!;
+        roomState.room.status = RoomStatus.GAME_PHASE;
+        roomState.room.currentPhaseRound = 2;
+        roomState.decisionSubset = engine.getDecisionsSnapshot().map((d) => d.decision);
+
+        // Plaintiff's ask (5,000) is far below the ~90,000 fair value implied by a 0.9
+        // win probability the bot already knows (defendantInvestigated) — a rational
+        // defendant accepts a bargain like this outright rather than countering.
+        const case_ = {
+          id: 'case-1', roomId: roomState.room.id,
+          plaintiffId: human.id, defendantId: bot.id,
+          decisionName: 'Water Pumping', groundName: 'Environmental Violation',
+          description: 'x', baseProbability: 0.9, stakes: 100_000,
+          defendantInvestigated: true,
+          status: 'negotiating' as const,
+          offers: [{ by: 'plaintiff' as const, amount: 5_000 }],
+          turnsNegotiating: 0, createdAt: new Date(),
+        };
+
+        (engine as unknown as { lastTurnResults: Map<string, unknown> }).lastTurnResults.set(roomState.room.id, {
+          round: 1,
+          gameOver: false,
+          players: [
+            {
+              playerId: bot.id, playerName: bot.name,
+              variables: { cash: 500_000 }, derived: {}, activeDecisions: [],
+              legalCases: [case_], riskGauge: 0, sharesBoughtThisTurn: [], incomingAttacks: [],
+            },
+          ],
+        });
+
+        (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockImplementation(({ where }: any) =>
+          Promise.resolve(
+            where?.roomId === roomState.room.id
+              ? [
+                  { id: bot.id, name: bot.name, roomId: roomState.room.id, bankrupt: false, company: { variables: { cash: 500_000 }, engineState: { legalCases: [case_] } } },
+                  { id: human.id, name: human.name, roomId: roomState.room.id, bankrupt: false, company: { variables: { cash: 100_000 }, engineState: { legalCases: [case_] } } },
+                ]
+              : [],
+          ),
+        );
+
+        const acceptSpy = vi.spyOn(engine, 'acceptOffer');
+        const makeOfferSpy = vi.spyOn(engine, 'makeOffer');
+        const goToCourtSpy = vi.spyOn(engine, 'goToCourt');
+
+        await engine.runBotTurn(roomState.room.id, bot.id);
+
+        expect(acceptSpy).toHaveBeenCalledWith(roomState.room.id, bot.id, 'case-1');
+        expect(makeOfferSpy).not.toHaveBeenCalled();
+        expect(goToCourtSpy).not.toHaveBeenCalled();
+      });
     });
   });
 
@@ -1863,6 +1919,22 @@ describe('GameEngine', () => {
       expect(typeof turnResolvedEvents[0].payload.totalDurationMs).toBe('number');
     });
 
+    it('broadcasts round 1\'s real TURN_RESOLVED without isInitialSnapshot, even though it carries the same round number as startGame\'s earlier initial-snapshot broadcast (regression — see gameLoop.test.ts\'s matching isInitialSnapshot coverage and GamePhase.tsx\'s processedTurnKeyRef)', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+
+      roomState.room.status = RoomStatus.GAME_PHASE;
+      roomState.room.currentPhaseRound = 1;
+
+      await engine.resolveGameTurn(roomState.room.id);
+
+      const calls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
+      const turnResolvedCall = calls.find((c) => c[0] === ServerEvents.TURN_RESOLVED)!;
+      expect((turnResolvedCall[1] as { round: number; isInitialSnapshot?: boolean }).round).toBe(1);
+      expect((turnResolvedCall[1] as { isInitialSnapshot?: boolean }).isInitialSnapshot).toBeFalsy();
+    });
+
     it('logs a decision.deployed EventLog row for a decision that actually deploys this turn', async () => {
       const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
       const roomState = await engine.createRoom(host);
@@ -2516,6 +2588,16 @@ describe('GameEngine', () => {
       expect(calls.some((c) => c[0] === ServerEvents.GAME_DECK)).toBe(true);
     });
 
+    it('stamps the initial-snapshot TURN_RESOLVED payload with isInitialSnapshot: true (regression — round 1\'s real resolveTurn result later carries the SAME round number, and the client needs this flag to tell the two apart rather than silently discarding round 1\'s real decisions; see GamePhase.tsx\'s processedTurnKeyRef)', async () => {
+      const roomState = await makeTwoPlayerWaitingRoom();
+
+      await engine.startGame(roomState.room.id);
+
+      const calls = (mockIo.emit as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
+      const turnResolvedCall = calls.find((c) => c[0] === ServerEvents.TURN_RESOLVED)!;
+      expect((turnResolvedCall[1] as { isInitialSnapshot?: boolean }).isInitialSnapshot).toBe(true);
+    });
+
     it('broadcasts TURN_RESOLVED (the initial snapshot) BEFORE PHASE_CHANGED (regression — a fast client readying up on PHASE_CHANGED must never be able to race past the initial snapshot)', async () => {
       const roomState = await makeTwoPlayerWaitingRoom();
 
@@ -2816,7 +2898,7 @@ describe('GameEngine', () => {
       const case_ = {
         id: 'case-history-1', roomId: roomState.room.id, plaintiffId: bobId, defendantId: aliceId,
         decisionName: 'Water Pumping', groundName: 'Environmental Violation', description: 'Sue for environmental damage',
-        baseProbability: 0.12, stakes: 15000, status: 'negotiating' as const,
+        baseProbability: 0.12, plaintiffFullyInvestigated: true, stakes: 15000, status: 'negotiating' as const,
         offers: [{ by: 'defendant' as const, amount: 8000 }], turnsNegotiating: 1, createdAt: new Date(),
       };
 
@@ -2842,6 +2924,9 @@ describe('GameEngine', () => {
       expect(row.filedRound).toBe(5);
       expect(row.resolvedRound).toBe(5);
       expect(row.verdict).toBe('settled');
+      // The plaintiff's own known odds at filing time, stamped once into history.
+      expect(row.baseProbability).toBe(0.12);
+      expect(row.plaintiffFullyInvestigated).toBe(true);
     });
 
     it('does not write any history row for a turn with no legal cases at all', async () => {
@@ -2893,6 +2978,7 @@ describe('GameEngine', () => {
       (mockPrisma.legalCaseHistory as any)._rows.set('case-tl-1', {
         id: 'case-tl-1', roomId: roomState.room.id, plaintiffId: aliceId, plaintiffName: 'Alice', defendantId: bobId, defendantName: 'Bob',
         decisionName: 'Water Pumping', groundName: 'Environmental Violation', description: 'x', stakes: 12000, filedRound: 3, resolvedRound: 4, verdict: 'won',
+        baseProbability: 0.72, plaintiffFullyInvestigated: true,
       });
 
       const response = await engine.getGameTimeline(roomState.room.id);
@@ -2913,6 +2999,9 @@ describe('GameEngine', () => {
       expect(response!.lawsuits).toEqual([
         expect.objectContaining({ id: 'case-tl-1', plaintiffName: 'Alice', defendantName: 'Bob', filedRound: 3, resolvedRound: 4, verdict: 'won' }),
       ]);
+      // The plaintiff's own known odds at filing time — stamped once, never recomputed.
+      expect(response!.lawsuits[0].baseProbability).toBe(0.72);
+      expect(response!.lawsuits[0].plaintiffFullyInvestigated).toBe(true);
     });
 
     it('is reachable during AFTERMATH, not just GAME_PHASE — the finished-game replay depends on this', async () => {
@@ -3392,6 +3481,90 @@ describe('GameEngine', () => {
       expect(outcome.attack.investigationLevel).toBe(1);
       expect(outcome.attack.annualReportBlurb).toBeUndefined();
       expect(generateAnnualReportBlurb).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('digDeeper — revenue-relative ground stakes (regression)', () => {
+    // A real, reported bug: `Company.variables` never actually carries `revenue` (it's a
+    // derived P&L figure GameLoop only ever materializes fresh inside `resolveTurn` —
+    // see gameLoop.ts's Step 8 stakes-calculation note), so `digDeeper` — an out-of-band
+    // action with no live turn in progress — had no way to price a relative-type legal-
+    // risk ground targeting revenue; it always fell back to $0. Fixed by patching in the
+    // attacker's latest known revenue from KpiSnapshot history before delegating to
+    // `GameLoop.digDeeper`. 'Vertical Integration' is a real seeded decision whose two
+    // legal-risk grounds are both revenue-relative (Sherman Act Section 2 Private
+    // Antitrust Litigation / Breach of Exclusivity and Supply Poaching Claim).
+    it('prices the fully-revealed ground off the attacker\'s latest known revenue, not $0', async () => {
+      const players = [
+        {
+          id: 'player-1', name: 'Alice',
+          company: { variables: {}, engineState: { investigations: { 'inst-1': 1 } } },
+        },
+        {
+          id: 'player-2', name: 'Bob',
+          company: {
+            // Non-empty (cash set) so digDeeper's own "first turn hasn't resolved yet"
+            // fallback (readVariables -> startingVars() when both cash and assets are
+            // falsy) doesn't kick in and wipe out the revenue patch this test exists to
+            // verify.
+            variables: { cash: 50000 },
+            engineState: {
+              activeDecisions: [
+                { id: 'inst-1', definitionName: 'Vertical Integration', deployedYear: 1, elapsedYears: 1, isMatured: true },
+              ],
+            },
+          },
+        },
+      ];
+      (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockResolvedValue(players);
+      (mockPrisma.kpiSnapshot!.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { playerId: 'player-2', round: 3, derived: { revenue: 300000 } },
+      ]);
+
+      const outcome = await engine.digDeeper('room-1', 'player-1', 'inst-1');
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.attack.investigationLevel).toBe(3);
+      expect(outcome.attack.suggestedGroundName).toBeDefined();
+      expect(outcome.attack.suggestedGroundStakes).toBeGreaterThan(1000); // sanity check against the $0 bug
+      // Both of Vertical Integration's grounds are revenue-relative with a `default`
+      // multiplier of -0.05/-0.06 — either way, stakes must be a real fraction of the
+      // mocked $300,000 revenue, not a number computed off an undefined field.
+      expect(outcome.attack.suggestedGroundStakes).toBeLessThanOrEqual(300000 * 0.06);
+    });
+
+    it('falls back gracefully (no crash, real ground selection still works) when no KpiSnapshot history exists yet', async () => {
+      const players = [
+        {
+          id: 'player-1', name: 'Alice',
+          company: { variables: {}, engineState: { investigations: { 'inst-1': 1 } } },
+        },
+        {
+          id: 'player-2', name: 'Bob',
+          company: {
+            // Non-empty (cash set) so digDeeper's own "first turn hasn't resolved yet"
+            // fallback (readVariables -> startingVars() when both cash and assets are
+            // falsy) doesn't kick in and wipe out the revenue patch this test exists to
+            // verify.
+            variables: { cash: 50000 },
+            engineState: {
+              activeDecisions: [
+                { id: 'inst-1', definitionName: 'Vertical Integration', deployedYear: 1, elapsedYears: 1, isMatured: true },
+              ],
+            },
+          },
+        },
+      ];
+      (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockResolvedValue(players);
+      // Default mock: kpiSnapshot.findMany resolves to [] (no history yet — round 1).
+
+      const outcome = await engine.digDeeper('room-1', 'player-1', 'inst-1');
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.attack.suggestedGroundName).toBeDefined();
+      expect(outcome.attack.suggestedGroundStakes).toBe(0);
     });
   });
 

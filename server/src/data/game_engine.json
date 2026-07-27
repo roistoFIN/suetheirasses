@@ -28,7 +28,7 @@
         "schedule": {
           "1": 0,
           "2": 0,
-          "default": -0.15
+          "default": -0.09
         }
       },
       "operatingExpenses": {
@@ -36,7 +36,7 @@
         "schedule": {
           "1": 0,
           "2": 0,
-          "default": 25000
+          "default": 15000
         }
       },
       "carbonFootprint": {
@@ -51,8 +51,8 @@
         "type": "relative",
         "schedule": {
           "1": 0,
-          "2": 0.15,
-          "default": 0.4
+          "2": 0.09,
+          "default": 0.24
         }
       }
     },
@@ -128,14 +128,14 @@
         "type": "relative",
         "schedule": {
           "1": 0,
-          "default": 0.3
+          "default": 0.18
         }
       },
       "materialCostPerTon": {
         "type": "relative",
         "schedule": {
           "1": 0,
-          "default": -0.15
+          "default": -0.09
         }
       }
     },
@@ -201,10 +201,10 @@
       "operatingExpenses": {
         "type": "relative",
         "schedule": {
-          "1": 0.1,
-          "2": 0.15,
-          "3": 0.2,
-          "default": 0.2
+          "1": 0.06,
+          "2": 0.09,
+          "3": 0.12,
+          "default": 0.12
         }
       },
       "intangibleAssets": {
@@ -228,10 +228,10 @@
       "price": {
         "type": "relative",
         "schedule": {
-          "1": 0.1,
-          "2": 0.2,
-          "3": 0.35,
-          "default": 0.45
+          "1": 0.06,
+          "2": 0.12,
+          "3": 0.21,
+          "default": 0.27
         }
       },
       "outrage": {
@@ -246,28 +246,28 @@
       "processingLevel": {
         "type": "absolute",
         "schedule": {
-          "1": 0.1,
-          "2": 0.2,
-          "3": 0.3,
-          "default": 0.4
+          "1": 0.06,
+          "2": 0.12,
+          "3": 0.18,
+          "default": 0.24
         }
       },
       "nutrientConsistency": {
         "type": "absolute",
         "schedule": {
-          "1": 0.05,
-          "2": 0.15,
-          "3": 0.2,
-          "default": 0.25
+          "1": 0.03,
+          "2": 0.09,
+          "3": 0.12,
+          "default": 0.15
         }
       },
       "capacityUtilization": {
         "type": "relative",
         "schedule": {
-          "1": -0.05,
-          "2": -0.12,
-          "3": -0.2,
-          "default": -0.2
+          "1": -0.03,
+          "2": -0.072,
+          "3": -0.12,
+          "default": -0.12
         }
       }
     },
@@ -345,7 +345,7 @@
         "schedule": {
           "1": 0,
           "2": 0,
-          "default": 0.25
+          "default": 0.15
         }
       },
       "processingLevel": {
@@ -353,7 +353,7 @@
         "schedule": {
           "1": 0,
           "2": 0,
-          "default": 0.5
+          "default": 0.3
         }
       },
       "energyIntensity": {
@@ -361,7 +361,7 @@
         "schedule": {
           "1": 0,
           "2": 0,
-          "default": 0.2
+          "default": 0.12
         }
       },
       "moistureContent": {
@@ -369,7 +369,7 @@
         "schedule": {
           "1": 0,
           "2": 0,
-          "default": -0.12
+          "default": -0.072
         }
       },
       "nutrientConsistency": {
@@ -377,7 +377,7 @@
         "schedule": {
           "1": 0,
           "2": 0,
-          "default": 0.15
+          "default": 0.09
         }
       }
     },
@@ -438,25 +438,25 @@
       "staffCost": {
         "type": "absolute",
         "schedule": {
-          "1": 10000,
-          "2": 12000,
-          "default": 15000
+          "1": 6000,
+          "2": 7000,
+          "default": 9000
         }
       },
       "price": {
         "type": "relative",
         "schedule": {
-          "1": -0.02,
-          "2": -0.04,
-          "default": -0.05
+          "1": -0.012,
+          "2": -0.024,
+          "default": -0.03
         }
       },
       "logisticsCostPerTon": {
         "type": "relative",
         "schedule": {
-          "1": 0.01,
-          "2": 0.03,
-          "default": 0.05
+          "1": 0.006,
+          "2": 0.018,
+          "default": 0.03
         }
       },
       "demand": {
@@ -603,7 +603,7 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "1": 100000,
+          "1": 70000,
           "default": -15000
         }
       },
@@ -668,7 +668,7 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "1": 150000,
+          "1": 105000,
           "default": 0
         }
       },
@@ -682,7 +682,7 @@
       "price": {
         "type": "relative",
         "schedule": {
-          "1": -0.1,
+          "1": -0.06,
           "default": 0
         }
       }
@@ -744,7 +744,7 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "1": 120000,
+          "1": 84000,
           "default": 0
         }
       },
@@ -758,7 +758,7 @@
       "otherIncome": {
         "type": "absolute",
         "schedule": {
-          "1": 20000,
+          "1": 12000,
           "default": 0
         }
       },
@@ -766,7 +766,7 @@
         "type": "absolute",
         "schedule": {
           "1": 0,
-          "default": 15000
+          "default": 9000
         }
       }
     },
@@ -841,8 +841,8 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "1": 5000,
-          "default": 2000
+          "1": 3000,
+          "default": 1000
         }
       }
     },
@@ -902,8 +902,8 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "1": 10000,
-          "default": 5000
+          "1": 6000,
+          "default": 3000
         }
       },
       "target.cash": {
@@ -970,15 +970,15 @@
       "staffCost": {
         "type": "absolute",
         "schedule": {
-          "1": 15000,
-          "default": 10000
+          "1": 9000,
+          "default": 6000
         }
       },
       "processLoss": {
         "type": "absolute",
         "schedule": {
-          "1": -0.02,
-          "default": -0.05
+          "1": -0.012,
+          "default": -0.03
         }
       },
       "target.processLoss": {
@@ -1115,15 +1115,15 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "1": 15000,
-          "default": 5000
+          "1": 9000,
+          "default": 3000
         }
       },
       "price": {
         "type": "relative",
         "schedule": {
-          "1": 0.1,
-          "default": 0.05
+          "1": 0.06,
+          "default": 0.03
         }
       },
       "outrage": {
@@ -1204,8 +1204,8 @@
       "materialCostPerTon": {
         "type": "relative",
         "schedule": {
-          "1": -0.1,
-          "default": -0.05
+          "1": -0.06,
+          "default": -0.03
         }
       },
       "intangibleAssets": {
@@ -1349,7 +1349,7 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "1": 250000,
+          "1": 175000,
           "default": 0
         }
       },
@@ -1429,7 +1429,7 @@
       "nutrientConsistency": {
         "type": "absolute",
         "schedule": {
-          "default": 0.1
+          "default": 0.06
         }
       },
       "odorComplaints": {
@@ -1441,7 +1441,7 @@
       "materialCostPerTon": {
         "type": "relative",
         "schedule": {
-          "default": 0.12
+          "default": 0.072
         }
       }
     },
@@ -1484,13 +1484,19 @@
       "price": {
         "type": "relative",
         "schedule": {
-          "default": -0.15
+          "default": -0.09
         }
       },
       "stockVolume": {
         "type": "absolute",
         "schedule": {
           "default": -30
+        }
+      },
+      "demand": {
+        "type": "absolute",
+        "schedule": {
+          "default": 14
         }
       }
     },
@@ -1552,9 +1558,9 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "1": -15000,
-          "2": -15000,
-          "default": -15000
+          "1": -9000,
+          "2": -9000,
+          "default": -9000
         }
       },
       "breakdowns": {
@@ -1576,9 +1582,9 @@
       "processLoss": {
         "type": "absolute",
         "schedule": {
-          "1": 0.02,
-          "2": 0.08,
-          "default": 0.15
+          "1": 0.012,
+          "2": 0.048,
+          "default": 0.09
         }
       }
     },
@@ -1638,7 +1644,7 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 12000
+          "default": 7000
         }
       },
       "demand": {
@@ -1707,7 +1713,7 @@
       "logisticsCostPerTon": {
         "type": "relative",
         "schedule": {
-          "default": -0.2
+          "default": -0.12
         }
       },
       "outrage": {
@@ -1781,19 +1787,19 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 8000
+          "default": 5000
         }
       },
       "capacityUtilization": {
         "type": "absolute",
         "schedule": {
-          "default": 0.15
+          "default": 0.09
         }
       },
       "energyIntensity": {
         "type": "relative",
         "schedule": {
-          "default": 0.1
+          "default": 0.06
         }
       },
       "breakdowns": {
@@ -1866,7 +1872,7 @@
       "otherIncome": {
         "type": "absolute",
         "schedule": {
-          "1": 20000,
+          "1": 12000,
           "default": 0
         }
       },
@@ -1937,7 +1943,7 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 18000
+          "default": 11000
         }
       },
       "breakdowns": {
@@ -1949,7 +1955,7 @@
       "processLoss": {
         "type": "absolute",
         "schedule": {
-          "default": -0.04
+          "default": -0.024
         }
       },
       "assets": {
@@ -1996,15 +2002,15 @@
       "staffCost": {
         "type": "absolute",
         "schedule": {
-          "1": 12000,
-          "default": 5000
+          "1": 7000,
+          "default": 3000
         }
       },
       "processLoss": {
         "type": "absolute",
         "schedule": {
-          "1": -0.02,
-          "default": -0.05
+          "1": -0.012,
+          "default": -0.03
         }
       },
       "contaminationRisk": {
@@ -2055,8 +2061,8 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "1": 15000,
-          "default": 2000
+          "1": 9000,
+          "default": 1000
         }
       },
       "intangibleAssets": {
@@ -2070,7 +2076,7 @@
         "type": "relative",
         "schedule": {
           "1": 0,
-          "default": 0.08
+          "default": 0.048
         }
       },
       "outrage": {
@@ -2083,8 +2089,8 @@
       "nutrientConsistency": {
         "type": "absolute",
         "schedule": {
-          "1": 0.05,
-          "default": 0.1
+          "1": 0.03,
+          "default": 0.06
         }
       },
       "scrutiny": {
@@ -2154,7 +2160,7 @@
         "type": "relative",
         "schedule": {
           "1": 0,
-          "default": -0.3
+          "default": -0.18
         }
       },
       "carbonFootprint": {
@@ -2206,7 +2212,7 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 6000
+          "default": 3500
         }
       },
       "scrutiny": {
@@ -2259,7 +2265,7 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 2000
+          "default": 1000
         }
       },
       "target.scrutiny": {
@@ -2317,15 +2323,22 @@
   {
     "decision": "Excess Dividend",
     "level": "Operational",
-    "description": "Pay out a cash dividend to please shareholders, modestly draining company cash and equity reserves.",
+    "description": "Pay out a cash dividend to please shareholders and calm regulators about a swelling cash pile, at real cost.",
     "nature": "Grey Area",
     "offensiveAction": false,
     "excludes": [],
     "impacts": {
       "cash": {
+        "type": "relative",
+        "schedule": {
+          "1": -0.12,
+          "default": 0
+        }
+      },
+      "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "1": -20000,
+          "1": -15,
           "default": 0
         }
       }
@@ -2467,7 +2480,7 @@
       "staffCost": {
         "type": "absolute",
         "schedule": {
-          "1": 25000,
+          "1": 15000,
           "default": 0
         }
       },
@@ -2630,13 +2643,13 @@
       "moistureContent": {
         "type": "absolute",
         "schedule": {
-          "default": 0.25
+          "default": 0.15
         }
       },
       "energyIntensity": {
         "type": "relative",
         "schedule": {
-          "default": 0.35
+          "default": 0.21
         }
       },
       "contaminationRisk": {
@@ -2654,13 +2667,13 @@
       "capacityUtilization": {
         "type": "relative",
         "schedule": {
-          "default": 0.4
+          "default": 0.24
         }
       },
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 5000
+          "default": 3000
         }
       }
     },
@@ -2736,13 +2749,13 @@
       "moistureContent": {
         "type": "absolute",
         "schedule": {
-          "default": 0.18
+          "default": 0.108
         }
       },
       "capacityUtilization": {
         "type": "relative",
         "schedule": {
-          "default": 0.15
+          "default": 0.09
         }
       },
       "scrutiny": {
@@ -2811,7 +2824,7 @@
       "staffCost": {
         "type": "absolute",
         "schedule": {
-          "default": -15000
+          "default": -9000
         }
       },
       "reserves": {
@@ -2885,7 +2898,7 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": -20000
+          "default": -12000
         }
       },
       "reserves": {
@@ -2969,7 +2982,7 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 8000
+          "default": 5000
         }
       },
       "cash": {
@@ -3042,7 +3055,7 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 12000
+          "default": 7000
         }
       },
       "cash": {
@@ -3115,7 +3128,7 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 5000
+          "default": 3000
         }
       },
       "cash": {
@@ -3188,7 +3201,7 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 6000
+          "default": 3500
         }
       },
       "cash": {
@@ -3261,7 +3274,7 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "1": 150000,
+          "1": 105000,
           "default": 0
         }
       },
@@ -3275,7 +3288,7 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "1": 15000,
+          "1": 9000,
           "default": 0
         }
       },
@@ -3443,30 +3456,30 @@
         "type": "absolute",
         "schedule": {
           "1": 0,
-          "2": 0.08,
-          "default": 0.2
+          "2": 0.048,
+          "default": 0.12
         }
       },
       "processingLevel": {
         "type": "absolute",
         "schedule": {
           "1": 0,
-          "2": 0.06,
-          "default": 0.16
+          "2": 0.036,
+          "default": 0.096
         }
       },
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 6000
+          "default": 3500
         }
       },
       "price": {
         "type": "relative",
         "schedule": {
           "1": 0,
-          "2": 0.08,
-          "default": 0.15
+          "2": 0.048,
+          "default": 0.09
         }
       }
     },
@@ -3540,13 +3553,13 @@
       "supplySecurity": {
         "type": "relative",
         "schedule": {
-          "default": 0.15
+          "default": 0.09
         }
       },
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 3000
+          "default": 2000
         }
       }
     },
@@ -3828,7 +3841,7 @@
       "price": {
         "type": "relative",
         "schedule": {
-          "default": 0.08
+          "default": 0.048
         }
       },
       "demand": {
@@ -3846,7 +3859,7 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 6000
+          "default": 3500
         }
       }
     },
@@ -3920,13 +3933,13 @@
       "moistureContent": {
         "type": "absolute",
         "schedule": {
-          "default": -0.1
+          "default": -0.06
         }
       },
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 4000
+          "default": 2500
         }
       }
     },
@@ -3968,7 +3981,7 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 7000
+          "default": 4000
         }
       },
       "odorComplaints": {
@@ -4036,7 +4049,7 @@
       "energyIntensity": {
         "type": "relative",
         "schedule": {
-          "default": -0.25
+          "default": -0.15
         }
       },
       "carbonFootprint": {
@@ -4048,7 +4061,7 @@
       "otherIncome": {
         "type": "absolute",
         "schedule": {
-          "default": 6000
+          "default": 3500
         }
       }
     },
@@ -4090,13 +4103,13 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 5000
+          "default": 3000
         }
       },
       "processLoss": {
         "type": "absolute",
         "schedule": {
-          "default": -0.04
+          "default": -0.024
         }
       },
       "breakdowns": {
@@ -4153,13 +4166,13 @@
       "capacityUtilization": {
         "type": "relative",
         "schedule": {
-          "default": 0.12
+          "default": 0.072
         }
       },
       "nutrientConsistency": {
         "type": "absolute",
         "schedule": {
-          "default": -0.08
+          "default": -0.048
         }
       },
       "contaminationRisk": {
@@ -4293,7 +4306,7 @@
       "supplySecurity": {
         "type": "relative",
         "schedule": {
-          "default": 0.1
+          "default": 0.06
         }
       },
       "cash": {
@@ -4435,7 +4448,7 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 9000
+          "default": 5500
         }
       },
       "cash": {
@@ -4508,7 +4521,7 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 4000
+          "default": 2500
         }
       },
       "cash": {
@@ -4570,7 +4583,7 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 10000
+          "default": 6000
         }
       },
       "cash": {
@@ -4649,7 +4662,7 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 15000
+          "default": 9000
         }
       },
       "cash": {
@@ -4743,13 +4756,13 @@
       "materialCostPerTon": {
         "type": "relative",
         "schedule": {
-          "default": -0.06
+          "default": -0.036
         }
       },
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 3000
+          "default": 2000
         }
       }
     },
@@ -4791,7 +4804,7 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "1": 80000,
+          "1": 56000,
           "default": 0
         }
       },
@@ -4869,7 +4882,7 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "1": 120000,
+          "1": 84000,
           "default": 0
         }
       },
@@ -5094,7 +5107,7 @@
       "price": {
         "type": "relative",
         "schedule": {
-          "1": 0.1,
+          "1": 0.06,
           "default": 0
         }
       },
@@ -5176,13 +5189,13 @@
       "processingLevel": {
         "type": "absolute",
         "schedule": {
-          "default": 0.12
+          "default": 0.072
         }
       },
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 6000
+          "default": 3500
         }
       }
     },
@@ -5231,13 +5244,13 @@
       "processLoss": {
         "type": "absolute",
         "schedule": {
-          "default": -0.02
+          "default": -0.012
         }
       },
       "logisticsCostPerTon": {
         "type": "relative",
         "schedule": {
-          "default": -0.05
+          "default": -0.03
         }
       }
     },
@@ -5286,13 +5299,13 @@
       "supplySecurity": {
         "type": "relative",
         "schedule": {
-          "default": 0.06
+          "default": 0.036
         }
       },
       "logisticsCostPerTon": {
         "type": "relative",
         "schedule": {
-          "default": -0.05
+          "default": -0.03
         }
       }
     },
@@ -5341,13 +5354,13 @@
       "price": {
         "type": "relative",
         "schedule": {
-          "default": 0.1
+          "default": 0.06
         }
       },
       "energyIntensity": {
         "type": "relative",
         "schedule": {
-          "default": 0.1
+          "default": 0.06
         }
       }
     },
@@ -5396,7 +5409,7 @@
       "nutrientConsistency": {
         "type": "absolute",
         "schedule": {
-          "default": 0.06
+          "default": 0.036
         }
       },
       "scrutiny": {
@@ -5457,7 +5470,7 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 7500
+          "default": 4500
         }
       }
     },
@@ -5500,13 +5513,13 @@
       "staffCost": {
         "type": "absolute",
         "schedule": {
-          "default": 6750
+          "default": 4000
         }
       },
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -10
         }
       },
       "breakdowns": {
@@ -5555,7 +5568,7 @@
       "supplySecurity": {
         "type": "relative",
         "schedule": {
-          "default": 0.07
+          "default": 0.042
         }
       },
       "demand": {
@@ -5611,7 +5624,7 @@
       "price": {
         "type": "relative",
         "schedule": {
-          "default": 0.12
+          "default": 0.072
         }
       },
       "intangibleAssets": {
@@ -5623,7 +5636,7 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 7500
+          "default": 4500
         }
       }
     },
@@ -5666,7 +5679,7 @@
       "nutrientConsistency": {
         "type": "absolute",
         "schedule": {
-          "default": 0.07
+          "default": 0.042
         }
       },
       "intangibleAssets": {
@@ -5722,7 +5735,7 @@
       "energyIntensity": {
         "type": "relative",
         "schedule": {
-          "default": -0.08
+          "default": -0.048
         }
       },
       "carbonFootprint": {
@@ -5784,13 +5797,13 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -10
         }
       },
       "demand": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 12
         }
       },
       "cash": {
@@ -5846,7 +5859,7 @@
       "processingLevel": {
         "type": "absolute",
         "schedule": {
-          "default": 0.09
+          "default": 0.054
         }
       },
       "cash": {
@@ -5896,13 +5909,13 @@
       "demand": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 16
         }
       },
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 6250
+          "default": 4000
         }
       },
       "cash": {
@@ -5952,19 +5965,19 @@
       "demand": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 12
         }
       },
       "price": {
         "type": "relative",
         "schedule": {
-          "default": -0.05
+          "default": -0.03
         }
       },
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 6000
+          "default": 3500
         }
       }
     },
@@ -6007,7 +6020,7 @@
       "installedCapacity": {
         "type": "relative",
         "schedule": {
-          "default": 0.1
+          "default": 0.06
         }
       },
       "assets": {
@@ -6069,13 +6082,13 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -12
         }
       },
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 6250
+          "default": 4000
         }
       }
     },
@@ -6118,7 +6131,7 @@
       "moistureContent": {
         "type": "absolute",
         "schedule": {
-          "default": -0.04
+          "default": -0.024
         }
       },
       "breakdowns": {
@@ -6179,7 +6192,7 @@
       "logisticsCostPerTon": {
         "type": "relative",
         "schedule": {
-          "default": -0.05
+          "default": -0.03
         }
       },
       "cash": {
@@ -6229,13 +6242,13 @@
       "staffCost": {
         "type": "absolute",
         "schedule": {
-          "default": 7250
+          "default": 4500
         }
       },
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -10
         }
       },
       "breakdowns": {
@@ -6290,7 +6303,7 @@
       "processLoss": {
         "type": "absolute",
         "schedule": {
-          "default": -0.02
+          "default": -0.012
         }
       },
       "intangibleAssets": {
@@ -6345,7 +6358,7 @@
       "price": {
         "type": "relative",
         "schedule": {
-          "default": 0.1
+          "default": 0.06
         }
       },
       "cash": {
@@ -6468,7 +6481,7 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "default": 124000
+          "default": 87000
         }
       },
       "assets": {
@@ -6607,7 +6620,7 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "default": 113000
+          "default": 79000
         }
       },
       "reserves": {
@@ -6680,7 +6693,7 @@
       "staffCost": {
         "type": "absolute",
         "schedule": {
-          "default": -9250
+          "default": -5500
         }
       },
       "scrutiny": {
@@ -6830,7 +6843,7 @@
       "price": {
         "type": "relative",
         "schedule": {
-          "default": 0.23
+          "default": 0.138
         }
       }
     },
@@ -6890,7 +6903,7 @@
       "supplySecurity": {
         "type": "relative",
         "schedule": {
-          "default": 0.12
+          "default": 0.072
         }
       },
       "cash": {
@@ -7036,7 +7049,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -18
         }
       },
       "cash": {
@@ -7115,7 +7128,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -12
         }
       }
     },
@@ -7175,7 +7188,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -18
         }
       },
       "cash": {
@@ -7248,7 +7261,7 @@
       "staffCost": {
         "type": "absolute",
         "schedule": {
-          "default": -10000
+          "default": -6000
         }
       },
       "scrutiny": {
@@ -7398,7 +7411,7 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -12
         }
       },
       "cash": {
@@ -7471,7 +7484,7 @@
       "supplySecurity": {
         "type": "relative",
         "schedule": {
-          "default": 0.15
+          "default": 0.09
         }
       },
       "scrutiny": {
@@ -7537,7 +7550,7 @@
       "supplySecurity": {
         "type": "relative",
         "schedule": {
-          "default": 0.14
+          "default": 0.084
         }
       },
       "demand": {
@@ -7609,7 +7622,7 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "default": 101000
+          "default": 71000
         }
       },
       "debt": {
@@ -7682,7 +7695,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -10
         }
       },
       "outrage": {
@@ -7833,7 +7846,7 @@
       "price": {
         "type": "relative",
         "schedule": {
-          "default": 0.2
+          "default": 0.12
         }
       }
     },
@@ -7893,13 +7906,13 @@
       "supplySecurity": {
         "type": "relative",
         "schedule": {
-          "default": 0.13
+          "default": 0.078
         }
       },
       "price": {
         "type": "relative",
         "schedule": {
-          "default": 0.25
+          "default": 0.15
         }
       },
       "cash": {
@@ -8920,7 +8933,7 @@
       "price": {
         "type": "relative",
         "schedule": {
-          "default": 0.38
+          "default": 0.228
         }
       },
       "scrutiny": {
@@ -8999,7 +9012,7 @@
       "supplySecurity": {
         "type": "relative",
         "schedule": {
-          "default": 0.25
+          "default": 0.15
         }
       },
       "cash": {
@@ -9066,13 +9079,13 @@
       "nutrientConsistency": {
         "type": "absolute",
         "schedule": {
-          "default": 0.2
+          "default": 0.12
         }
       },
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -15
         }
       },
       "outrage": {
@@ -9211,7 +9224,7 @@
       "price": {
         "type": "relative",
         "schedule": {
-          "default": 0.4
+          "default": 0.24
         }
       },
       "demand": {
@@ -9283,7 +9296,7 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "default": 164000
+          "default": 115000
         }
       },
       "assets": {
@@ -9435,13 +9448,13 @@
       "supplySecurity": {
         "type": "relative",
         "schedule": {
-          "default": 0.22
+          "default": 0.132
         }
       },
       "price": {
         "type": "relative",
         "schedule": {
-          "default": 0.43
+          "default": 0.258
         }
       },
       "scrutiny": {
@@ -9514,13 +9527,13 @@
       "staffCost": {
         "type": "absolute",
         "schedule": {
-          "default": 7500
+          "default": 4500
         }
       },
       "capacityUtilization": {
         "type": "relative",
         "schedule": {
-          "default": 0.1
+          "default": 0.06
         }
       }
     },
@@ -9563,13 +9576,13 @@
       "logisticsCostPerTon": {
         "type": "relative",
         "schedule": {
-          "default": -0.06
+          "default": -0.036
         }
       },
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 5750
+          "default": 3500
         }
       }
     },
@@ -9612,19 +9625,19 @@
       "demand": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 10
         }
       },
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -6
         }
       },
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 6000
+          "default": 3500
         }
       }
     },
@@ -9667,13 +9680,13 @@
       "price": {
         "type": "relative",
         "schedule": {
-          "default": -0.04
+          "default": -0.024
         }
       },
       "demand": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 14
         }
       }
     },
@@ -9716,13 +9729,13 @@
       "demand": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 12
         }
       },
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 6750
+          "default": 4000
         }
       }
     },
@@ -9765,13 +9778,19 @@
       "nutrientConsistency": {
         "type": "absolute",
         "schedule": {
-          "default": 0.07
+          "default": 0.042
         }
       },
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 7250
+          "default": 4500
+        }
+      },
+      "processLoss": {
+        "type": "absolute",
+        "schedule": {
+          "default": -0.02
         }
       }
     },
@@ -9820,7 +9839,13 @@
       "staffCost": {
         "type": "absolute",
         "schedule": {
-          "default": 7000
+          "default": 4000
+        }
+      },
+      "logisticsCostPerTon": {
+        "type": "relative",
+        "schedule": {
+          "default": -0.03
         }
       }
     },
@@ -9869,7 +9894,13 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 6000
+          "default": 3500
+        }
+      },
+      "outrage": {
+        "type": "absolute",
+        "schedule": {
+          "default": -8
         }
       }
     },
@@ -9912,7 +9943,7 @@
       "staffCost": {
         "type": "absolute",
         "schedule": {
-          "default": 5750
+          "default": 3500
         }
       },
       "breakdowns": {
@@ -9924,7 +9955,7 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -8
         }
       }
     },
@@ -9967,13 +9998,13 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -8
         }
       },
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 5500
+          "default": 3500
         }
       }
     },
@@ -10016,13 +10047,13 @@
       "price": {
         "type": "relative",
         "schedule": {
-          "default": 0.12
+          "default": 0.072
         }
       },
       "capacityUtilization": {
         "type": "relative",
         "schedule": {
-          "default": -0.08
+          "default": -0.048
         }
       }
     },
@@ -10065,13 +10096,13 @@
       "logisticsCostPerTon": {
         "type": "relative",
         "schedule": {
-          "default": -0.06
+          "default": -0.036
         }
       },
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 7750
+          "default": 4500
         }
       }
     },
@@ -10114,19 +10145,25 @@
       "energyIntensity": {
         "type": "relative",
         "schedule": {
-          "default": -0.09
+          "default": -0.054
         }
       },
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 5750
+          "default": 3500
         }
       },
       "cash": {
         "type": "absolute",
         "schedule": {
           "default": -30000
+        }
+      },
+      "materialCostPerTon": {
+        "type": "relative",
+        "schedule": {
+          "default": -0.02
         }
       }
     },
@@ -10170,13 +10207,19 @@
       "moistureContent": {
         "type": "absolute",
         "schedule": {
-          "default": -0.03
+          "default": -0.018
         }
       },
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 6500
+          "default": 4000
+        }
+      },
+      "processLoss": {
+        "type": "absolute",
+        "schedule": {
+          "default": -0.015
         }
       }
     },
@@ -10219,13 +10262,13 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -8
         }
       },
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 6750
+          "default": 4000
         }
       }
     },
@@ -10268,13 +10311,13 @@
       "processLoss": {
         "type": "absolute",
         "schedule": {
-          "default": -0.02
+          "default": -0.012
         }
       },
       "staffCost": {
         "type": "absolute",
         "schedule": {
-          "default": 6250
+          "default": 4000
         }
       }
     },
@@ -10317,19 +10360,19 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -8
         }
       },
       "demand": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 8
         }
       },
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 5500
+          "default": 3500
         }
       }
     },
@@ -10378,13 +10421,19 @@
       "energyIntensity": {
         "type": "relative",
         "schedule": {
-          "default": -0.08
+          "default": -0.048
         }
       },
       "cash": {
         "type": "absolute",
         "schedule": {
           "default": -32000
+        }
+      },
+      "logisticsCostPerTon": {
+        "type": "relative",
+        "schedule": {
+          "default": -0.03
         }
       }
     },
@@ -10428,13 +10477,19 @@
       "nutrientConsistency": {
         "type": "absolute",
         "schedule": {
-          "default": 0.08
+          "default": 0.048
         }
       },
       "staffCost": {
         "type": "absolute",
         "schedule": {
-          "default": 6000
+          "default": 3500
+        }
+      },
+      "processLoss": {
+        "type": "absolute",
+        "schedule": {
+          "default": -0.02
         }
       }
     },
@@ -10477,13 +10532,13 @@
       "supplySecurity": {
         "type": "relative",
         "schedule": {
-          "default": 0.07
+          "default": 0.042
         }
       },
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 7500
+          "default": 4500
         }
       }
     },
@@ -10532,7 +10587,13 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 5500
+          "default": 3500
+        }
+      },
+      "processLoss": {
+        "type": "absolute",
+        "schedule": {
+          "default": -0.015
         }
       }
     },
@@ -10575,13 +10636,13 @@
       "staffCost": {
         "type": "absolute",
         "schedule": {
-          "default": -4500
+          "default": -2500
         }
       },
       "capacityUtilization": {
         "type": "relative",
         "schedule": {
-          "default": -0.07
+          "default": -0.042
         }
       }
     },
@@ -10624,13 +10685,13 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -6
         }
       },
       "demand": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 10
         }
       }
     },
@@ -10673,13 +10734,13 @@
       "demand": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 12
         }
       },
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 6750
+          "default": 4000
         }
       },
       "cash": {
@@ -10729,7 +10790,7 @@
       "price": {
         "type": "relative",
         "schedule": {
-          "default": 0.23
+          "default": 0.138
         }
       },
       "demand": {
@@ -10795,7 +10856,7 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "default": 113000
+          "default": 79000
         }
       },
       "outrage": {
@@ -10807,6 +10868,16 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
+          "default": 0
+        }
+      },
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0,
+          "2": 5500,
+          "3": 5500,
+          "4": 5500,
           "default": 0
         }
       }
@@ -10868,13 +10939,13 @@
       "demand": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 14
         }
       },
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 8
         }
       },
       "scrutiny": {
@@ -10940,12 +11011,22 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "default": 124000
+          "default": 87000
         }
       },
       "outrage": {
         "type": "absolute",
         "schedule": {
+          "default": 0
+        }
+      },
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0,
+          "2": 6000,
+          "3": 6000,
+          "4": 6000,
           "default": 0
         }
       }
@@ -11007,7 +11088,7 @@
       "demand": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 16
         }
       },
       "scrutiny": {
@@ -11080,13 +11161,13 @@
       "nutrientConsistency": {
         "type": "absolute",
         "schedule": {
-          "default": 0.12
+          "default": 0.072
         }
       },
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -12
         }
       },
       "contaminationRisk": {
@@ -11152,12 +11233,22 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "default": 106000
+          "default": 74000
         }
       },
       "outrage": {
         "type": "absolute",
         "schedule": {
+          "default": 0
+        }
+      },
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0,
+          "2": 5000,
+          "3": 5000,
+          "4": 5000,
           "default": 0
         }
       }
@@ -11219,7 +11310,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -15
         }
       },
       "cash": {
@@ -11292,7 +11383,7 @@
       "supplySecurity": {
         "type": "relative",
         "schedule": {
-          "default": 0.15
+          "default": 0.09
         }
       },
       "scrutiny": {
@@ -11359,7 +11450,7 @@
       "staffCost": {
         "type": "absolute",
         "schedule": {
-          "default": -8750
+          "default": -5000
         }
       },
       "outrage": {
@@ -11431,7 +11522,7 @@
       "staffCost": {
         "type": "absolute",
         "schedule": {
-          "default": -8250
+          "default": -5000
         }
       },
       "outrage": {
@@ -11503,13 +11594,13 @@
       "demand": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 8
         }
       },
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 6
         }
       }
     },
@@ -11569,7 +11660,7 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "default": 103000
+          "default": 72000
         }
       },
       "outrage": {
@@ -11581,6 +11672,16 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
+          "default": 0
+        }
+      },
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0,
+          "2": 5000,
+          "3": 5000,
+          "4": 5000,
           "default": 0
         }
       }
@@ -11642,7 +11743,7 @@
       "materialCostPerTon": {
         "type": "relative",
         "schedule": {
-          "default": -0.09
+          "default": -0.054
         }
       },
       "contaminationRisk": {
@@ -11714,7 +11815,7 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "default": 109000
+          "default": 76000
         }
       },
       "scrutiny": {
@@ -11726,6 +11827,16 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
+          "default": 0
+        }
+      },
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0,
+          "2": 5000,
+          "3": 5000,
+          "4": 5000,
           "default": 0
         }
       }
@@ -11787,7 +11898,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -15
         }
       },
       "cash": {
@@ -11846,7 +11957,7 @@
   {
     "decision": "Astroturfed Regulatory Comment Drive",
     "level": "Operational",
-    "description": "Flood a public regulatory comment period with form letters from fictitious \"concerned locals\".",
+    "description": "Flood a public regulatory comment period with form letters from fictitious \"concerned locals\", manufacturing the appearance of grassroots support to quiet public backlash.",
     "nature": "Grey Area",
     "offensiveAction": false,
     "excludes": [],
@@ -11866,7 +11977,7 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -12
         }
       }
     },
@@ -11927,7 +12038,7 @@
       "price": {
         "type": "relative",
         "schedule": {
-          "default": 0.2
+          "default": 0.12
         }
       },
       "demand": {
@@ -11999,7 +12110,7 @@
       "price": {
         "type": "relative",
         "schedule": {
-          "default": 0.2
+          "default": 0.12
         }
       },
       "outrage": {
@@ -12071,7 +12182,7 @@
       "staffCost": {
         "type": "absolute",
         "schedule": {
-          "default": -9500
+          "default": -5500
         }
       },
       "outrage": {
@@ -12137,13 +12248,13 @@
       "demand": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 14
         }
       },
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 8
         }
       }
     },
@@ -12203,13 +12314,13 @@
       "materialCostPerTon": {
         "type": "relative",
         "schedule": {
-          "default": -0.1
+          "default": -0.06
         }
       },
       "nutrientConsistency": {
         "type": "absolute",
         "schedule": {
-          "default": -0.04
+          "default": -0.024
         }
       },
       "scrutiny": {
@@ -12275,12 +12386,22 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "default": 119000
+          "default": 83000
         }
       },
       "scrutiny": {
         "type": "absolute",
         "schedule": {
+          "default": 0
+        }
+      },
+      "operatingExpenses": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0,
+          "2": 5500,
+          "3": 5500,
+          "4": 5500,
           "default": 0
         }
       }
@@ -13925,13 +14046,13 @@
       "materialCostPerTon": {
         "type": "relative",
         "schedule": {
-          "default": -0.04
+          "default": -0.024
         }
       },
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 5750
+          "default": 3500
         }
       },
       "cash": {
@@ -14048,7 +14169,7 @@
       "operatingExpenses": {
         "type": "absolute",
         "schedule": {
-          "default": 6000
+          "default": 3500
         }
       }
     },
@@ -14092,7 +14213,7 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "default": 97000
+          "default": 68000
         }
       },
       "intangibleAssets": {
@@ -14165,7 +14286,7 @@
       "price": {
         "type": "relative",
         "schedule": {
-          "default": 0.23
+          "default": 0.138
         }
       },
       "debt": {
@@ -14237,7 +14358,7 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "default": 102000
+          "default": 71000
         }
       },
       "debt": {
@@ -14310,7 +14431,7 @@
       "price": {
         "type": "relative",
         "schedule": {
-          "default": 0.37
+          "default": 0.222
         }
       },
       "scrutiny": {
@@ -14383,12 +14504,22 @@
       "cash": {
         "type": "absolute",
         "schedule": {
-          "default": 191000
+          "default": 134000
         }
       },
       "scrutiny": {
         "type": "absolute",
         "schedule": {
+          "default": 0
+        }
+      },
+      "financeCost": {
+        "type": "absolute",
+        "schedule": {
+          "1": 0,
+          "2": 15000,
+          "3": 15000,
+          "4": 15000,
           "default": 0
         }
       }

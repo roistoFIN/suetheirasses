@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Container, Paper, Title, Button, Stack, Flex, Badge, Text, Box, Slider, Loader, Center, Image,
+  Container, Paper, Title, Button, Stack, Flex, Badge, Text, Box, Slider, Loader, Center, Image, Modal,
 } from '@mantine/core';
 import { LineChart } from '@mantine/charts';
 import { IconPlayerPlay, IconPlayerPause } from '@tabler/icons-react';
@@ -11,8 +11,122 @@ import FeedbackWidget from '../components/FeedbackWidget';
 import {
   ServerEvents, ClientEvents,
   type GameTimelineResponse, type TimelineDecisionEvent, type TimelineLawsuitEvent,
-  type PlayerVariables, type PlayerDerivedStats,
+  type PlayerVariables, type PlayerDerivedStats, type DecisionDefinition,
 } from '@suethemchickens/shared';
+
+// Duplicated from GamePhase.tsx (MONEY_FIELDS/natureTone/formatFieldLabel/
+// formatImpactValue/EffectLine/summarizeEffects/likelihoodLabel) — same "duplicate small
+// pure logic, keep in sync by hand" convention this file's own header comment already
+// establishes, used here to render a decision-detail popup matching ActiveDecisionCard's
+// own content without importing GamePhase internals.
+const MONEY_FIELDS = new Set([
+  'cash', 'assets', 'intangibleAssets', 'debt', 'reserves', 'operatingExpenses',
+  'staffCost', 'materialCostPerTon', 'otherIncome', 'logisticsCostPerTon',
+]);
+
+const natureTone: Record<string, string> = { Traditional: 'green', 'Grey Area': 'yellow', Dirty: 'red' };
+
+function formatFieldLabel(field: string): string {
+  const isTarget = field.startsWith('target.');
+  const clean = isTarget ? field.slice('target.'.length) : field;
+  const spaced = clean.replace(/([A-Z])/g, ' $1').trim();
+  const label = spaced.charAt(0).toUpperCase() + spaced.slice(1);
+  return isTarget ? `Target's ${label.charAt(0).toLowerCase()}${label.slice(1)}` : label;
+}
+
+function formatImpactValue(field: string, type: 'absolute' | 'relative', value: number): string {
+  const clean = field.startsWith('target.') ? field.slice('target.'.length) : field;
+  if (type === 'relative') {
+    const pctVal = Math.round(value * 100);
+    return `${pctVal >= 0 ? '+' : ''}${pctVal}%`;
+  }
+  if (MONEY_FIELDS.has(clean)) {
+    return `${value >= 0 ? '+' : '-'}$${Math.abs(Math.round(value)).toLocaleString()}`;
+  }
+  const rounded = Math.round(value * 100) / 100;
+  return `${rounded >= 0 ? '+' : ''}${rounded}`;
+}
+
+interface EffectLine {
+  field: string;
+  timeline: string;
+  isTarget: boolean;
+}
+
+/** See GamePhase.tsx's own `summarizeEffects` doc comment for why the trailing 'default'
+ * schedule value is labeled "Permanent" for an own field (applied once, at maturity, never
+ * re-applied — CLAUDE.md's "Root historical bug" section) vs "Every turn until Yr N" for a
+ * `target.*` field (genuinely re-applied to the victim every turn until the statute of
+ * limitations, or a successful lawsuit voids the instance first). */
+function summarizeEffects(def: DecisionDefinition, statuteOfLimitationsYears?: number): EffectLine[] {
+  const lines: EffectLine[] = [];
+  for (const [field, impact] of Object.entries(def.impacts)) {
+    const isTarget = field.startsWith('target.');
+    const keys = Object.keys(impact.schedule).filter((k) => k !== 'default').map(Number).sort((a, b) => a - b);
+    const parts: string[] = [];
+    for (const k of keys) {
+      const v = impact.schedule[k];
+      if (v === 0) continue;
+      parts.push(`Yr ${k}: ${formatImpactValue(field, impact.type, v)}`);
+    }
+    const ongoing = impact.schedule['default'];
+    if (ongoing !== undefined && ongoing !== 0) {
+      const label = isTarget
+        ? `Every turn${statuteOfLimitationsYears !== undefined ? ` until Yr ${statuteOfLimitationsYears}` : ''}`
+        : 'Permanent';
+      parts.push(`${label}: ${formatImpactValue(field, impact.type, ongoing)}`);
+    }
+    if (parts.length === 0) continue;
+    lines.push({ field: formatFieldLabel(field), timeline: parts.join(' → '), isTarget });
+  }
+  return lines;
+}
+
+/** Same "EFFECTS ON YOU" / "EFFECTS ON TARGET" grouping as GamePhase.tsx's `EffectsList`
+ * — duplicated rather than imported, same convention as everything else in this file's
+ * own header comment. */
+function EffectsList({ effects }: { effects: EffectLine[] }) {
+  const own = effects.filter((e) => !e.isTarget);
+  const target = effects.filter((e) => e.isTarget);
+  return (
+    <Stack gap={8}>
+      {own.length > 0 && (
+        <Stack gap={2}>
+          {target.length > 0 && (
+            <Text size="xs" c="dimmed" style={{ fontStyle: 'italic', textTransform: 'uppercase' }}>Effects on you</Text>
+          )}
+          {own.map((line) => (
+            <Flex key={line.field} justify="space-between" gap="xs">
+              <Text size="xs" c="dimmed">{line.field}</Text>
+              <Text size="xs" fw={700}>{line.timeline}</Text>
+            </Flex>
+          ))}
+        </Stack>
+      )}
+      {target.length > 0 && (
+        <Stack gap={2}>
+          <Text size="xs" c="orange" style={{ fontStyle: 'italic', textTransform: 'uppercase' }}>Effects on target</Text>
+          {target.map((line) => (
+            <Flex key={line.field} justify="space-between" gap="xs">
+              <Text size="xs" c="dimmed">{line.field}</Text>
+              <Text size="xs" fw={700}>{line.timeline}</Text>
+            </Flex>
+          ))}
+        </Stack>
+      )}
+    </Stack>
+  );
+}
+
+/** 5-band verbal likelihood — same bands as GamePhase.tsx's own, deliberately not an exact
+ * percentage (see CLAUDE.md's case-probability-chip section on why). */
+function likelihoodLabel(p: number): string {
+  if (p >= 0.8) return 'Highly Likely';
+  if (p >= 0.6) return 'Likely';
+  if (p >= 0.4) return 'Moderate';
+  if (p >= 0.2) return 'Unlikely';
+  return 'Highly Unlikely';
+}
 
 // ============================================================
 // The Civilization-style game-over replay / live spectator view — one shared component
@@ -63,7 +177,7 @@ const PLAYBACK_SPEEDS = [1, 2, 4] as const;
  * being filed/resolved. Built once from a `GameTimelineResponse` (not scrub-position-
  * dependent itself); the log panel filters to `round <= scrubRound` at render time. */
 export type HappeningEntry =
-  | { id: string; type: 'decision'; round: number; playerName: string; decisionName: string; targetName?: string }
+  | { id: string; type: 'decision'; round: number; playerName: string; decisionName: string; targetName?: string; acquisitionFraction?: number }
   | { id: string; type: 'lawsuitFiled'; round: number; lawsuit: TimelineLawsuitEvent; plaintiffName: string; defendantName: string }
   | { id: string; type: 'lawsuitResolved'; round: number; lawsuit: TimelineLawsuitEvent; plaintiffName: string; defendantName: string };
 
@@ -84,6 +198,7 @@ export function buildHappenings(data: GameTimelineResponse): HappeningEntry[] {
       playerName: nameOf(d.playerId) ?? 'Unknown',
       decisionName: d.decisionName,
       targetName: nameOf(d.targetId),
+      acquisitionFraction: d.acquisitionFraction,
     });
   }
 
@@ -101,10 +216,14 @@ export function buildHappenings(data: GameTimelineResponse): HappeningEntry[] {
 
 function happeningLabel(h: HappeningEntry): string {
   switch (h.type) {
-    case 'decision':
+    case 'decision': {
+      if (h.acquisitionFraction !== undefined && h.targetName) {
+        return `${h.playerName} deployed ${h.decisionName} → ${h.targetName} (acquired ${Math.round(h.acquisitionFraction * 100)}% stake)`;
+      }
       return h.targetName
         ? `${h.playerName} deployed ${h.decisionName} → ${h.targetName}`
         : `${h.playerName} deployed ${h.decisionName}`;
+    }
     case 'lawsuitFiled':
       return `${h.plaintiffName} sued ${h.defendantName} over ${h.lawsuit.groundName}`;
     case 'lawsuitResolved': {
@@ -113,6 +232,72 @@ function happeningLabel(h: HappeningEntry): string {
       return `${h.plaintiffName} vs. ${h.defendantName} (${h.lawsuit.groundName}) — ${verdictText}`;
     }
   }
+}
+
+/** Stakes + the plaintiff's OWN known odds at the moment they sued, for a lawsuit
+ * happening (filed or resolved — both carry the same `TimelineLawsuitEvent`, and the
+ * odds are stamped once at filing time, never recomputed, so they read the same either
+ * way). Gated on `plaintiffFullyInvestigated` — the same "earned separately by each side"
+ * rule the live game already applies (see CLAUDE.md's case-probability-chip section):
+ * a plaintiff who sued on a hunch never actually knew their odds, so this shows "Unknown"
+ * for them too, not a number they never had. Pure, exported for unit testing. */
+export function lawsuitOddsAndStakes(lawsuit: TimelineLawsuitEvent): string {
+  const odds = lawsuit.plaintiffFullyInvestigated ? likelihoodLabel(lawsuit.baseProbability) : 'Unknown';
+  return `Stakes: ${fmt(lawsuit.stakes)} · Odds (plaintiff's view): ${odds}`;
+}
+
+/** The decision-detail popup's content — mirrors GamePhase.tsx's `ActiveDecisionCard`/
+ * `DecisionDetails` (description, level/nature, effects timeline, legal risks), plus this
+ * happening's own context (who deployed it, which round, who it targeted). `def` comes
+ * from `useGameStore().decisions` (the room's fixed decision deck) looked up by name —
+ * `undefined` only if an admin deleted the definition entirely mid-game, an edge case
+ * handled gracefully rather than crashing the popup. */
+function DecisionHappeningPopupContent({
+  happening,
+  def,
+  statuteOfLimitationsYears,
+}: {
+  happening: Extract<HappeningEntry, { type: 'decision' }>;
+  def?: DecisionDefinition;
+  statuteOfLimitationsYears?: number;
+}) {
+  if (!def) {
+    return <Text size="sm" c="dimmed">This decision's details are no longer available.</Text>;
+  }
+
+  const effects = summarizeEffects(def, statuteOfLimitationsYears);
+  const hasLegalRisk = !!def.legalRisks && def.legalRisks.length > 0;
+
+  return (
+    <Stack gap="sm">
+      <Flex gap={6} wrap="wrap">
+        <Badge color="gray">{def.level}</Badge>
+        <Badge color={natureTone[def.nature] ?? 'gray'}>{def.nature}</Badge>
+      </Flex>
+      <Text size="sm" c="dimmed" style={{ lineHeight: 1.4 }}>{def.description}</Text>
+      <Text size="xs" c="dimmed">
+        Deployed by {happening.playerName} in Round {happening.round}
+        {happening.targetName ? ` → ${happening.targetName}` : ''}
+        {happening.acquisitionFraction !== undefined ? ` (acquired ${Math.round(happening.acquisitionFraction * 100)}% stake)` : ''}
+      </Text>
+      {effects.length > 0 && (
+        <div style={{ padding: 8, background: '#fffdf6', border: '1px solid #ddcda0', borderRadius: 6 }}>
+          <Text size="xs" fw={700} style={{ color: 'var(--ink-text)', marginBottom: 4 }}>EFFECTS</Text>
+          <EffectsList effects={effects} />
+        </div>
+      )}
+      {hasLegalRisk && (
+        <div>
+          <Text size="xs" fw={700} c="orange" style={{ marginBottom: 4 }}>⚖ LEGAL RISK</Text>
+          <Stack gap={4}>
+            {def.legalRisks!.map((r) => (
+              <Text key={r.name} size="xs" c="dimmed"><b>{r.name}</b> — {r.description}</Text>
+            ))}
+          </Stack>
+        </div>
+      )}
+    </Stack>
+  );
 }
 
 /** Ranked standings at a given scrub round, for the currently-selected metric — the
@@ -142,7 +327,7 @@ interface GameTimelineViewProps {
 }
 
 export default function GameTimelineView({ mode }: GameTimelineViewProps) {
-  const { round: liveRound, gameOver, player } = useGameStore();
+  const { round: liveRound, gameOver, player, decisions, gameSettings } = useGameStore();
   const { socket, returnToLanding } = useSocketStore();
 
   const [data, setData] = useState<GameTimelineResponse | null>(null);
@@ -152,6 +337,7 @@ export default function GameTimelineView({ mode }: GameTimelineViewProps) {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<(typeof PLAYBACK_SPEEDS)[number]>(1);
   const followLiveRef = useRef(true);
+  const [decisionPopup, setDecisionPopup] = useState<Extract<HappeningEntry, { type: 'decision' }> | null>(null);
 
   // Fetch fresh on mount and, in live mode, again whenever a new round resolves —
   // matching KpiHistoryGraph's own "fetch fresh, don't cache" convention rather than
@@ -381,7 +567,29 @@ export default function GameTimelineView({ mode }: GameTimelineViewProps) {
                       style={{ padding: '6px 10px', border: '1px solid #cbb888', borderRadius: 3, cursor: 'pointer', background: '#f6efd9' }}
                       title="Click to jump to this round"
                     >
-                      <Text size="sm">{happeningLabel(h)}</Text>
+                      {h.type === 'decision' ? (
+                        <Text size="sm">
+                          {h.playerName} deployed{' '}
+                          <Text
+                            component="span"
+                            fw={700}
+                            style={{ textDecoration: 'underline', cursor: 'pointer' }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDecisionPopup(h);
+                            }}
+                            title="Click for decision details"
+                          >
+                            {h.decisionName}
+                          </Text>
+                          {h.targetName ? ` → ${h.targetName}` : ''}
+                        </Text>
+                      ) : (
+                        <Stack gap={1}>
+                          <Text size="sm">{happeningLabel(h)}</Text>
+                          <Text size="xs" c="dimmed">{lawsuitOddsAndStakes(h.lawsuit)}</Text>
+                        </Stack>
+                      )}
                       <Text size="xs" c="dimmed" fw={700}>ROUND {h.round}</Text>
                     </Flex>
                   ))}
@@ -400,6 +608,26 @@ export default function GameTimelineView({ mode }: GameTimelineViewProps) {
         )}
       </Paper>
       </Container>
+
+      {/* Decision-detail popup for a "deployed X" happening — themed the same as every
+          other popup in the app (Modal + title styled with the same bold/parchment
+          convention). `decisions` (the room's fixed deck) comes from useGameStore, still
+          populated here since this view mounts without a room/store reset. */}
+      <Modal
+        opened={decisionPopup !== null}
+        onClose={() => setDecisionPopup(null)}
+        size="md"
+        centered
+        title={<Text fw={700} size="sm" style={{ fontFamily: "'Courier Prime', monospace", color: 'var(--ink-text)' }}>📋 {decisionPopup?.decisionName}</Text>}
+      >
+        {decisionPopup && (
+          <DecisionHappeningPopupContent
+            happening={decisionPopup}
+            def={decisions.find((d) => d.decision === decisionPopup.decisionName)}
+            statuteOfLimitationsYears={gameSettings?.statuteOfLimitationsYears}
+          />
+        )}
+      </Modal>
     </>
   );
 }

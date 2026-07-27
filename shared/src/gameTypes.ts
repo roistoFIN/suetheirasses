@@ -113,6 +113,51 @@ export interface GameSettings {
    * `addBotPlayer` in server/src/socket/gameEngine.ts. Admin-editable so bot-spawning can be
    * disabled globally without a deploy. */
   enableBotPlayers: boolean;
+  /** Round number at/after which the late-game escalation multipliers below kick in.
+   * Added after a randomized-simulation finding: with informed (dig-then-sue) players,
+   * median game length is a reasonable ~11 rounds, but ~12% of games dragged all the way to
+   * the round cap — a fat tail, not a slow median, caused by elimination relying almost
+   * entirely on lawsuit-driven bankruptcy (96% of eliminations vs 4% hostile-takeover
+   * merger in that same run) with no reliable second path once two evenly-matched survivors
+   * reach a standoff. Deliberately gated to a round threshold near the P75 of that
+   * distribution, not applied from round 1, so a typical/median game is completely
+   * unaffected and only a game already running long gets a push toward resolution. See
+   * CLAUDE.md's "Late-game escalation" section. */
+  lateGameRoundThreshold: number;
+  /** Multiplier applied to a lawsuit's `baseProbability` once `round >= lateGameRoundThreshold`
+   * (final result still capped at 0.95 — never a guaranteed win). Applied in
+   * `GameLoop.resolveTurn`'s Step 8, after `LegalEngine.fileLawsuit` returns — a genuinely
+   * hopeless case (wrong guess/time-barred, `baseProbability` 0) stays 0 regardless, since
+   * multiplying zero is a no-op. */
+  lateGameLegalProbabilityBoost: number;
+  /** Multiplier applied to a lawsuit's `stakes` once `round >= lateGameRoundThreshold` —
+   * makes a late-game loss more financially dangerous on top of being more likely, so
+   * litigation stays a credible threat against an entrenched leader instead of the target's
+   * accumulated cash cushion outpacing what any single case can take. */
+  lateGameLegalStakesBoost: number;
+  /** Multiplier applied to a Buy Shares purchase's effective buying power (spend, for the
+   * purpose of computing shares acquired — NOT the actual cash paid) once
+   * `round >= lateGameRoundThreshold`. Gives a cash-rich survivor a real way to force a
+   * stalled lawsuit standoff to a close via hostile takeover instead, without changing
+   * early/mid-game buyout economics at all. */
+  lateGameTakeoverBoost: number;
+  /** Fraction of an eliminated company's cash that's lost to "integration costs" rather
+   * than transferred to the acquirer on a majority-ownership takeover (`GameLoop.
+   * resolveTurn`'s merger branch) — a genuine cash sink, not a redistribution: this
+   * portion simply leaves the game rather than crediting anyone. Added alongside the
+   * progressive tax surcharge and Excess Dividend's repurposing as one of several
+   * deliberate wealth sinks — without one, hostile takeover was a second, unlimited
+   * wealth-CONCENTRATION mechanism (100% pass-through) on top of the cash-growth problem
+   * documented elsewhere, working directly against every other sink. Does NOT apply to
+   * assets/intangibleAssets, which the acquirer still inherits in full. */
+  mergerIntegrationCostRate: number;
+  /** Fraction of the payer's OWN current cash added on top of the flat `digDeeperCost`/
+   * `lawsuitFilingCost` base when charging those fees (`GameLoop.digDeeper`/
+   * `chargeLawsuitFilingFee`/`digDeeperOnCase`) — a wealth-scaled surcharge so litigation
+   * costs a rich player real money in absolute terms, not just the same flat fee a
+   * round-1 player pays. Another deliberate cash sink: the surcharge portion is never
+   * credited to anyone, it just leaves the game. */
+  wealthScaledFeeRate: number;
 }
 
 export interface PlayerStartingValues {
@@ -276,6 +321,18 @@ export interface SubmittedLawsuitEntry {
   targetId: string;
   decisionName: string;
   groundName: string;
+  /** The specific attacking decision instance this filing came from (an incoming-attack
+   * hint's `IncomingAttackInfo.attackId`) — set when filing originates from a hint card's
+   * "Sue Now" (the plaintiff has a specific instance in mind, already possibly
+   * investigated), left `undefined` for a general SueModal filing over any ground on a
+   * hunch (no specific instance in mind by design — see README's *"SUE THEM CHICKENS"*
+   * section). When present, `LegalEngine.fileLawsuit` matches the target's active
+   * decisions by this id first, falling back to `decisionName` only if absent/not found —
+   * without this, a target with two live, un-sued instances of the same decision (a
+   * normal, intended state — stacking a permanent-effect decision is explicitly allowed)
+   * could have a filing silently attach to the WRONG instance, letting the one the
+   * plaintiff actually investigated dodge `everSued` forever. See CLAUDE.md. */
+  attackId?: string;
 }
 
 /** Payload for the `game:submitDecisions` socket event — one player's choices for the turn. */
@@ -476,6 +533,14 @@ export interface TurnResolutionResult {
   players: PlayerTurnResult[];
   gameOver: boolean;
   winnerId?: string;
+  /** True only for `GameLoop.getInitialSnapshot`'s always-empty, no-decisions-yet
+   * broadcast — sent once, at `room:startGame`, carrying the SAME round number (1) that
+   * round 1's real `resolveTurn` result will carry once it actually resolves. Lets the
+   * client tell "the empty starting snapshot" apart from "the real resolution," which
+   * would otherwise collide under a round-number-only dedup key — see
+   * GamePhase.tsx's `processedTurnKeyRef` doc comment. Never set (undefined/falsy) on a
+   * real `resolveTurn` result. */
+  isInitialSnapshot?: boolean;
 }
 
 // ============================================================
@@ -549,6 +614,10 @@ export interface TimelineDecisionEvent {
   deployedYear: number;
   targetId?: string;
   voidedByLawsuit: boolean;
+  /** For a Buy Shares instance only — see `DeployedDecision.acquisitionFraction`. The
+   * fraction of the WHOLE target company acquired in this one purchase, not the buyer's
+   * resulting total stake — same value/meaning as `SharesBoughtEvent.fractionBought`. */
+  acquisitionFraction?: number;
 }
 
 /** One lawsuit's full lifecycle, for the timeline's "happenings" log — sourced from the
@@ -565,6 +634,14 @@ export interface TimelineLawsuitEvent {
   groundName: string;
   description: string;
   stakes: number;
+  /** Stamped once at filing time from `LegalCaseData.baseProbability`/
+   * `plaintiffFullyInvestigated` — the plaintiff's OWN known odds at the moment they sued,
+   * never recomputed afterward. Only meaningful when `plaintiffFullyInvestigated` is true;
+   * a wrong guess/time-barred filing also has `baseProbability: 0` but that's "hopeless,"
+   * not "known" — gate display on `plaintiffFullyInvestigated`, same as everywhere else
+   * this flag is used (see CLAUDE.md's case-probability-chip section). */
+  baseProbability: number;
+  plaintiffFullyInvestigated: boolean;
   filedRound: number;
   resolvedRound?: number;
   verdict?: 'won' | 'lost' | 'settled' | 'cancelled';

@@ -173,6 +173,62 @@ function getDecisionSortValue(def: MinimalDecisionDefForSort, field: string): nu
   return impact.schedule[1] ?? impact.schedule['default'] ?? 0;
 }
 
+// ── Decision effects summary (DecisionDetails/DecisionCard "EFFECTS" panel) — per-field
+// "when it starts / how long it lasts" timeline, split into "effects on you" vs "effects
+// on target" for a decision deployed against a chosen opponent ──
+
+const EFFECTS_MONEY_FIELDS = new Set([
+  'cash', 'assets', 'intangibleAssets', 'debt', 'reserves', 'operatingExpenses',
+  'staffCost', 'materialCostPerTon', 'otherIncome', 'logisticsCostPerTon',
+]);
+
+function formatImpactValue(field: string, type: 'absolute' | 'relative', value: number): string {
+  const clean = field.startsWith('target.') ? field.slice('target.'.length) : field;
+  if (type === 'relative') {
+    const pctVal = Math.round(value * 100);
+    return `${pctVal >= 0 ? '+' : ''}${pctVal}%`;
+  }
+  if (EFFECTS_MONEY_FIELDS.has(clean)) {
+    return `${value >= 0 ? '+' : '-'}$${Math.abs(Math.round(value)).toLocaleString()}`;
+  }
+  const rounded = Math.round(value * 100) / 100;
+  return `${rounded >= 0 ? '+' : ''}${rounded}`;
+}
+
+interface EffectLine {
+  field: string;
+  timeline: string;
+  isTarget: boolean;
+}
+
+interface MinimalDecisionDefForEffects {
+  impacts: Record<string, { type: 'absolute' | 'relative'; schedule: Record<number | string, number> }>;
+}
+
+function summarizeEffects(def: MinimalDecisionDefForEffects, statuteOfLimitationsYears?: number): EffectLine[] {
+  const lines: EffectLine[] = [];
+  for (const [field, impact] of Object.entries(def.impacts)) {
+    const isTarget = field.startsWith('target.');
+    const keys = Object.keys(impact.schedule).filter((k) => k !== 'default').map(Number).sort((a, b) => a - b);
+    const parts: string[] = [];
+    for (const k of keys) {
+      const v = impact.schedule[k];
+      if (v === 0) continue;
+      parts.push(`Yr ${k}: ${formatImpactValue(field, impact.type, v)}`);
+    }
+    const ongoing = impact.schedule['default'];
+    if (ongoing !== undefined && ongoing !== 0) {
+      const label = isTarget
+        ? `Every turn${statuteOfLimitationsYears !== undefined ? ` until Yr ${statuteOfLimitationsYears}` : ''}`
+        : 'Permanent';
+      parts.push(`${label}: ${formatImpactValue(field, impact.type, ongoing)}`);
+    }
+    if (parts.length === 0) continue;
+    lines.push({ field: formatFieldLabel(field), timeline: parts.join(' → '), isTarget });
+  }
+  return lines;
+}
+
 // ── "Active Decisions" box filter/sort ───────────────────────────────────
 
 interface MinimalDecisionDefForPermanence {
@@ -996,6 +1052,68 @@ describe('GamePhase utilities', () => {
     it('should return 0 when neither an explicit year-1 nor a default value exists', () => {
       const def: MinimalDecisionDefForSort = { impacts: { cash: { schedule: { 2: -100 } } } };
       expect(getDecisionSortValue(def, 'cash')).toBe(0);
+    });
+  });
+
+  describe('summarizeEffects', () => {
+    // Regression coverage for a real, reported complaint: "almost all say ongoing and
+    // it's not clear how long they are ongoing" — the old flat "Ongoing: X" label meant
+    // two very different things depending on which kind of field it was attached to (see
+    // GamePhase.tsx's own summarizeEffects doc comment for the underlying engine
+    // behavior), and effects on the deploying player weren't visually separated from
+    // effects on a chosen opponent.
+
+    it('labels an own field\'s explicit-year value as "Yr N", unrelated to the "Permanent"/"Every turn" distinction', () => {
+      const def: MinimalDecisionDefForEffects = { impacts: { cash: { type: 'absolute', schedule: { 1: -100000 } } } };
+      const lines = summarizeEffects(def);
+      expect(lines).toEqual([{ field: 'Cash', timeline: 'Yr 1: -$100,000', isTarget: false }]);
+    });
+
+    it('labels an own field\'s default-only value "Permanent" — it applies once, at maturity, and is never re-applied (see GameLoop.advanceAndApply)', () => {
+      const def: MinimalDecisionDefForEffects = { impacts: { installedCapacity: { type: 'relative', schedule: { default: 0.15 } } } };
+      const lines = summarizeEffects(def);
+      expect(lines).toEqual([{ field: 'Installed Capacity', timeline: 'Permanent: +15%', isTarget: false }]);
+    });
+
+    it('chains an own field\'s explicit years and its final "Permanent" default in one timeline', () => {
+      const def: MinimalDecisionDefForEffects = { impacts: { operatingExpenses: { type: 'absolute', schedule: { 1: -20000, 2: -20000, default: -5000 } } } };
+      const lines = summarizeEffects(def);
+      expect(lines[0].timeline).toBe('Yr 1: -$20,000 → Yr 2: -$20,000 → Permanent: -$5,000');
+    });
+
+    it('labels a target field\'s default-only value "Every turn", not "Permanent" — collectTargetImpacts genuinely re-applies it to the victim every turn', () => {
+      const def: MinimalDecisionDefForEffects = { impacts: { 'target.outrage': { type: 'absolute', schedule: { default: -8 } } } };
+      const lines = summarizeEffects(def);
+      expect(lines).toEqual([{ field: "Target's outrage", timeline: 'Every turn: -8', isTarget: true }]);
+    });
+
+    it('appends "until Yr N" to a target field\'s recurring label when statuteOfLimitationsYears is supplied', () => {
+      const def: MinimalDecisionDefForEffects = { impacts: { 'target.scrutiny': { type: 'absolute', schedule: { default: -5 } } } };
+      const lines = summarizeEffects(def, 10);
+      expect(lines[0].timeline).toBe('Every turn until Yr 10: -5');
+    });
+
+    it('omits the "until Yr N" qualifier when statuteOfLimitationsYears is not supplied (e.g. the Decision Deck before gameSettings has loaded)', () => {
+      const def: MinimalDecisionDefForEffects = { impacts: { 'target.scrutiny': { type: 'absolute', schedule: { default: -5 } } } };
+      const lines = summarizeEffects(def);
+      expect(lines[0].timeline).toBe('Every turn: -5');
+    });
+
+    it('marks isTarget correctly across a mix of own and target fields, so callers can group them into separate "on you" / "on target" sections', () => {
+      const def: MinimalDecisionDefForEffects = {
+        impacts: {
+          cash: { type: 'absolute', schedule: { default: -10000 } },
+          'target.demand': { type: 'absolute', schedule: { default: -6 } },
+        },
+      };
+      const lines = summarizeEffects(def);
+      expect(lines.find((l) => l.field === 'Cash')?.isTarget).toBe(false);
+      expect(lines.find((l) => l.field.startsWith("Target's"))?.isTarget).toBe(true);
+    });
+
+    it('skips a field whose entire schedule nets to zero (no explicit non-zero years, no non-zero default)', () => {
+      const def: MinimalDecisionDefForEffects = { impacts: { cash: { type: 'absolute', schedule: { 1: 0, default: 0 } } } };
+      expect(summarizeEffects(def)).toEqual([]);
     });
   });
 

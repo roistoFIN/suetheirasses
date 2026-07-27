@@ -460,8 +460,8 @@ model Feedback {
 | `room:setInviteOnly` | `{ inviteOnly }` | Host toggles whether the room can be found via Quick Play / the Available Rooms list — WAITING phase only. Never blocks a direct room-code/invite-link join. |
 | `room:startGame` | — | Host starts the game (WAITING → GAME_PHASE, round 1) |
 | `game:submitDecisions` | `{ strategic: DecisionEntry[], operational: DecisionEntry[], financial: DecisionEntry[], lawsuits: LawsuitEntry[] }` | Full replacement of this turn's pending decisions (`{ name, targetId?, amount? }` each) *and* deliberate lawsuit filings (`{ targetId, decisionName, groundName }` each — see *Lawsuits* below). `financial` is Buy Shares/Sell Shares' own decision-type category, capped independently of strategic/operational. Structural validation only — per-turn limits (max 1 strategic / 2 operational / 2 financial / 3 lawsuits) come from `game_config.json` and are enforced by `GameLoop.processNewDecisions` / `GameLoop`'s lawsuit-filing step. |
-| `game:digDeeper` | `{ attackId }` | Pay `gameSettings.digDeeperCost` ($10,000 by default) to reveal the next tier of intel on one incoming attack — instant, outside the turn-resolution cycle. See *Attack Awareness & Dig Deeper* below. |
-| `game:fileLawsuit` | `{ targetId, decisionName, groundName }` | Pay `gameSettings.lawsuitFilingCost` ($15,000 by default) the instant a lawsuit is actually filed — instant, outside the turn-resolution cycle, same pattern as `game:digDeeper`. The client still separately queues the same entry via `game:submitDecisions` for the case itself to be created at the next turn resolution. See *Lawsuits* below. |
+| `game:digDeeper` | `{ attackId }` | Pay `gameSettings.digDeeperCost` ($10,000 by default) plus a wealth-scaled surcharge (`wealthScaledFeeRate`, 3% of the payer's own current cash by default) to reveal the next tier of intel on one incoming attack — instant, outside the turn-resolution cycle. See *Attack Awareness & Dig Deeper* below. |
+| `game:fileLawsuit` | `{ targetId, decisionName, groundName }` | Pay `gameSettings.lawsuitFilingCost` ($15,000 by default) plus the same wealth-scaled surcharge the instant a lawsuit is actually filed — instant, outside the turn-resolution cycle, same pattern as `game:digDeeper`. The client still separately queues the same entry via `game:submitDecisions` for the case itself to be created at the next turn resolution. See *Lawsuits* below. |
 | `game:getAnnualReport` | `{ rivalPlayerId }` | Request AI-narrated "annual report" text for one rival's active decisions — on demand, outside the turn-resolution cycle. See *AI-Narrated Annual Reports* below. |
 | `game:getKpiHistory` | `{ targetPlayerId? }` | Request KPI history (persisted `KpiSnapshot` rows) — on demand, opened by clicking any KPI card or breakdown line item. Omitted (or equal to the caller's own id) returns "my own data" plus a 3-turn-ahead prediction; any other id in the same room returns that rival's history only, no prediction. See *KPI History & Prediction* below. |
 | `game:makeOffer` | `{ caseId, amount }` | Make (or counter) a settlement offer on a case still `'negotiating'` — instant, outside the turn-resolution cycle. Only the party who did *not* make the most recent offer may call this (the defendant, if none has been made yet). See *Lawsuits* below. |
@@ -864,10 +864,18 @@ filter chips (two independent filters, not one combined chip group), one card pe
 with its description, an **EFFECTS** panel, and a DEPLOY button. The effects panel
 answers "what does this do, when does it start, how long does it last": a maturity
 badge (`INSTANT` or `MATURES IN Nt`, from the max explicit year key across the
-decision's impact schedules) plus a per-field timeline like
-`Yr 1: -$100,000 → Yr 2: -$100,000 → Ongoing: +40%`, built client-side from the raw
-`impacts` schedules (no server round-trip). `target.*` fields are labeled `Target's …`
-to make clear they hit the chosen opponent, not the decision-maker. Clicking DEPLOY
+decision's impact schedules) plus a per-field timeline, built client-side from the raw
+`impacts` schedules (no server round-trip). The timeline's trailing schedule value is
+labeled differently depending on which kind of field it's attached to — a decision's own
+field only ever applies that value ONCE, at the turn it matures, and is never re-applied
+after (see CLAUDE.md's *"Root historical bug"* section), so it's labeled `Permanent`
+(e.g. `Yr 1: -$100,000 → Yr 2: -$100,000 → Permanent: +40%`); a `target.*` field genuinely
+re-applies that value to the chosen opponent every turn until the statute of limitations
+(or a successful lawsuit voids the instance first), so it's labeled `Every turn until Yr N`
+instead. Effects are further split into two visually separate groups, **EFFECTS ON YOU**
+and **EFFECTS ON TARGET** (the latter only rendered for a decision that actually has a
+`target.*` field — most of the library doesn't), rather than one flat list where a
+`Target's …`-prefixed row could be missed among the deploying player's own KPIs. Clicking DEPLOY
 (target picker first, for `requiresTarget` decisions like Buy Shares) queues it locally
 and re-sends the player's full pending selection via `game:submitDecisions` on every
 change — the server treats each submission as a full replacement, not an increment. The
@@ -1011,10 +1019,19 @@ can never double-count or silently overwrite each other.
 bankruptcy: the instant any player crosses 50% ownership of another company, that
 company's own player is eliminated — exactly like bankruptcy, including the same case-
 waterfall payout to plaintiffs holding open cases against them. The acquirer additionally
-inherits the eliminated company's cash, assets, and intangible assets (not debt, not active
-decisions, not legal cases). Stock can fall to exactly $0 with no floor if a company's legal
-exposure meets or exceeds its equity — a deliberately allowed "buy a distressed rival for
-free" scenario.
+inherits the eliminated company's assets and intangible assets in full, and most of its
+cash — `gameSettings.mergerIntegrationCostRate` (25% by default) of a positive final cash
+balance is lost to "integration costs" rather than transferred, a deliberate cash sink so
+hostile takeover isn't a second, unlimited wealth-concentration mechanism on top of
+whatever a company earned on its own (not debt, not active decisions, not legal cases,
+either way). Stock can fall to exactly $0 with no floor if a company's legal exposure meets
+or exceeds its equity — a deliberately allowed "buy a distressed rival for free" scenario.
+That $0 pricing is reserved for a company whose stock has genuinely, computedly crashed —
+round 1 prices normally off a starting book value (`(cash + assets + intangibleAssets +
+reserves - debt) / totalSharesOutstanding`, since `stockValue` hasn't been computed for
+anyone yet at that point) rather than being mistaken for the same "distressed, free" case
+(see CLAUDE.md's *Share ownership & majority-ownership takeover* section for the bug this
+fixes).
 
 **The cap table itself is visible in the client, not just its consequences.** Both the
 STOCK VALUE drill-down (your own dashboard) and a rival's Full Filing report show an
@@ -1055,10 +1072,14 @@ forced to `0`: a real, visible, but hopeless case. `fileLawsuit` still rejects a
 outright (no case, fee already spent) only if the decision or ground name doesn't exist in
 the library at all, which the real client never sends.
 
-Filing also costs a flat `gameSettings.lawsuitFilingCost` ($15,000 by default), shown right
-on the **SUE THEM CHICKENS** button and deducted **instantly** the moment the "File" button
-is clicked in `SueModal` — a `game:fileLawsuit` round trip, same "instant, outside turn
-resolution" pattern as Dig Deeper, not something that waits for the round timer. The case
+Filing also costs `gameSettings.lawsuitFilingCost` ($15,000 by default) plus a wealth-scaled
+surcharge (`wealthScaledFeeRate`, 3% of the payer's own current cash by default — a
+deliberate cash sink: the surcharge portion isn't credited to anyone, it just leaves the
+game, so litigation stays a meaningful cost for a wealthy player instead of the same flat
+fee a round-1 player pays), shown right on the **SUE THEM CHICKENS** button and deducted
+**instantly** the moment the "File" button is clicked in `SueModal` — a `game:fileLawsuit`
+round trip, same "instant, outside turn resolution" pattern as Dig Deeper, not something
+that waits for the round timer. The case
 itself is still only created at the next turn resolution, exactly as described above — the
 fee purely gates the *act of filing*. It is **not refunded** either way: a wrong guess
 still creates a real (if hopeless) case, so the fee was never wasted on nothing, but it's
@@ -1247,7 +1268,11 @@ recorded directly on the decision instance itself (`everSued`), not derived from
 past cases — a resolved case is only kept in a player's persisted `legalCases` for one
 extra turn past its own resolution (long enough for the client to show the verdict once),
 then drops out entirely, so a flag stamped on the instance itself is what makes the
-"can't be sued again" rule outlive the case's own visibility.
+"can't be sued again" rule outlive the case's own visibility. When a target has two live,
+un-sued instances of the same decision at once (normal — stacking a permanent-effect
+decision is allowed), filing from a "SUE NOW" hint attaches to the exact instance that hint
+was for, not just whichever instance happens to share its name — see CLAUDE.md's *"Only
+one lawsuit per decision instance, ever"* section for the mechanism.
 
 ### Attack Awareness & Dig Deeper
 
@@ -1570,8 +1595,13 @@ market-share/P&L/balance-sheet/depreciation math a real turn does. By explicit p
 decision, it **assumes only this player's own decisions and their causes continue
 applying — it does not take other players' decisions into account**: every rival is
 held frozen at their current snapshot for the whole predicted window (no new rival
-decisions, attacks, or lawsuits), while the player's own already-active decisions keep
-maturing and scheduling normally. The graph shows this as a dashed continuation of the
+decisions, attacks, or lawsuits, and never counting anything a rival has currently
+queued-but-not-yet-submitted in their own UI), while the player's own already-active
+decisions keep maturing and scheduling normally. The very first predicted turn also folds
+in whatever the player has *currently queued but not yet submitted for real* (whichever
+decisions/lawsuits are sitting in their in-progress selection right now) — the preview
+reflects what would actually happen if they went ahead with their current picks, not just
+their already-locked-in state. The graph shows this as a dashed continuation of the
 solid actual-history line, with a caption spelling out the assumption. If the
 projection shows the player going bankrupt within the window, the dashed line simply
 stops at that round instead of showing further (meaningless) points. See CLAUDE.md's
@@ -1815,6 +1845,18 @@ player, clickable to jump the scrub position to that round), and a ranked standi
 for whichever metric is currently selected — scrubbing to the final round *is* the
 final-standings view, there's no separate table.
 
+**A "deployed X" happening's decision name is itself clickable** (separately from the
+round-jump click on the rest of the row), opening a themed popup with that decision's full
+details — description, level/nature, effects timeline, legal risks — the same information
+`ActiveDecisionCard` shows during the live game, looked up from the room's decision deck
+already held client-side. **A lawsuit happening (filed or resolved) shows its dollar
+stakes and the plaintiff's own known odds** at the moment they sued, as the same 5-band
+verbal likelihood (Highly Unlikely…Highly Likely) the live SUE THEM CHICKENS flow uses —
+"Unknown" if the plaintiff sued on a hunch rather than a fully-investigated hint, matching
+how odds are gated everywhere else in the game. **A Buy Shares happening shows the acquired
+stake percentage** — "acquired N% stake" alongside the target's name, the same figure a
+live incoming-attack hint's "Acquired N% ownership stake" summary already shows.
+
 After acknowledging an elimination (`LostOverlay`'s new **"Watch the rest of the game"**
 button, alongside the original **"Leave"**), a player lands on the live view instead of a
 dead end — their socket was never disconnected on elimination in the first place, so it's
@@ -1826,9 +1868,11 @@ finished-game replay.
 
 Two small backend additions make this possible: a durable `LegalCaseHistory` table
 (a resolved lawsuit only survives one extra turn in a player's live engine state, so a
-separate log is needed to show "every lawsuit filed/resolved" across a whole game) and a
-`Player.eliminatedRound` column (so "when was X eliminated" is reconstructable from
-persisted data, not just a live broadcast a spectator happened to see). Eliminated players
+separate log is needed to show "every lawsuit filed/resolved" across a whole game, plus
+`baseProbability`/`plaintiffFullyInvestigated` columns stamped once at filing time so the
+happenings log can show the plaintiff's own known odds) and a `Player.eliminatedRound`
+column (so "when was X eliminated" is reconstructable from persisted data, not just a live
+broadcast a spectator happened to see). Eliminated players
 are also now exempt from the disconnect grace-period cleanup that would otherwise delete
 their data if they simply closed their tab — see CLAUDE.md's *"Game Timeline"* section for
 the full architecture, including the stale-room-cleanup fix that had to come with it.
@@ -1848,7 +1892,7 @@ All client inputs are validated server-side using Zod schemas before processing:
 | | `searchForRoom` | Optional boolean — triggers Quick Play search |
 | `chatMessageSchema` | `message` | Required, 1-500 characters |
 | `submitDecisionsSchema` | `strategic`, `operational`, `financial` | Arrays of `{ name, targetId?, amount? }`, max 20 entries each — structural sanity only; the real per-turn limits come from `game_config.json` and are enforced by `GameLoop.processNewDecisions` |
-| | `lawsuits` | Array of `{ targetId, decisionName, groundName }`, max 10 entries — structural cap only; the real limit (`maxLawsuitsPerPlayerPerTurn`, 3) and the "target actually deployed this" check happen in `LegalEngine.fileLawsuit` |
+| | `lawsuits` | Array of `{ targetId, decisionName, groundName, attackId? }`, max 10 entries — structural cap only; the real limit (`maxLawsuitsPerPlayerPerTurn`, 3) and the "target actually deployed this" check happen in `LegalEngine.fileLawsuit`. `attackId`, when present, pins the filing to that exact attacking instance rather than a name-only match — see CLAUDE.md's *"Only one lawsuit per decision instance, ever"* section |
 | `digDeeperSchema` | `attackId` | Required, 1-100 characters |
 | `gameReadySchema` | `ready` | Required boolean |
 | `roomSetInviteOnlySchema` | `inviteOnly` | Required boolean |
@@ -1971,9 +2015,10 @@ npm run lint
 # schemas, llmService, adminAuth middleware. No DB or live LLM required (mocked Prisma,
 # incl. mocked `formula` model; llmService's own network calls are mocked via
 # global.fetch). Also covers predictFutureKpis (KPI history/prediction graphs) — incl.
-# a regression test that a real room's queued decision still applies after a prediction
-# runs, proving the prediction's sandboxed room id never touches real in-flight
-# submissions.
+# regression tests that a real room's queued decision still applies after a prediction
+# runs (the sandboxed room id reads, but never clears/consumes, real in-flight
+# submissions), that the player's OWN currently-queued decision is folded into the very
+# first predicted turn, and that a rival's queued decision in the same room is not.
 npm test --workspace=server
 
 # Run frontend unit tests (Vitest) — Zustand stores, GamePhase utilities (incl.

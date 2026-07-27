@@ -14,17 +14,17 @@ enum RoomStatus {
 }
 
 model Room {
-  id                String       @id @default(cuid())
-  status            RoomStatus   @default(WAITING)
-  maxPlayers        Int          @default(4) // See shared/src/index.ts MAX_PLAYERS
-  currentPhaseRound Int          @default(1)
-  createdAt         DateTime     @default(now())
+  id                String     @id @default(cuid())
+  status            RoomStatus @default(WAITING)
+  maxPlayers        Int        @default(4) // See shared/src/index.ts MAX_PLAYERS
+  currentPhaseRound Int        @default(1)
+  createdAt         DateTime   @default(now())
   // Host-toggled — excludes the room from Quick Play matching and the Available
   // Rooms list, but never blocks a direct room-code/invite-link join.
-  inviteOnly        Boolean      @default(false)
+  inviteOnly        Boolean    @default(false)
 
-  players           Player[]
-  legalCaseHistory  LegalCaseHistory[]
+  players          Player[]
+  legalCaseHistory LegalCaseHistory[]
 
   @@index([status])
   @@index([createdAt])
@@ -32,12 +32,12 @@ model Room {
 }
 
 model Player {
-  id              String     @id @default(cuid())
+  id              String        @id @default(cuid())
   name            String
   roomId          String
-  room            Room       @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  isHost          Boolean    @default(false)
-  bankrupt        Boolean    @default(false)
+  room            Room          @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  isHost          Boolean       @default(false)
+  bankrupt        Boolean       @default(false)
   // Round this player was eliminated in (natural bankruptcy, merger/takeover, or
   // voluntary forfeit) — null while still active. Nothing else durably records
   // "when" a player went bankrupt; needed to reconstruct elimination timing for the
@@ -48,9 +48,9 @@ model Player {
   // addBotPlayer) — a bot has no real socket (socketId always null) and never counts as
   // "disconnected" for the heartbeat/grace-period sweep the way a human's temporarily-null
   // socketId does. Excluded from host promotion (promoteNewHostIfNeeded).
-  isBot           Boolean    @default(false)
-  createdAt       DateTime   @default(now())
-  companyId       String?    @unique
+  isBot           Boolean       @default(false)
+  createdAt       DateTime      @default(now())
+  companyId       String?       @unique
   company         Company?
   kpiSnapshots    KpiSnapshot[]
 
@@ -90,19 +90,19 @@ model KpiSnapshot {
 // share holdings) is stored in the `engineState` JSONB field.
 // ============================================================
 model Company {
-  id                    String    @id @default(cuid())
-  playerId              String    @unique
-  player                Player    @relation(fields: [playerId], references: [id], onDelete: Cascade)
-  cash                  Decimal   @default(100000) @db.Decimal(15, 2)
-  debt                  Decimal   @default(0)      @db.Decimal(15, 2)
+  id               String  @id @default(cuid())
+  playerId         String  @unique
+  player           Player  @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  cash             Decimal @default(100000) @db.Decimal(15, 2)
+  debt             Decimal @default(0) @db.Decimal(15, 2)
   // All per-player variables are stored in a single JSONB column for atomic updates.
   // The game engine reads this object and writes back modified values each turn.
-  variables             Json      @default("{}")
+  variables        Json    @default("{}")
   // Snapshot of last-turn computed results for UI display / history
-  lastTurnSnapshot      Json?     @default("{}")
+  lastTurnSnapshot Json?   @default("{}")
   // Full engine state: activeDecisions, depreciationLedger, legalCases, shareHoldings
-  engineState           Json      @default("{}")
-  assets                Asset[]
+  engineState      Json    @default("{}")
+  assets           Asset[]
 
   @@index([playerId])
 }
@@ -112,7 +112,7 @@ model Asset {
   companyId String
   company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   type      String
-  value     Decimal  @db.Decimal(15, 2)
+  value     Decimal @db.Decimal(15, 2)
 
   @@index([companyId])
 }
@@ -185,22 +185,29 @@ model Formula {
 // joined live, same "resolve once, persist, never re-join" principle
 // BankruptedPlayer.playerName already follows.
 model LegalCaseHistory {
-  id            String   @id
-  roomId        String
-  room          Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  plaintiffId   String
-  plaintiffName String
-  defendantId   String
-  defendantName String
-  decisionName  String
-  groundName    String
-  description   String
-  stakes        Decimal  @db.Decimal(15, 2)
-  filedRound    Int
-  resolvedRound Int?
+  id                         String   @id
+  roomId                     String
+  room                       Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  plaintiffId                String
+  plaintiffName              String
+  defendantId                String
+  defendantName              String
+  decisionName               String
+  groundName                 String
+  description                String
+  stakes                     Decimal  @db.Decimal(15, 2)
+  // Stamped once at filing time, from LegalCaseData.baseProbability/plaintiffFullyInvestigated
+  // — never updated afterward (same "stamped once" convention as the live case's own
+  // plaintiffFullyInvestigated flag, see CLAUDE.md). Lets the game-timeline "happenings"
+  // log show the plaintiff's own known odds at the moment they sued, without recomputing
+  // anything after the fact. Defaulted for rows written before this field existed.
+  baseProbability            Float    @default(0)
+  plaintiffFullyInvestigated Boolean  @default(false)
+  filedRound                 Int
+  resolvedRound              Int?
   // 'won' | 'lost' | 'settled' | 'cancelled' — mirrors LegalCaseData.verdict
-  verdict       String?
-  createdAt     DateTime @default(now())
+  verdict                    String?
+  createdAt                  DateTime @default(now())
 
   @@index([roomId])
   @@index([roomId, filedRound])

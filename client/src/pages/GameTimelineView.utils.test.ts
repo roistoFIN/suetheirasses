@@ -13,7 +13,7 @@ function getKpiFieldValue(point: { variables: PlayerVariables; derived: PlayerDe
 }
 
 type HappeningEntry =
-  | { id: string; type: 'decision'; round: number; playerName: string; decisionName: string; targetName?: string }
+  | { id: string; type: 'decision'; round: number; playerName: string; decisionName: string; targetName?: string; acquisitionFraction?: number }
   | { id: string; type: 'lawsuitFiled'; round: number; lawsuit: TimelineLawsuitEvent; plaintiffName: string; defendantName: string }
   | { id: string; type: 'lawsuitResolved'; round: number; lawsuit: TimelineLawsuitEvent; plaintiffName: string; defendantName: string };
 
@@ -31,6 +31,7 @@ function buildHappenings(data: GameTimelineResponse): HappeningEntry[] {
       playerName: nameOf(d.playerId) ?? 'Unknown',
       decisionName: d.decisionName,
       targetName: nameOf(d.targetId),
+      acquisitionFraction: d.acquisitionFraction,
     });
   }
 
@@ -42,6 +43,91 @@ function buildHappenings(data: GameTimelineResponse): HappeningEntry[] {
   }
 
   return entries.sort((a, b) => a.round - b.round);
+}
+
+function happeningLabel(h: HappeningEntry): string {
+  switch (h.type) {
+    case 'decision': {
+      if (h.acquisitionFraction !== undefined && h.targetName) {
+        return `${h.playerName} deployed ${h.decisionName} → ${h.targetName} (acquired ${Math.round(h.acquisitionFraction * 100)}% stake)`;
+      }
+      return h.targetName
+        ? `${h.playerName} deployed ${h.decisionName} → ${h.targetName}`
+        : `${h.playerName} deployed ${h.decisionName}`;
+    }
+    case 'lawsuitFiled':
+      return `${h.plaintiffName} sued ${h.defendantName} over ${h.lawsuit.groundName}`;
+    case 'lawsuitResolved': {
+      const v = h.lawsuit.verdict;
+      const verdictText = v === 'won' ? 'won by the plaintiff' : v === 'lost' ? 'lost by the plaintiff' : v === 'settled' ? 'settled' : 'cancelled';
+      return `${h.plaintiffName} vs. ${h.defendantName} (${h.lawsuit.groundName}) — ${verdictText}`;
+    }
+  }
+}
+
+interface EffectLine {
+  field: string;
+  timeline: string;
+  isTarget: boolean;
+}
+
+interface MinimalDecisionDefForEffects {
+  impacts: Record<string, { type: 'absolute' | 'relative'; schedule: Record<number | string, number> }>;
+}
+
+function formatFieldLabelForEffects(field: string): string {
+  const isTarget = field.startsWith('target.');
+  const clean = isTarget ? field.slice('target.'.length) : field;
+  const spaced = clean.replace(/([A-Z])/g, ' $1').trim();
+  const label = spaced.charAt(0).toUpperCase() + spaced.slice(1);
+  return isTarget ? `Target's ${label.charAt(0).toLowerCase()}${label.slice(1)}` : label;
+}
+
+const EFFECTS_MONEY_FIELDS = new Set([
+  'cash', 'assets', 'intangibleAssets', 'debt', 'reserves', 'operatingExpenses',
+  'staffCost', 'materialCostPerTon', 'otherIncome', 'logisticsCostPerTon',
+]);
+
+function formatImpactValueForEffects(field: string, type: 'absolute' | 'relative', value: number): string {
+  const clean = field.startsWith('target.') ? field.slice('target.'.length) : field;
+  if (type === 'relative') {
+    const pctVal = Math.round(value * 100);
+    return `${pctVal >= 0 ? '+' : ''}${pctVal}%`;
+  }
+  if (EFFECTS_MONEY_FIELDS.has(clean)) {
+    return `${value >= 0 ? '+' : '-'}$${Math.abs(Math.round(value)).toLocaleString()}`;
+  }
+  const rounded = Math.round(value * 100) / 100;
+  return `${rounded >= 0 ? '+' : ''}${rounded}`;
+}
+
+// Same distinction as GamePhase.tsx's own `summarizeEffects` (see its doc comment): an
+// own field's 'default' schedule value applies once, at maturity, and is never re-applied
+// (GameLoop.advanceAndApply) — "Permanent" — while a `target.*` field's 'default' value
+// genuinely re-applies to the victim every turn until the statute of limitations —
+// "Every turn until Yr N".
+function summarizeEffects(def: MinimalDecisionDefForEffects, statuteOfLimitationsYears?: number): EffectLine[] {
+  const lines: EffectLine[] = [];
+  for (const [field, impact] of Object.entries(def.impacts)) {
+    const isTarget = field.startsWith('target.');
+    const keys = Object.keys(impact.schedule).filter((k) => k !== 'default').map(Number).sort((a, b) => a - b);
+    const parts: string[] = [];
+    for (const k of keys) {
+      const v = impact.schedule[k];
+      if (v === 0) continue;
+      parts.push(`Yr ${k}: ${formatImpactValueForEffects(field, impact.type, v)}`);
+    }
+    const ongoing = impact.schedule['default'];
+    if (ongoing !== undefined && ongoing !== 0) {
+      const label = isTarget
+        ? `Every turn${statuteOfLimitationsYears !== undefined ? ` until Yr ${statuteOfLimitationsYears}` : ''}`
+        : 'Permanent';
+      parts.push(`${label}: ${formatImpactValueForEffects(field, impact.type, ongoing)}`);
+    }
+    if (parts.length === 0) continue;
+    lines.push({ field: formatFieldLabelForEffects(field), timeline: parts.join(' → '), isTarget });
+  }
+  return lines;
 }
 
 function rankPlayersAtRound(
@@ -62,7 +148,29 @@ function rankPlayersAtRound(
     .sort((a, b) => b.value - a.value);
 }
 
+function likelihoodLabel(p: number): string {
+  if (p >= 0.8) return 'Highly Likely';
+  if (p >= 0.6) return 'Likely';
+  if (p >= 0.4) return 'Moderate';
+  if (p >= 0.2) return 'Unlikely';
+  return 'Highly Unlikely';
+}
+
+function lawsuitOddsAndStakes(lawsuit: TimelineLawsuitEvent): string {
+  const odds = lawsuit.plaintiffFullyInvestigated ? likelihoodLabel(lawsuit.baseProbability) : 'Unknown';
+  return `Stakes: $${new Intl.NumberFormat('en-US').format(Math.round(lawsuit.stakes))} · Odds (plaintiff's view): ${odds}`;
+}
+
 // ── Fixtures ─────────────────────────────────────────────────────────
+
+function makeLawsuit(overrides: Partial<TimelineLawsuitEvent> = {}): TimelineLawsuitEvent {
+  return {
+    id: 'case-1', plaintiffId: 'p1', plaintiffName: 'Alice', defendantId: 'p2', defendantName: 'Bob',
+    decisionName: 'Water Pumping', groundName: 'Environmental Violation', description: 'x',
+    stakes: 20000, baseProbability: 0.5, plaintiffFullyInvestigated: false, filedRound: 1,
+    ...overrides,
+  };
+}
 
 function makeData(overrides: Partial<GameTimelineResponse> = {}): GameTimelineResponse {
   return {
@@ -132,10 +240,23 @@ describe('buildHappenings', () => {
     expect((entry as Extract<typeof entry, { type: 'decision' }>).targetName).toBeUndefined();
   });
 
+  it('carries acquisitionFraction through for a Buy Shares deployment', () => {
+    const data = makeData({
+      decisions: [
+        { instanceId: 'inst-1', playerId: 'p1', decisionName: 'Buy Shares', deployedYear: 4, targetId: 'p2', voidedByLawsuit: false, acquisitionFraction: 0.12 },
+      ],
+    });
+
+    const entry = buildHappenings(data)[0];
+    expect(entry.type).toBe('decision');
+    expect((entry as Extract<typeof entry, { type: 'decision' }>).acquisitionFraction).toBe(0.12);
+  });
+
   it('produces a lawsuitFiled entry for every lawsuit, plus a lawsuitResolved entry only once resolvedRound is set', () => {
     const openCase: TimelineLawsuitEvent = {
       id: 'case-open', plaintiffId: 'p1', plaintiffName: 'Alice', defendantId: 'p2', defendantName: 'Bob',
       decisionName: 'Water Pumping', groundName: 'Environmental Violation', description: 'x', stakes: 5000, filedRound: 2,
+      baseProbability: 0.4, plaintiffFullyInvestigated: true,
     };
     const resolvedCase: TimelineLawsuitEvent = {
       ...openCase, id: 'case-resolved', filedRound: 1, resolvedRound: 3, verdict: 'won',
@@ -155,7 +276,11 @@ describe('buildHappenings', () => {
     const data = makeData({
       decisions: [{ instanceId: 'inst-1', playerId: 'p1', decisionName: 'New Factory', deployedYear: 3, voidedByLawsuit: false }],
       lawsuits: [
-        { id: 'case-1', plaintiffId: 'p2', plaintiffName: 'Bob', defendantId: 'p1', defendantName: 'Alice', decisionName: 'X', groundName: 'Y', description: 'x', stakes: 1, filedRound: 1 },
+        {
+          id: 'case-1', plaintiffId: 'p2', plaintiffName: 'Bob', defendantId: 'p1', defendantName: 'Alice',
+          decisionName: 'X', groundName: 'Y', description: 'x', stakes: 1, filedRound: 1,
+          baseProbability: 0.5, plaintiffFullyInvestigated: false,
+        },
       ],
     });
 
@@ -163,6 +288,32 @@ describe('buildHappenings', () => {
 
     expect(rounds).toEqual([...rounds].sort((a, b) => a - b));
     expect(rounds[0]).toBe(1);
+  });
+});
+
+describe('happeningLabel', () => {
+  it('appends the acquired stake percentage for a Buy Shares deployment', () => {
+    const data = makeData({
+      decisions: [
+        { instanceId: 'inst-1', playerId: 'p1', decisionName: 'Buy Shares', deployedYear: 4, targetId: 'p2', voidedByLawsuit: false, acquisitionFraction: 0.125 },
+      ],
+    });
+
+    const entry = buildHappenings(data)[0];
+
+    expect(happeningLabel(entry)).toBe('Alice deployed Buy Shares → Bob (acquired 13% stake)');
+  });
+
+  it('omits the percentage for an ordinary decision with no acquisitionFraction', () => {
+    const data = makeData({
+      decisions: [
+        { instanceId: 'inst-1', playerId: 'p1', decisionName: 'Bot Attack', deployedYear: 2, targetId: 'p2', voidedByLawsuit: false },
+      ],
+    });
+
+    const entry = buildHappenings(data)[0];
+
+    expect(happeningLabel(entry)).toBe('Alice deployed Bot Attack → Bob');
   });
 });
 
@@ -204,5 +355,55 @@ describe('rankPlayersAtRound', () => {
     const ranking = rankPlayersAtRound(data, 1, 'variables.cash');
 
     expect(ranking.every((r) => r.value === 0)).toBe(true);
+  });
+});
+
+describe('summarizeEffects', () => {
+  it('labels an own field\'s default-only value "Permanent", not "Ongoing" (regression — see GamePhase.tsx\'s summarizeEffects doc comment)', () => {
+    const def: MinimalDecisionDefForEffects = { impacts: { installedCapacity: { type: 'relative', schedule: { default: 0.15 } } } };
+    expect(summarizeEffects(def)).toEqual([{ field: 'Installed Capacity', timeline: 'Permanent: +15%', isTarget: false }]);
+  });
+
+  it('labels a target field\'s default-only value "Every turn until Yr N" when the statute of limitations is known', () => {
+    const def: MinimalDecisionDefForEffects = { impacts: { 'target.outrage': { type: 'absolute', schedule: { default: -8 } } } };
+    expect(summarizeEffects(def, 10)).toEqual([{ field: "Target's outrage", timeline: 'Every turn until Yr 10: -8', isTarget: true }]);
+  });
+
+  it('marks isTarget so a caller can split effects on the deploying player from effects on their chosen opponent', () => {
+    const def: MinimalDecisionDefForEffects = {
+      impacts: {
+        cash: { type: 'absolute', schedule: { default: -10000 } },
+        'target.demand': { type: 'absolute', schedule: { default: -6 } },
+      },
+    };
+    const lines = summarizeEffects(def);
+    expect(lines.find((l) => l.field === 'Cash')?.isTarget).toBe(false);
+    expect(lines.find((l) => l.isTarget)?.field).toBe("Target's demand");
+  });
+});
+
+describe('lawsuitOddsAndStakes', () => {
+  it('shows the plaintiff\'s known verbal odds and dollar stakes once fully investigated', () => {
+    const lawsuit = makeLawsuit({ stakes: 45000, baseProbability: 0.85, plaintiffFullyInvestigated: true });
+    expect(lawsuitOddsAndStakes(lawsuit)).toBe("Stakes: $45,000 · Odds (plaintiff's view): Highly Likely");
+  });
+
+  it('shows "Unknown" odds for a plaintiff who sued on a hunch (never fully investigated), even though stakes are still known', () => {
+    const lawsuit = makeLawsuit({ stakes: 12000, baseProbability: 0.9, plaintiffFullyInvestigated: false });
+    expect(lawsuitOddsAndStakes(lawsuit)).toBe("Stakes: $12,000 · Odds (plaintiff's view): Unknown");
+  });
+
+  it('maps every 5-band likelihood correctly', () => {
+    const bands: Array<[number, string]> = [
+      [0.05, 'Highly Unlikely'],
+      [0.25, 'Unlikely'],
+      [0.45, 'Moderate'],
+      [0.65, 'Likely'],
+      [0.85, 'Highly Likely'],
+    ];
+    for (const [baseProbability, label] of bands) {
+      const lawsuit = makeLawsuit({ baseProbability, plaintiffFullyInvestigated: true });
+      expect(lawsuitOddsAndStakes(lawsuit)).toContain(label);
+    }
   });
 });

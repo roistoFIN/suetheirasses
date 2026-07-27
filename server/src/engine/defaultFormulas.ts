@@ -84,8 +84,8 @@ export const DEFAULT_FORMULA_SEEDS: DefaultFormulaSeed[] = [
   },
   {
     key: 'taxCost',
-    expression: 'MAX(0, profitBeforeTax) * taxRate + taxCostDelta',
-    description: 'Tax owed — only charged on positive profit, plus any one-time absolute tax adjustments from active decisions.',
+    expression: 'MAX(0, profitBeforeTax) * taxRate + MAX(0, profitBeforeTax - 200000) * 0.12 + taxCostDelta',
+    description: 'Tax owed — the base rate on all positive profit, plus a 12% surcharge on the portion of profit above $200k/turn (a genuine cash sink — this money leaves the game entirely, unlike a lawsuit payout or merger transfer which just moves it between players), plus any one-time absolute tax adjustments from active decisions.',
   },
   {
     key: 'netProfit',

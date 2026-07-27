@@ -535,7 +535,7 @@ export class GameLoop {
     for (const requests of byTarget.values()) {
       requests.sort((a, b) => a.submittedAt - b.submittedAt);
       for (const request of requests) {
-        const fractionBought = this.applyShareTransaction(request, ctxs);
+        const fractionBought = this.applyShareTransaction(request, ctxs, round);
         if (fractionBought !== undefined) {
           if (!sharesBoughtByTarget.has(request.targetId)) sharesBoughtByTarget.set(request.targetId, []);
           sharesBoughtByTarget.get(request.targetId)!.push({
@@ -738,13 +738,24 @@ export class GameLoop {
         // all — see isIndirectEffect) just need to be an instance of the cited decision
         // name on the cited defendant, since we're already scoped to `targetCtx`'s own
         // decisions and there's no targeting relationship to further disambiguate by.
+        //
+        // When `filing.attackId` is present, matched by that EXACT instance id (plus the
+        // same targeting/name checks) rather than "the first name+targeting match" — a
+        // target can legitimately have two live, un-sued instances of the same decision at
+        // once (stacking a permanent-effect decision is normal, intended play), and
+        // resolving to the wrong one here previously let the instance the plaintiff
+        // actually investigated dodge `everSued` forever (see `fileLawsuit`'s `attackId`
+        // doc comment / CLAUDE.md — a real, reported incident).
         let plaintiffFullyInvestigated = false;
-        const attackInstance = targetCtx.engineState.activeDecisions.find((d) => {
+        const matchesInvestigatedAttack = (d: DeployedDecision): boolean => {
           if (d.voidedByLawsuit) return false;
           if (d.definition.decision !== filing.decisionName) return false;
           const targetImpacts = this.decisionEngine.getTargetImpacts(d.definition.impacts);
           return this.isIndirectEffect(d.definition, targetImpacts, d.targetId) || d.targetId === ctx.playerId;
-        });
+        };
+        const attackInstance = filing.attackId !== undefined
+          ? targetCtx.engineState.activeDecisions.find((d) => d.id === filing.attackId && matchesInvestigatedAttack(d))
+          : targetCtx.engineState.activeDecisions.find(matchesInvestigatedAttack);
         if (attackInstance) {
           const rawLevel = ctx.engineState.investigations[attackInstance.id] ?? 0;
           const level = this.effectiveInvestigationLevel(rawLevel, ctxs.size);
@@ -764,8 +775,24 @@ export class GameLoop {
           roomId,
           plaintiffFullyInvestigated,
           this.config.gameSettings.statuteOfLimitationsYears,
+          filing.attackId,
         );
         if (newCase) {
+          // Late-game escalation (see CLAUDE.md/GameSettings doc comments): once the game
+          // has run past lateGameRoundThreshold, a genuine case (baseProbability already
+          // nonzero — a wrong guess/time-barred ground stays exactly 0, multiplying is a
+          // no-op) gets a real-terms boost, both to its odds (capped at 0.95 — never a sure
+          // thing) and its stakes. Targets the specific finding that elimination relies
+          // almost entirely on lawsuit-driven bankruptcy with no reliable fallback once a
+          // stalemate sets in — this keeps litigation credibly dangerous against a leader
+          // whose cash cushion has otherwise outgrown what any one case could touch.
+          if (round >= this.config.gameSettings.lateGameRoundThreshold && newCase.baseProbability > 0) {
+            // `?? 1` (neutral, no change) guards a config loaded before these fields
+            // existed in the DB — see wealthScaledFee's doc comment for the exact failure
+            // mode this prevents (a real, reproduced incident).
+            newCase.baseProbability = Math.min(0.95, newCase.baseProbability * (this.config.gameSettings.lateGameLegalProbabilityBoost ?? 1));
+            newCase.stakes = newCase.stakes * (this.config.gameSettings.lateGameLegalStakesBoost ?? 1);
+          }
           allCases.push(newCase);
           // Claim the instance the instant a genuine (non-wrong-guess, non-time-barred)
           // case is filed against it — `defendantDecisionInstanceId` is only ever set for
@@ -987,7 +1014,18 @@ export class GameLoop {
       // ever specifies elimination, not a transfer of value); deliberately NOT debt, NOT
       // active decisions/production variables, and NOT legal cases (those already lapsed
       // via the same waterfall call above).
-      acquirerCtx.vars.cash += finalCash;
+      //
+      // A mergerIntegrationCostRate fraction of a POSITIVE finalCash is lost rather than
+      // transferred — a deliberate cash sink (see GameSettings doc comment): without it,
+      // hostile takeover was a second, unlimited wealth-CONCENTRATION mechanism (100%
+      // pass-through) working directly against the other sinks below. Only applied when
+      // finalCash is positive — a target that's simultaneously insolvent (finalCash <= 0,
+      // an edge case the waterfall can still produce) already leaves the acquirer worse
+      // off; skimming a negative number would perversely reduce the debt they inherit.
+      // `?? 0` (no skim, full pass-through — the pre-feature default) guards a config
+      // loaded before this field existed in the DB — see wealthScaledFee's doc comment.
+      const transferredCash = finalCash > 0 ? finalCash * (1 - (this.config.gameSettings.mergerIntegrationCostRate ?? 0)) : finalCash;
+      acquirerCtx.vars.cash += transferredCash;
       acquirerCtx.vars.assets = (acquirerCtx.vars.assets || 0) + (ctx.vars.assets || 0);
       acquirerCtx.vars.intangibleAssets = (acquirerCtx.vars.intangibleAssets || 0) + (ctx.vars.intangibleAssets || 0);
       bankruptedPlayers.push({ playerId: pid, playerName: ctx.playerName, finalCash, ...snapshot, reason: 'merger', acquirerId, acquirerName });
@@ -1086,7 +1124,7 @@ export class GameLoop {
         })),
         legalCases: allCases.filter(c => c.plaintiffId === pid || c.defendantId === pid),
         riskGauge: riskMap.get(pid) ?? 0,
-        incomingAttacks: this.buildIncomingAttacks(pid, ctxs, playersStillActive),
+        incomingAttacks: this.buildIncomingAttacks(pid, ctxs, playersStillActive, plMap),
         sharesBoughtThisTurn: sharesBoughtByTarget.get(pid) ?? [],
       });
     }
@@ -1124,7 +1162,7 @@ export class GameLoop {
    */
   getInitialSnapshot(_roomId: string, round: number, players: EngineDataInput[]): TurnResolutionResult {
     const dbPlayers = players;
-    if (dbPlayers.length === 0) return { round, players: [], gameOver: false };
+    if (dbPlayers.length === 0) return { round, players: [], gameOver: false, isInitialSnapshot: true };
 
     const varsByPlayer = new Map<string, PlayerVariables>();
     const playerIds: string[] = [];
@@ -1194,7 +1232,7 @@ export class GameLoop {
       });
     }
 
-    return { round, players: results, gameOver: false };
+    return { round, players: results, gameOver: false, isInitialSnapshot: true };
   }
 
   /**
@@ -1253,7 +1291,7 @@ export class GameLoop {
       return { success: false, reason: 'already_fully_investigated' };
     }
 
-    const cost = this.config.gameSettings.digDeeperCost;
+    const cost = this.wealthScaledFee(this.config.gameSettings.digDeeperCost, me.vars.cash);
     if (me.vars.cash < cost) return { success: false, reason: 'insufficient_funds' };
 
     const newLevel = currentLevel + 1;
@@ -1322,7 +1360,7 @@ export class GameLoop {
     // Without this, vars.cash is undefined here, `undefined - cost` is NaN, and the
     // resulting Prisma company.update crashes with an invalid-argument error.
     if (!vars.cash && !vars.assets) vars = this.startingVars();
-    const cost = this.config.gameSettings.lawsuitFilingCost;
+    const cost = this.wealthScaledFee(this.config.gameSettings.lawsuitFilingCost, vars.cash);
     if (vars.cash < cost) return { success: false, reason: 'insufficient_funds' };
 
     const newCash = vars.cash - cost;
@@ -1465,7 +1503,7 @@ export class GameLoop {
     if (playerId !== defendant.playerId) return { success: false, reason: 'not_defendant' };
     if (case_.defendantInvestigated) return { success: false, reason: 'already_investigated' };
 
-    const cost = this.config.gameSettings.digDeeperCost;
+    const cost = this.wealthScaledFee(this.config.gameSettings.digDeeperCost, defendant.vars.cash);
     if (defendant.vars.cash < cost) return { success: false, reason: 'insufficient_funds' };
 
     const newCash = defendant.vars.cash - cost;
@@ -1535,14 +1573,37 @@ export class GameLoop {
    * (negative) cash included — not silently omitted just because the round it happened
    * on ends the simulation. A real, reported gap: the graph used to stop one turn short
    * of the drop, so a player never actually saw the line cross zero.
+   *
+   * The player's OWN currently-queued decisions/lawsuits for THIS (not-yet-resolved) real
+   * round — `this.submissions.get(roomId)?.get(playerId)`, the same live, in-progress
+   * selection `game:submitDecisions` keeps up to date as they build it — are seeded into
+   * the sandbox for the very first predicted turn only (`this.submitDecisions(sandboxRoomId,
+   * playerId, ...)` before the loop starts). A real, reported gap: the prediction used to
+   * assume the player submits nothing, even while they had a real selection queued up in
+   * the UI right next to the graph — the whole point of "preview my future" is to preview
+   * what happens if they actually go through with what they've already picked. This is
+   * seeded exactly once: `resolveTurn`'s own `clearSubmissions(sandboxRoomId)` call at the
+   * end of the first iteration naturally prevents it from being re-applied in iterations 2
+   * and 3 — the newly-deployed instance just keeps maturing normally from there, same as
+   * any other already-active decision. Deliberately READS (never clears/consumes) the
+   * real room's own submissions — this must never disturb what the player has queued for
+   * the real turn, only mirror it into the sandbox. And deliberately the player's OWN
+   * queued selection only — a rival's `this.submissions.get(roomId)?.get(rivalId)` is
+   * never read or seeded into the sandbox, keeping "predicts your own decisions, not
+   * others'" intact (see the rival-freezing note above).
    */
-  predictFutureKpis(playerId: string, round: number, players: EngineDataInput[], turnsAhead: number): KpiPrediction {
+  predictFutureKpis(roomId: string, playerId: string, round: number, players: EngineDataInput[], turnsAhead: number): KpiPrediction {
     const me = players.find(p => p.id === playerId);
     if (!me?.company) return { predicted: [] };
 
     const rivals = players.filter(p => p.id !== playerId);
     const sandboxRoomId = `__predict__${playerId}`;
     const predicted: KpiSnapshotPoint[] = [];
+
+    const myQueuedDecisions = this.submissions.get(roomId)?.get(playerId);
+    if (myQueuedDecisions) {
+      this.submitDecisions(sandboxRoomId, playerId, myQueuedDecisions);
+    }
 
     let meInput: EngineDataInput = me;
     for (let i = 1; i <= turnsAhead; i++) {
@@ -1773,7 +1834,13 @@ export class GameLoop {
    * **Buy**: `sharesBought = min(amount, buyer's cash) / target's stockValue` (last
    * turn's closing price — see the Step 1b comment above) — if that price is exactly 0,
    * treat the purchase as acquiring the ENTIRE company regardless of amount paid
-   * (a sufficiently distressed company can be bought/taken over for free, by design).
+   * (a sufficiently distressed company can be bought/taken over for free, by design). A
+   * genuinely undefined `stockValue` (round 1 — see `startingStockValue`'s doc comment)
+   * is NOT treated as that same "distressed, free takeover" 0 — a real, reported bug: any
+   * nonzero Buy Shares spend on round 1 bought 100% of the target company outright, since
+   * `stockValue` had never been computed yet and `?? 0` silently collapsed "not computed"
+   * into the same case as "computed and genuinely worthless." Falls back to a real starting
+   * book-value-per-share instead, so round 1 prices shares normally.
    * `fractionBought` (capped at 1) is stamped onto the buyer's own deployed instance as
    * `acquisitionFraction` (gates `legalRiskConditions`, see `meetsLegalRiskConditions`).
    * Every existing shareOwnership key on the target scales down by `(1 - fractionBought)`
@@ -1799,21 +1866,32 @@ export class GameLoop {
    * this to build `PlayerTurnResult.sharesBoughtThisTurn`, the target's own "somebody
    * bought your shares" news item.
    */
-  private applyShareTransaction(request: ShareTransactionRequest, ctxs: Map<string, PlayerTurnContext>): number | undefined {
+  private applyShareTransaction(request: ShareTransactionRequest, ctxs: Map<string, PlayerTurnContext>, round: number): number | undefined {
     const buyerCtx = ctxs.get(request.buyerId);
     const targetCtx = ctxs.get(request.targetId);
     if (!buyerCtx || !targetCtx) return undefined;
 
     const totalShares = targetCtx.vars.totalSharesOutstanding || 0;
     if (totalShares <= 0) return undefined;
-    const price = targetCtx.vars.stockValue ?? 0;
+    const price = targetCtx.vars.stockValue !== undefined ? targetCtx.vars.stockValue : this.startingStockValue(targetCtx.vars);
     const actorKey = request.buyerId === request.targetId ? SELF_OWNERSHIP_KEY : request.buyerId;
     const ownership: Record<string, number> = { ...(targetCtx.vars.shareOwnership ?? {}) };
 
     if (request.type === 'buy') {
       const spend = Math.min(request.amount, buyerCtx.vars.cash);
       if (spend <= 0) return undefined;
-      const sharesBought = price > 0 ? spend / price : totalShares;
+      // Late-game escalation (see CLAUDE.md/GameSettings doc comments): once round >=
+      // lateGameRoundThreshold, a buyer's effective buying power (for computing shares
+      // acquired only — the cash actually paid below is unaffected) is boosted, giving a
+      // real second path to force a stalled lawsuit standoff to a close via hostile
+      // takeover instead. Never applied before the threshold, so ordinary/median-length
+      // games see no change to buyout economics at all.
+      // `?? 1` (neutral, no change) guards a config loaded before this field existed in
+      // the DB — see wealthScaledFee's doc comment.
+      const effectiveSpend = round >= this.config.gameSettings.lateGameRoundThreshold
+        ? spend * (this.config.gameSettings.lateGameTakeoverBoost ?? 1)
+        : spend;
+      const sharesBought = price > 0 ? effectiveSpend / price : totalShares;
       const fractionBought = Math.min(1, sharesBought / totalShares);
       if (fractionBought <= 0) return undefined;
 
@@ -1952,12 +2030,21 @@ export class GameLoop {
     return targetImpacts.size === 0 && targetId === undefined && !!def.legalRisks && def.legalRisks.length > 0;
   }
 
-  private buildIncomingAttacks(pid: string, ctxs: Map<string, PlayerTurnContext>, attackerCtxIds: string[]): IncomingAttackInfo[] {
+  private buildIncomingAttacks(pid: string, ctxs: Map<string, PlayerTurnContext>, attackerCtxIds: string[], plMap: Map<string, ReturnType<typeof calculatePL>>): IncomingAttackInfo[] {
     const myInvestigations = ctxs.get(pid)!.engineState.investigations;
     const attacks: IncomingAttackInfo[] = [];
     for (const attackerId of attackerCtxIds) {
       if (attackerId === pid) continue;
       const attackerCtx = ctxs.get(attackerId)!;
+      // `attackerCtx.vars` never carries `revenue` (like `equity`, it's only ever
+      // materialized into `plMap` for this turn's broadcast — see the Step 8 stakes-
+      // calculation note) — patched in here for `revealAttack`'s `pickBestGround` call,
+      // which needs the real figure to price a relative-type ground targeting revenue
+      // (17 of the 25 in the real library). Reading `undefined` there was a real,
+      // reported bug: every such ground's displayed "Stakes" showed $0 on every incoming-
+      // attack hint card, since `pickBestGround` falls back to 0 for a non-numeric target
+      // field. Same fix Step 8's `targetVarsForFiling` already applies to the real filing.
+      const attackerVarsForReveal = { ...attackerCtx.vars, revenue: plMap.get(attackerId)?.revenue ?? attackerCtx.vars.revenue };
       for (const d of attackerCtx.engineState.activeDecisions) {
         if (d.voidedByLawsuit) continue;
         const targetImpacts = this.decisionEngine.getTargetImpacts(d.definition.impacts);
@@ -1975,7 +2062,7 @@ export class GameLoop {
         if (!isIndirect && targetImpacts.size === 0 && d.definition.shareTransactionType !== 'buy') continue;
         const rawLevel = myInvestigations[d.id] ?? 0;
         const level = this.effectiveInvestigationLevel(rawLevel, attackerCtxIds.length);
-        attacks.push(this.revealAttack(attackerId, attackerCtx.playerName, d, level, attackerCtx.vars, isIndirect));
+        attacks.push(this.revealAttack(attackerId, attackerCtx.playerName, d, level, attackerVarsForReveal, isIndirect));
       }
     }
     return attacks;
@@ -2118,6 +2205,27 @@ export class GameLoop {
     return { shareTransactions, decisionEvents };
   }
 
+  /**
+   * A flat litigation fee (`digDeeperCost`/`lawsuitFilingCost`) plus `wealthScaledFeeRate`
+   * of the payer's OWN current cash — a deliberate cash sink (see GameSettings doc
+   * comment): the surcharge portion is never credited to anyone, it just leaves the game,
+   * and scales the flat fee's real bite with how rich the payer already is, so litigation
+   * stays a meaningful cost for a wealthy late-game player instead of the same flat fee a
+   * round-1 player pays. Shared by `digDeeper`, `chargeLawsuitFilingFee`, and
+   * `digDeeperOnCase` — the three flat-fee, out-of-band (non-turn-cycle) charges.
+   *
+   * `?? 0` guards a config loaded before `wealthScaledFeeRate` existed in the DB (an
+   * already-running `GameEngine` holds `this.config` from its own last `loadGameData()`,
+   * not a live view — a bare `db:seed` run against the DB while a server is already up
+   * doesn't notify it) — the same "undefined arithmetic silently produces NaN, which then
+   * gets written straight into a Decimal/JSONB column" failure mode as
+   * `applyDecisionImpacts`' absolute-impact write bug (see CLAUDE.md); a real, reproduced
+   * incident here, not a hypothetical.
+   */
+  private wealthScaledFee(baseCost: number, currentCash: number): number {
+    return baseCost + (this.config.gameSettings.wealthScaledFeeRate ?? 0) * Math.max(0, currentCash);
+  }
+
   private readVariables(json: unknown): PlayerVariables {
     if (!json || typeof json !== 'object') return {} as PlayerVariables;
     return json as unknown as PlayerVariables;
@@ -2162,6 +2270,24 @@ export class GameLoop {
       stockVolume: s.stockVolume,
       demand: s.demand,
     } as PlayerVariables;
+  }
+
+  /**
+   * Book value per share at the moment a company's `stockValue` has never actually been
+   * computed yet (before that company's very first turn has resolved) — `stockValue` is a
+   * `"derived"` field (`playerStartingValues`' own comment), only ever written by
+   * `updateBalanceSheet` inside `resolveTurn`'s balance-sheet step, so it's genuinely
+   * `undefined`, not a real computed 0, at that point. `equity - legalExposure` (no
+   * receivables, no legal exposure — neither exists yet pre-turn-1) divided by shares
+   * outstanding; used ONLY as the round-1 fallback in `applyShareTransaction`, never as a
+   * general-purpose stockValue getter — see that method's doc comment for the real, reported
+   * bug this fixes (buying a company for a token amount on round 1).
+   */
+  private startingStockValue(vars: PlayerVariables): number {
+    const totalShares = vars.totalSharesOutstanding || 0;
+    if (totalShares <= 0) return 0;
+    const equity = (vars.cash ?? 0) + (vars.assets ?? 0) + (vars.intangibleAssets ?? 0) + (vars.reserves ?? 0) - (vars.debt ?? 0);
+    return Math.max(0, equity) / totalShares;
   }
 
   private stripInternal(v: PlayerVariables): PlayerVariables {

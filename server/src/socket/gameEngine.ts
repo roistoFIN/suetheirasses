@@ -42,7 +42,7 @@ import { GameLoop } from '../engine/gameLoop.js';
 import type { BankruptedPlayer } from '../engine/gameLoop.js';
 import { generateAnnualReportBlurb } from '../services/llmService.js';
 import { logEvent, logEvents } from '../services/eventLogService.js';
-import { pickBotDecisions, pickAttacksToInvestigate, shouldFileLawsuit, BOT_CASH_RESERVE } from '../services/botService.js';
+import { pickBotDecisions, pickBotShareBuy, pickAttacksToInvestigate, shouldFileLawsuit, decideBotNegotiationAction, firstYearCashImpact, BOT_CASH_RESERVE } from '../services/botService.js';
 
 export class GameEngine {
   public rooms: Map<string, RoomState> = new Map();
@@ -192,7 +192,20 @@ export class GameEngine {
    */
   async digDeeper(roomId: string, playerId: string, attackId: string): Promise<import('../engine/gameLoop.js').DigDeeperOutcome> {
     const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
-    const outcome = this.gameLoop.digDeeper(playerId, attackId, dbPlayers);
+    // `Company.variables.revenue` is never actually populated — GameLoop only ever
+    // materializes it fresh into a turn's own local `plMap` (see gameLoop.ts's Step 8
+    // stakes-calculation note), and this is an out-of-band action with no live turn in
+    // progress to compute one. Patch in the latest known figure from KpiSnapshot history
+    // instead — see `latestKnownRevenueByPlayer`'s doc comment for the real bug this
+    // fixes (revealAttack's pickBestGround silently pricing every relative-type,
+    // revenue-targeting ground's stakes at $0).
+    const revenueByPlayer = await this.latestKnownRevenueByPlayer(roomId);
+    const playersForDig = dbPlayers.map((p) => {
+      const revenue = revenueByPlayer.get(p.id);
+      if (revenue === undefined || !p.company) return p;
+      return { ...p, company: { ...p.company, variables: { ...(p.company.variables as Record<string, unknown>), revenue } } };
+    });
+    const outcome = this.gameLoop.digDeeper(playerId, attackId, playersForDig);
     if (outcome.success) {
       await this.prisma.company.update({
         where: { playerId },
@@ -325,9 +338,43 @@ export class GameEngine {
       this.submitDecisions(roomId, botPlayerId, { strategic: [], operational: [], financial: [], lawsuits });
     }
 
+    // Negotiate every open case the bot is a party to — a real, reported gap: the bot
+    // used to never actively respond to a settlement offer at all, so any offer a human
+    // made to it just sat there until Step 8b's turn-boundary timeout auto-accepted it,
+    // however small. `decideBotNegotiationAction` weighs the current offer against a
+    // real expected-value estimate instead. One action per case per turn (dig this turn,
+    // decide next), matching this bot's existing "investigate before committing" pacing.
+    for (const case_ of botResult.legalCases) {
+      if (case_.status !== 'negotiating') continue;
+      const myRole = case_.plaintiffId === botPlayerId ? 'plaintiff' : case_.defendantId === botPlayerId ? 'defendant' : null;
+      if (!myRole) continue;
+      const action = decideBotNegotiationAction(case_, myRole, cash, digDeeperCost);
+      let outcome: import('../engine/gameLoop.js').LegalCaseActionOutcome | undefined;
+      switch (action.type) {
+        case 'wait':
+          continue;
+        case 'digDeeperOnCase':
+          outcome = await this.digDeeperOnCase(roomId, botPlayerId, case_.id);
+          break;
+        case 'accept':
+          outcome = await this.acceptOffer(roomId, botPlayerId, case_.id);
+          break;
+        case 'counter':
+          outcome = await this.makeOffer(roomId, botPlayerId, case_.id, action.amount);
+          break;
+        case 'goToCourt':
+          outcome = await this.goToCourt(roomId, botPlayerId, case_.id);
+          break;
+      }
+      if (outcome?.success) {
+        const myUpdate = myRole === 'plaintiff' ? outcome.plaintiff : outcome.defendant;
+        if (myUpdate.cash !== undefined) cash = myUpdate.cash;
+      }
+    }
+
     const humanPlayerId = Array.from(roomState.players.values()).find((p) => !p.isBot)?.id;
     const deck = this.getRoomDeck(roomId);
-    const picks = humanPlayerId ? pickBotDecisions(deck, cash, humanPlayerId) : [];
+    const picks = humanPlayerId ? pickBotDecisions(deck, cash, humanPlayerId, botResult.riskGauge) : [];
 
     const decisions: SubmittedDecisions = { strategic: [], operational: [], financial: [], lawsuits };
     for (const entry of picks) {
@@ -335,7 +382,20 @@ export class GameEngine {
       const bucket: 'strategic' | 'operational' | 'financial' =
         def?.level === 'Strategic' ? 'strategic' : def?.level === 'Financial' ? 'financial' : 'operational';
       decisions[bucket].push(entry);
+      // Track what pickBotDecisions' own picks would spend so pickBotShareBuy (below)
+      // doesn't independently think the same spare cash is still available.
+      if (def) cash += firstYearCashImpact(def);
     }
+
+    // Hostile-takeover threat: a genuine (if unsophisticated) Buy Shares strategy, on top
+    // of pickBotDecisions' own picks — see botService.ts's pickBotShareBuy doc comment.
+    if (humanPlayerId) {
+      const buyAmount = pickBotShareBuy(cash, decisions.financial.length, this.gameConfig.gameSettings.maxFinancialDecisionsPerTurn);
+      if (buyAmount !== undefined) {
+        decisions.financial.push({ name: 'Buy Shares', targetId: humanPlayerId, amount: buyAmount });
+      }
+    }
+
     this.submitDecisions(roomId, botPlayerId, decisions);
 
     // Mirrors the GAME_READY socket handler exactly (broadcast the ready update, and
@@ -569,7 +629,11 @@ export class GameEngine {
    * comes back with an empty `history` rather than leaking another room's data or
    * erroring. If the player has since gone bankrupt (excluded from
    * `loadActiveCompanyPlayers`), `predicted` just comes back empty rather than the whole
-   * call failing — `history` is still real and worth returning.
+   * call failing — `history` is still real and worth returning. `predictFutureKpis` reads
+   * this player's own currently-queued (not yet turn-resolved) decisions straight off
+   * `this.gameLoop`'s live submission state for `roomId` and folds them into the very
+   * first predicted point — never a rival's, whose queued decisions stay excluded exactly
+   * as before (see `predictFutureKpis`'s own doc comment).
    */
   async getKpiHistory(roomId: string, targetPlayerId: string, includePrediction: boolean): Promise<KpiHistoryResponse | null> {
     const roomState = this.rooms.get(roomId);
@@ -591,7 +655,7 @@ export class GameEngine {
     }
 
     const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
-    const prediction = this.gameLoop.predictFutureKpis(targetPlayerId, roomState.room.currentPhaseRound, dbPlayers, 3);
+    const prediction = this.gameLoop.predictFutureKpis(roomId, targetPlayerId, roomState.room.currentPhaseRound, dbPlayers, 3);
 
     return { playerId: targetPlayerId, history, predicted: prediction.predicted, bankruptAtRound: prediction.bankruptAtRound };
   }
@@ -660,6 +724,7 @@ export class GameEngine {
           deployedYear: d.deployedYear,
           targetId: d.targetId,
           voidedByLawsuit: !!d.voidedByLawsuit,
+          acquisitionFraction: d.acquisitionFraction,
         });
       }
     }
@@ -678,6 +743,8 @@ export class GameEngine {
       groundName: c.groundName,
       description: c.description,
       stakes: Number(c.stakes),
+      baseProbability: c.baseProbability,
+      plaintiffFullyInvestigated: c.plaintiffFullyInvestigated,
       filedRound: c.filedRound,
       resolvedRound: c.resolvedRound ?? undefined,
       // `LegalCaseHistory.verdict` is a plain string column (not DB-enforced — same
@@ -897,6 +964,8 @@ export class GameEngine {
         groundName: c.groundName,
         description: c.description,
         stakes: c.stakes,
+        baseProbability: c.baseProbability,
+        plaintiffFullyInvestigated: c.plaintiffFullyInvestigated,
         filedRound: round,
         resolvedRound: c.status === 'resolved' ? round : null,
         verdict: c.status === 'resolved' ? (c.verdict ?? null) : null,
@@ -1072,6 +1141,35 @@ export class GameEngine {
       where: { roomId, bankrupt: false },
       include: { company: true },
     });
+  }
+
+  /**
+   * Best-effort "what was each of this room's players' revenue, last time it was
+   * computed" — `GameLoop` never persists `revenue` onto `Company.variables` (it's a
+   * derived P&L figure, only ever materialized fresh into a turn's own local `plMap`
+   * inside `resolveTurn` — see gameLoop.ts's Step 8 stakes-calculation note), so an
+   * out-of-band action with no live turn in progress (`digDeeper`) has no other source
+   * for it. Reads the latest `KpiSnapshot` row per player instead (`distinct: ['playerId']`
+   * combined with `orderBy: { round: 'desc' }` gets Prisma to return exactly the newest
+   * row per player). A real, reported bug this fixes: without it, `revealAttack`'s
+   * `pickBestGround` call fell back to 0 for any relative-type legal-risk ground
+   * targeting revenue (17 of the 25 in the real library), showing a flatly wrong "$0"
+   * stakes on the Dig Deeper reveal for those. Approximate (last-turn's figure, not
+   * "right now") — same "can't afford a live recomputation out-of-band" tradeoff as
+   * everywhere else in this codebase a non-turn-cycle action needs a P&L-derived number.
+   */
+  private async latestKnownRevenueByPlayer(roomId: string): Promise<Map<string, number>> {
+    const rows = await this.prisma.kpiSnapshot.findMany({
+      where: { player: { roomId } },
+      orderBy: { round: 'desc' },
+      distinct: ['playerId'],
+    });
+    const map = new Map<string, number>();
+    for (const r of rows) {
+      const revenue = (r.derived as { revenue?: number } | null)?.revenue;
+      if (typeof revenue === 'number') map.set(r.playerId, revenue);
+    }
+    return map;
   }
 
   /**

@@ -310,7 +310,11 @@ describe('calcEngine', () => {
       expect(result.ebit).toBe(result.ebitda - depreciation);
       expect(result.financeCost).toBe(2000 + 20000 * 0.05);
       expect(result.profitBeforeTax).toBe(result.ebit - result.financeCost);
-      expect(result.taxCost).toBe(Math.max(0, result.profitBeforeTax) * 0.2);
+      // Base rate plus the progressive 12% surcharge on profit above $200k/turn (a
+      // deliberate cash sink — see defaultFormulas.ts's taxCost expression).
+      expect(result.taxCost).toBe(
+        Math.max(0, result.profitBeforeTax) * 0.2 + Math.max(0, result.profitBeforeTax - 200000) * 0.12,
+      );
       expect(result.netProfit).toBe(result.profitBeforeTax - result.taxCost);
     });
 
