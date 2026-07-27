@@ -14,6 +14,7 @@
     "lint": "eslint src --max-warnings 0",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio"
   },
@@ -22,6 +23,7 @@
     "@suethemchickens/shared": "*",
     "cors": "^2.8.5",
     "express": "^4.18.2",
+    "prisma": "^6.18.0",
     "socket.io": "^4.7.4",
     "uuid": "^9.0.0",
     "zod": "^3.25.76"
@@ -36,7 +38,6 @@
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^9.25.0",
     "nodemon": "^3.1.14",
-    "prisma": "^6.18.0",
     "tsx": "^4.7.0",
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.30.1",

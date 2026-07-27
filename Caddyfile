@@ -1,0 +1,27 @@
+# Caddy is the single public entry point (ports 80/443) for the production stack —
+# see docker-compose.prod.yml. It gets/renews a Let's Encrypt cert for the domain
+# automatically; nothing else needs manual TLS setup.
+#
+# Everything lives on one origin (https://suethemchickens.online) because the client
+# bundle bakes VITE_SERVER_URL in at build time (see client/Dockerfile) and the
+# Socket.IO client connects directly to that origin — so /socket.io, /api, and /health
+# must be routed to the server container from here, not proxied a second time by the
+# client's own nginx (which has its own /api proxy for local `docker-compose.yml` use,
+# harmless but redundant once Caddy already routed the request to `server` directly).
+
+{
+	email risto.paavola@gmail.com
+}
+
+suethemchickens.online, www.suethemchickens.online {
+	encode gzip zstd
+
+	@backend path /socket.io/* /api/* /health
+	handle @backend {
+		reverse_proxy server:3001
+	}
+
+	handle {
+		reverse_proxy client:80
+	}
+}

@@ -4374,3 +4374,66 @@ needed one non-obvious fix while writing them: `mockIo.emit.mock.calls.find(...)
 first, always empty `activeDecisions`) rather than the real post-submission resolution —
 `.filter(...).pop()` (the *last* matching call) is required instead, the same gotcha this
 file's own `startGame` broadcast-ordering section already flags for a different reason.
+
+## Production deployment
+
+`suethemchickens.online` runs on a single Hetzner Ubuntu VPS — one Docker Compose stack
+(`docker-compose.prod.yml`, distinct from `docker-compose.yml`'s local-dev stack),
+fronted by Caddy for automatic TLS, deployed via GitHub Actions on every push to `main`.
+
+- **`deploy/server-setup.sh`** — the one-time, idempotent root bootstrap for a fresh box:
+  creates a non-root `deploy` sudo user, hardens SSH (no root login, no password auth),
+  configures `ufw` (22/80/443 only), installs Docker, creates `/opt/suethemchickens`, and
+  generates a passphrase-less deploy-only SSH keypair for GitHub Actions (never reuse a
+  personal, passphrase-protected key here — Actions can't answer a passphrase prompt).
+  Meant to be run once by a human watching the output, not by an agent over an
+  unattended SSH session — SSH hardening is exactly the kind of change that can lock you
+  out if something goes wrong partway through.
+- **`docker-compose.prod.yml`** — pulls pre-built images from GHCR instead of building
+  from source on the box, publishes no ports except Caddy's 80/443 (Postgres/server/
+  client are only reachable from other containers on the compose network), and
+  deliberately has **no `llm:` service** — the annual-report/decision-gen features
+  degrade invisibly without one (see `llmService.ts`'s fallback-on-failure design
+  elsewhere in this file), and running llama.cpp alongside Postgres/Node on a small VPS
+  isn't worth it yet. Copy the `llm:` block back in from `docker-compose.yml` if the box
+  ever has RAM to spare.
+- **`Caddyfile`** — the single public entry point. Everything lives on one origin
+  (`https://suethemchickens.online`) because `VITE_SERVER_URL` is compiled into the
+  client bundle at build time (Vite env vars aren't readable at container runtime, see
+  `client/Dockerfile`) and the Socket.IO client connects directly to that origin — so
+  Caddy routes `/socket.io/*`, `/api/*`, and `/health` straight to the `server`
+  container and everything else to `client`, rather than letting the client's own nginx
+  `/api` proxy (which still exists, for local `docker-compose.yml` use) handle it a
+  second time.
+- **`.github/workflows/docker.yml`** — on push to `main`: builds+pushes `server`/`client`
+  images to GHCR (tagged by short SHA, branch name, and `latest`), then SCPs
+  `docker-compose.prod.yml`/`Caddyfile` to the server and runs
+  `docker compose pull && docker compose run --rm server npx prisma migrate deploy && docker compose up -d`
+  over SSH. Requires four repo secrets: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`
+  (the passphrase-less key `server-setup.sh` generates), and nothing else — GHCR image
+  pulls need no credential on the server as long as the `server`/`client` packages are
+  set to **public** visibility in the repo's Packages settings after their first push
+  (a one-time manual step; private packages would need a registry login added to the
+  deploy script). A prior version of this workflow referenced `github.repository`
+  directly as the GHCR image path (`roistoFIN` has an uppercase `F` — Docker/GHCR
+  require all-lowercase image names, so every push would have failed outright) and
+  deployed to a stale `/opt/suetheirasses` path left over from the game's old name — the
+  `prep` job's lowercasing step and the corrected path fix both, respectively.
+- **`prisma` had to move from `server/package.json`'s `devDependencies` to
+  `dependencies`** — the production Docker image's final stage runs `npm ci --omit=dev`
+  (see `server/Dockerfile`), so the Prisma CLI (needed for `npx prisma migrate deploy` at
+  deploy time, as opposed to `@prisma/client`, needed at runtime and already a regular
+  dependency) would otherwise be missing from the image entirely. `db:migrate:deploy` (a
+  new script, both in `server/package.json` and root `package.json`) wraps `prisma
+  migrate deploy` — the non-interactive, CI/production-safe counterpart to
+  `db:migrate`'s `prisma migrate dev`, which prompts and can generate new migrations;
+  never run `db:migrate` against production.
+- **`.env.production.example`** documents what the server's real `/opt/suethemchickens/.env`
+  needs (`POSTGRES_PASSWORD`, `ADMIN_TOKEN`, `IMAGE_TAG`) — copy it, fill in real
+  secrets, never commit the real file (already covered by `.gitignore`'s `.env.production`
+  pattern).
+
+An already-provisioned server that predates one of these fixes (the `prisma`
+dependency move, the lowercase image path, the migrate-deploy step) needs nothing
+special to pick it up — the next `docker compose pull && up -d` cycle just starts
+using the corrected image/compose file, since nothing about the fix is stateful.
