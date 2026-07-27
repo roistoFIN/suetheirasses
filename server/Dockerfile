@@ -45,6 +45,13 @@ COPY --from=builder /app/shared/dist ./shared/dist
 COPY --from=builder /app/server/dist ./server/dist
 COPY --from=builder /app/server/prisma ./server/prisma
 
+# prisma/seed.ts is TypeScript run directly via tsx (not compiled by `tsc build` — it
+# lives outside server/tsconfig.json's "src/**/*" include glob) and imports
+# ../src/data/*.json + ../src/engine/defaultFormulas.js (resolved by tsx against the
+# sibling .ts source, not dist) — so `npm run db:seed`/`npx tsx server/prisma/seed.ts`
+# needs the real server/src tree present here, not just the compiled dist output.
+COPY --from=builder /app/server/src ./server/src
+
 # Generate Prisma client
 RUN npx prisma generate --schema=server/prisma/schema.prisma
 

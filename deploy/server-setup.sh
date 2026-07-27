@@ -40,6 +40,16 @@ if ! id -u "${DEPLOY_USER}" >/dev/null 2>&1; then
   usermod -aG sudo "${DEPLOY_USER}"
 fi
 
+# --disabled-password means deploy has no password at all (SSH key is its only
+# credential) — sudo normally authenticates against the invoking user's own password,
+# which doesn't exist here, so without this deploy couldn't actually use the sudo group
+# membership above. NOPASSWD is the standard, expected shape for an SSH-key-only ops
+# account, not a security downgrade from where a real password would leave it.
+echo "==> Granting ${DEPLOY_USER} passwordless sudo (their only credential is the SSH key)"
+echo "${DEPLOY_USER} ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/${DEPLOY_USER}"
+chmod 440 "/etc/sudoers.d/${DEPLOY_USER}"
+visudo -cf "/etc/sudoers.d/${DEPLOY_USER}"
+
 echo "==> Copying your current authorized_keys to ${DEPLOY_USER} (so you can still log in once root SSH is off)"
 mkdir -p "/home/${DEPLOY_USER}/.ssh"
 if [ -f /root/.ssh/authorized_keys ]; then
