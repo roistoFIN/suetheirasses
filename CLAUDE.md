@@ -1111,6 +1111,47 @@ component, embedded in two shells (`Matchmaking.tsx`'s inline button+Modal,
 `FeedbackWidget.tsx`'s floating fab mirroring `ChatWidget`'s shape at bottom-left). Admin
 portal's Feedback tab is read-only, polled alongside Rooms.
 
+### Consent-gated Google Analytics/Ads — script literally doesn't exist without consent
+
+`client/src/lib/googleConsent.ts` implements Google Consent Mode v2 (the signal-passing
+protocol Google requires before any of its ad/analytics scripts may request personalized
+ads or set non-essential cookies), backed by a sitewide `ConsentBanner.tsx` +
+`consentStore.ts` (Zustand, `localStorage`-persisted under `stita_consent`). `main.tsx`
+calls `initConsentDefaults(storedChoice)` before React mounts, which always pushes a
+fully-denied baseline first (`ensureDataLayer`'s `gtag` stub, not the real
+`googletagmanager.com/gtag/js` library — that only loads once actually needed, see below),
+then layers a returning visitor's already-stored choice on top in the same synchronous
+tick, so there's no window where a consented visitor is treated as denied.
+
+**Deliberately stricter than Consent Mode strictly requires**: rather than loading Google's
+scripts unconditionally and trusting the denied signals to suppress cookie writes, both
+`loadAdSenseScript` (`VITE_ADSENSE_CLIENT_ID`) and `loadAnalyticsScript`
+(`VITE_GA_MEASUREMENT_ID`) inject their `<script>` tag only once the matching
+category (`advertising`/`analytics`) is actually granted — called from `pushConsentUpdate`,
+which fires on every Accept All/Reject All/Save Preferences action and, via
+`initConsentDefaults`, on a returning visitor's page load. This is a "the script simply
+doesn't exist pre-consent" posture, not just a "the script exists but behaves passively"
+one. Both loaders are safe no-ops with their env var unset (the default) — nothing here
+requires a real GA4 property or an approved AdSense account to ship; `googleConsent.test.ts`
+covers both the no-op-when-unset and idempotent-when-called-twice cases without a DOM
+(`window`/`document` are stubbed by hand per test, since this workspace runs Vitest without
+jsdom — no test needs a real browser here).
+
+Both `VITE_ADSENSE_CLIENT_ID`/`VITE_GA_MEASUREMENT_ID` are ordinary Vite build-time env
+vars (see `vite-env.d.ts`) — safe to expose despite the `VITE_*` public-bundle convention
+noted elsewhere in this file, since both IDs are public by nature (an AdSense publisher ID
+and GA measurement ID are always visible in any site's shipped HTML/JS, unlike
+`ADMIN_TOKEN`). Wired through `client/Dockerfile`'s build `ARG`/`ENV` pair (same shape as
+`VITE_SERVER_URL`) and, in CI, `.github/workflows/docker.yml`'s `build-client` job pulls
+them from GitHub Actions repo **Variables** (`vars.ADSENSE_CLIENT_ID`/
+`vars.GA_MEASUREMENT_ID`), not Secrets — there's nothing to protect by hiding a value that
+ends up baked verbatim into the public client bundle either way. Leaving both repo
+variables unset is fully supported and ships a working game with no ads/analytics.
+
+The Privacy Policy modal (`Matchmaking.tsx`, "Third-Party Services and Analytics" section)
+names both services and states scripts are blocked until explicit consent — keep that text
+in sync if either mechanism's actual behavior changes.
+
 ### Server-injected AI bot player — heuristic, not optimal, deliberately non-deterministic
 
 When a lone player waits in a public (non-invite-only) room past a short delay

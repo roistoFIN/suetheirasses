@@ -1,12 +1,9 @@
 /**
  * Google Consent Mode v2 — the signal-passing mechanism Google requires (regardless of
  * which cookie-banner UI a site uses) before any Google ad/analytics script may request
- * personalized ads or set non-essential cookies. See CLAUDE.md's Google Ads planning
- * notes: this project uses AdSense only (no GA/Ads conversion tracking yet), so the
- * standalone "gtag stub + consent commands" pattern below is sufficient — the full
- * googletagmanager.com/gtag/js library is only needed once a GA measurement ID or Ads
- * conversion ID is added, since `adsbygoogle.js` itself already reads consent state off
- * the same `window.dataLayer`/`gtag` queue this file sets up.
+ * personalized ads or set non-essential cookies. See CLAUDE.md's *Consent-gated Google
+ * Analytics/Ads* section. `adsbygoogle.js` and `gtag.js` both read consent state off the
+ * same `window.dataLayer`/`gtag` queue this file sets up.
  *
  * Everything here is a no-op in a non-browser context (`typeof window === 'undefined'`)
  * so this module is safe to import from a test file without a DOM.
@@ -76,6 +73,36 @@ export function loadAdSenseScript(): void {
   document.head.appendChild(script);
 }
 
+const GA_SCRIPT_ID = 'stita-ga-script';
+
+/** Injects the GA4 loader script once, only if a real measurement ID is configured
+ * (`VITE_GA_MEASUREMENT_ID`) — unset by default until a GA4 property exists, so this is a
+ * safe no-op in every environment until that's filled in. Mirrors `loadAdSenseScript`'s
+ * shape exactly, including the DOM-id idempotency check (safe across HMR reloads). Only
+ * called once analytics consent is actually granted (see `pushConsentUpdate`) — a
+ * stricter bar than Consent Mode strictly requires (which would tolerate loading the
+ * script pre-consent since it self-restricts to non-cookie behavior when denied), chosen
+ * to match the same "script simply doesn't exist without consent" posture already used
+ * for AdSense. The `config` call fires after the script's own `onload`, since `gtag.js`
+ * ignores queued commands pushed before it finishes initializing. */
+export function loadAnalyticsScript(): void {
+  if (typeof document === 'undefined') return;
+  const measurementId = import.meta.env.VITE_GA_MEASUREMENT_ID;
+  if (!measurementId) return;
+  if (document.getElementById(GA_SCRIPT_ID)) return;
+
+  ensureDataLayer();
+  const script = document.createElement('script');
+  script.id = GA_SCRIPT_ID;
+  script.async = true;
+  script.src = `https://www.googletagmanager.com/gtag/js?id=${measurementId}`;
+  script.onload = () => {
+    window.gtag?.('js', new Date());
+    window.gtag?.('config', measurementId);
+  };
+  document.head.appendChild(script);
+}
+
 /** Called once, as early as possible in `main.tsx` — before React even mounts, so no
  * component can race ahead of it. Always establishes the deny-by-default baseline Google
  * requires, then immediately layers a returning visitor's already-stored choice on top
@@ -91,12 +118,16 @@ export function initConsentDefaults(stored: ConsentCategories | null): void {
 }
 
 /** Called whenever the player accepts/rejects/customizes cookie categories — updates the
- * live consent signals and, if advertising was just granted, loads the AdSense script
- * (a no-op until `VITE_ADSENSE_CLIENT_ID` is configured — see `loadAdSenseScript`). */
+ * live consent signals and, if the corresponding category was just granted, loads the
+ * AdSense/GA4 script (both no-ops until their respective env var is configured — see
+ * `loadAdSenseScript`/`loadAnalyticsScript`). */
 export function pushConsentUpdate(categories: ConsentCategories): void {
   ensureDataLayer();
   window.gtag?.('consent', 'update', categoriesToSignals(categories));
   if (categories.advertising) {
     loadAdSenseScript();
+  }
+  if (categories.analytics) {
+    loadAnalyticsScript();
   }
 }

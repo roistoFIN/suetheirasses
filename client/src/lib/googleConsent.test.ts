@@ -3,6 +3,7 @@ import {
   categoriesToSignals,
   ensureDataLayer,
   loadAdSenseScript,
+  loadAnalyticsScript,
   initConsentDefaults,
   pushConsentUpdate,
   ALL_GRANTED,
@@ -18,6 +19,7 @@ interface FakeScriptElement {
   async: boolean;
   crossOrigin: string;
   src: string;
+  onload?: () => void;
 }
 
 interface FakeWindow {
@@ -29,7 +31,9 @@ function createFakeDocument() {
   const created: Record<string, FakeScriptElement> = {};
   return {
     getElementById: vi.fn((id: string) => created[id] ?? null),
-    createElement: vi.fn((): FakeScriptElement => ({ id: '', async: false, crossOrigin: '', src: '' })),
+    createElement: vi.fn(
+      (): FakeScriptElement => ({ id: '', async: false, crossOrigin: '', src: '' }),
+    ),
     head: {
       appendChild: vi.fn((el: FakeScriptElement) => {
         created[el.id] = el;
@@ -145,6 +149,66 @@ describe('loadAdSenseScript', () => {
   });
 });
 
+describe('loadAnalyticsScript', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it('does nothing when no measurement ID is configured (the default, no-GA4-property state)', () => {
+    const fakeDocument = createFakeDocument();
+    vi.stubGlobal('document', fakeDocument);
+
+    loadAnalyticsScript();
+
+    expect(fakeDocument.head.appendChild).not.toHaveBeenCalled();
+  });
+
+  it('injects the gtag.js script once a measurement ID is configured', () => {
+    vi.stubEnv('VITE_GA_MEASUREMENT_ID', 'G-ABC123');
+    const fakeWindow: FakeWindow = {};
+    vi.stubGlobal('window', fakeWindow);
+    const fakeDocument = createFakeDocument();
+    vi.stubGlobal('document', fakeDocument);
+
+    loadAnalyticsScript();
+
+    expect(fakeDocument.head.appendChild).toHaveBeenCalledTimes(1);
+    const injected = fakeDocument.head.appendChild.mock.calls[0][0];
+    expect(injected.src).toBe('https://www.googletagmanager.com/gtag/js?id=G-ABC123');
+    expect(injected.async).toBe(true);
+  });
+
+  it('fires the js/config gtag calls once the script loads', () => {
+    vi.stubEnv('VITE_GA_MEASUREMENT_ID', 'G-ABC123');
+    const fakeWindow: FakeWindow = {};
+    vi.stubGlobal('window', fakeWindow);
+    const fakeDocument = createFakeDocument();
+    vi.stubGlobal('document', fakeDocument);
+
+    loadAnalyticsScript();
+    const injected = fakeDocument.head.appendChild.mock.calls[0][0];
+    injected.onload?.();
+
+    expect(fakeWindow.dataLayer).toEqual([
+      ['js', expect.any(Date)],
+      ['config', 'G-ABC123'],
+    ]);
+  });
+
+  it('is idempotent — a repeat call never injects a second script tag', () => {
+    vi.stubEnv('VITE_GA_MEASUREMENT_ID', 'G-ABC123');
+    vi.stubGlobal('window', {});
+    const fakeDocument = createFakeDocument();
+    vi.stubGlobal('document', fakeDocument);
+
+    loadAnalyticsScript();
+    loadAnalyticsScript();
+
+    expect(fakeDocument.head.appendChild).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('initConsentDefaults / pushConsentUpdate', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -179,6 +243,19 @@ describe('initConsentDefaults / pushConsentUpdate', () => {
     vi.stubGlobal('document', fakeDocument);
 
     pushConsentUpdate({ analytics: true, advertising: false });
+    expect(fakeDocument.head.appendChild).not.toHaveBeenCalled();
+
+    pushConsentUpdate({ analytics: true, advertising: true });
+    expect(fakeDocument.head.appendChild).toHaveBeenCalledTimes(1);
+  });
+
+  it('pushConsentUpdate loads the GA4 script only when analytics is granted', () => {
+    vi.stubEnv('VITE_GA_MEASUREMENT_ID', 'G-ABC123');
+    vi.stubGlobal('window', {});
+    const fakeDocument = createFakeDocument();
+    vi.stubGlobal('document', fakeDocument);
+
+    pushConsentUpdate({ analytics: false, advertising: true });
     expect(fakeDocument.head.appendChild).not.toHaveBeenCalled();
 
     pushConsentUpdate({ analytics: true, advertising: true });

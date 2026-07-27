@@ -33,8 +33,8 @@ const consentStyles = {
 };
 
 /**
- * Sitewide cookie-consent bar — see CLAUDE.md's Google Ads planning notes. Mounted
- * unconditionally in App.tsx's final return (alongside BankruptcyModal), visible
+ * Sitewide cookie-consent bar — see CLAUDE.md's *Consent-gated Google Analytics/Ads*
+ * section. Mounted unconditionally in App.tsx's final return (alongside BankruptcyModal), visible
  * whenever the player hasn't yet made a choice OR has reopened it via Matchmaking's
  * "Cookie Settings" button (`useConsentStore`'s `settingsOpen`). In practice this only
  * ever shows on the pre-room landing page, since every player passes through it before a

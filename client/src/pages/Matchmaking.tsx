@@ -393,6 +393,12 @@ const Matchmaking: React.FC = () => {
     <Container size="sm" py="xl">
       <Paper p="xl" pos="relative" style={mmStyles.paper}>
         <LoadingOverlay visible={isCreating || isSearching} />
+        <Text
+          size="xs"
+          style={{ position: 'absolute', top: 6, right: 10, color: 'var(--ink-text-soft)', opacity: 0.6 }}
+        >
+          v0.90
+        </Text>
         <Image
           src="/images/hero.png"
           alt="Sue Them Chickens — rival poultry tycoons face off in court"
@@ -604,7 +610,7 @@ const Matchmaking: React.FC = () => {
           <Text size="sm">
             This Privacy Policy describes how Sue Them Chickens ("we", "us", or "our")
             collects, uses, and protects your personal data when you play our web game at
-            suethemchickens.org. We are committed to respecting your privacy and complying
+            suethemchickens.online. We are committed to respecting your privacy and complying
             with applicable data protection laws, including the EU General Data Protection
             Regulation (GDPR) and Finnish data protection laws.
           </Text>

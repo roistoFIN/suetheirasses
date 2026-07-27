@@ -26,6 +26,13 @@ RUN npm run build
 ARG VITE_SERVER_URL=http://localhost:3001
 ENV VITE_SERVER_URL=$VITE_SERVER_URL
 
+# Both optional and blank-safe (see client/src/lib/googleConsent.ts) — an unset value
+# means the corresponding script is never injected, regardless of visitor consent.
+ARG VITE_ADSENSE_CLIENT_ID=
+ENV VITE_ADSENSE_CLIENT_ID=$VITE_ADSENSE_CLIENT_ID
+ARG VITE_GA_MEASUREMENT_ID=
+ENV VITE_GA_MEASUREMENT_ID=$VITE_GA_MEASUREMENT_ID
+
 WORKDIR /app/client
 RUN npm run build
 
