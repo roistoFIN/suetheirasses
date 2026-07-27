@@ -8,6 +8,7 @@ import { useGameStore } from '../stores/gameStore';
 import { useSocketStore } from '../stores/socketStore';
 import ChatWidget from '../components/ChatWidget';
 import FeedbackWidget from '../components/FeedbackWidget';
+import AdSlot from '../components/AdSlot';
 import {
   ServerEvents, ClientEvents,
   type GameTimelineResponse, type TimelineDecisionEvent, type TimelineLawsuitEvent,
@@ -607,6 +608,15 @@ export default function GameTimelineView({ mode }: GameTimelineViewProps) {
           </Center>
         )}
       </Paper>
+
+      {/* Below the Paper, not inside it — this screen's happenings log/decision popups
+          are clickable, so a manual ad placement stays out of that zone. Shown in both
+          modes ('live' spectating and 'finished' Game Over), same rationale as the
+          landing page's own AdSlot: see CLAUDE.md's *Consent-gated Google
+          Analytics/Ads* section. */}
+      <Box mt="xl">
+        <AdSlot slot={import.meta.env.VITE_ADSENSE_SLOT_GAMEOVER} />
+      </Box>
       </Container>
 
       {/* Decision-detail popup for a "deployed X" happening — themed the same as every

@@ -110,10 +110,11 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
 
-      # ADSENSE_CLIENT_ID/GA_MEASUREMENT_ID are repo Variables (Settings → Secrets and
-      # variables → Actions → Variables), not Secrets — both end up baked verbatim into
-      # the public client bundle regardless, so there's nothing to protect by hiding
-      # them from workflow logs. Unset is fine: see client/src/lib/googleConsent.ts.
+      # ADSENSE_CLIENT_ID/GA_MEASUREMENT_ID/ADSENSE_SLOT_* are repo Variables (Settings →
+      # Secrets and variables → Actions → Variables), not Secrets — all end up baked
+      # verbatim into the public client bundle regardless, so there's nothing to protect
+      # by hiding them from workflow logs. Unset is fine: see client/src/lib/
+      # googleConsent.ts (script loaders) and client/src/components/AdSlot.tsx (ad units).
       - name: Build and push client image
         uses: docker/build-push-action@v5
         with:
@@ -126,6 +127,8 @@ jobs:
             VITE_SERVER_URL=${{ env.PUBLIC_URL }}
             VITE_ADSENSE_CLIENT_ID=${{ vars.ADSENSE_CLIENT_ID }}
             VITE_GA_MEASUREMENT_ID=${{ vars.GA_MEASUREMENT_ID }}
+            VITE_ADSENSE_SLOT_LANDING=${{ vars.ADSENSE_SLOT_LANDING }}
+            VITE_ADSENSE_SLOT_GAMEOVER=${{ vars.ADSENSE_SLOT_GAMEOVER }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

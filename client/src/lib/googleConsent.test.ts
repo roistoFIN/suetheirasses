@@ -113,6 +113,9 @@ describe('loadAdSenseScript', () => {
   });
 
   it('does nothing when no publisher ID is configured (the default, pre-approval state)', () => {
+    // Explicitly stubbed empty rather than relying on ambient absence — a developer's own
+    // local client/.env may have a real value set for actual dev testing.
+    vi.stubEnv('VITE_ADSENSE_CLIENT_ID', '');
     const fakeDocument = createFakeDocument();
     vi.stubGlobal('document', fakeDocument);
 
@@ -156,6 +159,9 @@ describe('loadAnalyticsScript', () => {
   });
 
   it('does nothing when no measurement ID is configured (the default, no-GA4-property state)', () => {
+    // Explicitly stubbed empty rather than relying on ambient absence — a developer's own
+    // local client/.env may have a real value set for actual dev testing.
+    vi.stubEnv('VITE_GA_MEASUREMENT_ID', '');
     const fakeDocument = createFakeDocument();
     vi.stubGlobal('document', fakeDocument);
 
@@ -238,6 +244,9 @@ describe('initConsentDefaults / pushConsentUpdate', () => {
 
   it('pushConsentUpdate loads the AdSense script only when advertising is granted', () => {
     vi.stubEnv('VITE_ADSENSE_CLIENT_ID', 'ca-pub-12345');
+    // Stubbed empty (not just left ambient) so this test can't accidentally pass/fail
+    // depending on a developer's own local client/.env GA measurement ID.
+    vi.stubEnv('VITE_GA_MEASUREMENT_ID', '');
     vi.stubGlobal('window', {});
     const fakeDocument = createFakeDocument();
     vi.stubGlobal('document', fakeDocument);
@@ -251,6 +260,9 @@ describe('initConsentDefaults / pushConsentUpdate', () => {
 
   it('pushConsentUpdate loads the GA4 script only when analytics is granted', () => {
     vi.stubEnv('VITE_GA_MEASUREMENT_ID', 'G-ABC123');
+    // Stubbed empty (not just left ambient) so this test can't accidentally pass/fail
+    // depending on a developer's own local client/.env AdSense publisher ID.
+    vi.stubEnv('VITE_ADSENSE_CLIENT_ID', '');
     vi.stubGlobal('window', {});
     const fakeDocument = createFakeDocument();
     vi.stubGlobal('document', fakeDocument);

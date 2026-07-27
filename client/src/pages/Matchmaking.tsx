@@ -21,6 +21,7 @@ import {
   Modal,
   List,
   Table,
+  Box,
 } from '@mantine/core';
 import { IconCheck, IconCopy, IconInfoCircle, IconShieldLock, IconMessageStar, IconCookie } from '@tabler/icons-react';
 import { useSocketStore } from '../stores/socketStore';
@@ -28,6 +29,7 @@ import { useGameStore } from '../stores/gameStore';
 import { useChatStore } from '../stores/chatStore';
 import { useConsentStore } from '../stores/consentStore';
 import FeedbackForm from '../components/FeedbackForm';
+import AdSlot from '../components/AdSlot';
 import { ClientEvents, ServerEvents, type RoomInfo } from '@suethemchickens/shared';
 
 /** localStorage key for remembering the player's name across visits — see `Matchmaking`'s name-entry section. */
@@ -556,6 +558,14 @@ const Matchmaking: React.FC = () => {
           )}
         </Stack>
       </Paper>
+
+      {/* Below the interactive Paper, not inside it — a manual ad placement here can't
+          be mistaken for/overlap a Ready/Join/Create button. See AdSlot.tsx and
+          CLAUDE.md's *Consent-gated Google Analytics/Ads* section for why Auto ads were
+          rejected in favor of fixed, passive placements like this one. */}
+      <Box mt="xl">
+        <AdSlot slot={import.meta.env.VITE_ADSENSE_SLOT_LANDING} />
+      </Box>
 
       {/* Modal's own `title` prop already renders inside an <h2> — passing a Mantine
           <Title order={3}> (an <h3>) here nested an h3 inside an h2, an invalid-HTML

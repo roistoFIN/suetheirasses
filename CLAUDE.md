@@ -1137,16 +1137,41 @@ covers both the no-op-when-unset and idempotent-when-called-twice cases without 
 (`window`/`document` are stubbed by hand per test, since this workspace runs Vitest without
 jsdom — no test needs a real browser here).
 
-Both `VITE_ADSENSE_CLIENT_ID`/`VITE_GA_MEASUREMENT_ID` are ordinary Vite build-time env
+All four env vars (`VITE_ADSENSE_CLIENT_ID`/`VITE_GA_MEASUREMENT_ID`/
+`VITE_ADSENSE_SLOT_LANDING`/`VITE_ADSENSE_SLOT_GAMEOVER`) are ordinary Vite build-time env
 vars (see `vite-env.d.ts`) — safe to expose despite the `VITE_*` public-bundle convention
-noted elsewhere in this file, since both IDs are public by nature (an AdSense publisher ID
-and GA measurement ID are always visible in any site's shipped HTML/JS, unlike
-`ADMIN_TOKEN`). Wired through `client/Dockerfile`'s build `ARG`/`ENV` pair (same shape as
-`VITE_SERVER_URL`) and, in CI, `.github/workflows/docker.yml`'s `build-client` job pulls
-them from GitHub Actions repo **Variables** (`vars.ADSENSE_CLIENT_ID`/
-`vars.GA_MEASUREMENT_ID`), not Secrets — there's nothing to protect by hiding a value that
-ends up baked verbatim into the public client bundle either way. Leaving both repo
-variables unset is fully supported and ships a working game with no ads/analytics.
+noted elsewhere in this file, since all four are public by nature (an AdSense publisher
+ID, ad-unit slot id, and GA measurement ID are always visible in any site's shipped
+HTML/JS, unlike `ADMIN_TOKEN`). Wired through `client/Dockerfile`'s build `ARG`/`ENV`
+pairs (same shape as `VITE_SERVER_URL`) and, in CI, `.github/workflows/docker.yml`'s
+`build-client` job pulls them from GitHub Actions repo **Variables**
+(`vars.ADSENSE_CLIENT_ID`/`vars.GA_MEASUREMENT_ID`/`vars.ADSENSE_SLOT_LANDING`/
+`vars.ADSENSE_SLOT_GAMEOVER`), not Secrets — there's nothing to protect by hiding a value
+that ends up baked verbatim into the public client bundle either way. Leaving any/all of
+them unset is fully supported and ships a working game with no ads/analytics.
+
+**Manual ad placement, not Auto ads** — a deliberate product decision for this specific
+game: Auto ads let Google's ML place ad units anywhere on the page it judges to fit,
+which for a real-time 120s-round game risks landing an ad near/over an actual gameplay
+control (Ready button, a decision card) — both a UX problem and an AdSense policy risk
+(accidental clicks near ads next to interactive elements can trigger an "invalid click
+activity" account penalty). `client/src/components/AdSlot.tsx` is a single reusable manual
+ad-unit component instead, placed at exactly two call sites, both scroll-only/passive
+areas with no time-sensitive clicking near them: below the landing page's interactive
+`Paper` (`Matchmaking.tsx`, `VITE_ADSENSE_SLOT_LANDING`) and below the Game
+Over/spectating screen's content (`GameTimelineView.tsx`, `VITE_ADSENSE_SLOT_GAMEOVER`,
+shown in both `'live'` and `'finished'` mode) — never on the live `GamePhase` screen
+itself. Each placement needs its own AdSense ad unit/slot id (`AdSlot`'s own `slot` prop),
+since a single ad unit isn't meant to be reused across visually distinct placements.
+
+`AdSlot` follows the same "the markup simply doesn't exist without consent" posture as
+`googleConsent.ts`: renders nothing at all — not even an empty `<ins>` — unless a
+publisher ID, a real slot id for that placement, AND granted advertising consent are all
+present (`shouldShowAd`, the pure/testable gate — see `AdSlot.test.ts`). Reads consent
+live off `useConsentStore`, so a placement appears the instant a visitor accepts, no
+reload needed. `adsbygoogle.push({})` fires exactly once per real mount, guarded by a
+`useRef` rather than DOM inspection — React StrictMode double-invokes effects in dev, and
+a second push against the same `<ins>` throws "already have ads in this slot."
 
 The Privacy Policy modal (`Matchmaking.tsx`, "Third-Party Services and Analytics" section)
 names both services and states scripts are blocked until explicit consent — keep that text

@@ -12,6 +12,16 @@ interface ImportMetaEnv {
    * gtag.js script is never injected regardless of consent, so it's safe to leave blank
    * indefinitely. */
   readonly VITE_GA_MEASUREMENT_ID?: string;
+  /** AdSense ad-unit slot id for the landing page's manual ad placement (see
+   * components/AdSlot.tsx) — unset until an ad unit exists for this placement in the
+   * AdSense dashboard (requires an approved account first). Unset means this placement
+   * never renders, regardless of consent. */
+  readonly VITE_ADSENSE_SLOT_LANDING?: string;
+  /** AdSense ad-unit slot id for the Game Over/spectating screen's manual ad placement
+   * (see components/AdSlot.tsx and pages/GameTimelineView.tsx) — same unset-is-safe rule
+   * as VITE_ADSENSE_SLOT_LANDING, but its own distinct ad unit/slot id, since AdSense
+   * ad units are per-placement. */
+  readonly VITE_ADSENSE_SLOT_GAMEOVER?: string;
 }
 
 interface ImportMeta {
