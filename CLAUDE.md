@@ -598,9 +598,18 @@ are best-effort — same "must degrade invisibly" convention as `llmService` —
 writing telemetry must never abort a turn or surface to a player. `EVENT_TYPES` is a fixed
 vocabulary (`turn.resolved`, `decision.deployed`/`rejected`, `player.eliminated`/
 `disconnected`/`reconnected`/`kicked`, `room.stale_cleanup`, `game.completed`, `llm.call`,
-`error.persistence`). `game.completed` is logged from exactly the two real game-ending call
-sites (`resolveGameTurn`, `forfeitGame`), never from the payload-building helper itself
-(which has a third, non-completion caller: reconnect re-fetch).
+`error.persistence`, `case.negotiation_action`). `game.completed` is logged from exactly
+the two real game-ending call sites (`resolveGameTurn`, `forfeitGame`), never from the
+payload-building helper itself (which has a third, non-completion caller: reconnect
+re-fetch). `case.negotiation_action` is the odd one out — added purely as a forensic aid
+for a specific reported bug (see the negotiation-actions-vs-turn-resolution race section
+above) rather than for a dashboard: `GameEngine.logNegotiationAction` logs every
+`makeOffer`/`acceptOffer`/`goToCourt`/`digDeeperOnCase` call, success or rejection,
+including the case's exact `offers`/status snapshot immediately before the call
+(`findCaseSnapshotInDbPlayers` — best-effort only, never used for an actual gameplay
+decision, that stays inside `GameLoop.findCaseAndParties`) — so a "the wrong party got to
+move" report can be diagnosed from real data next time instead of a player's memory of
+what they clicked.
 
 Three aggregate dashboards live in `analyticsService.ts` as pure functions over plain row
 arrays (unit-testable without a DB): decision win/loss correlation (cross-references

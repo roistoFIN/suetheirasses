@@ -433,9 +433,15 @@ export class GameEngine {
    * at the *exact* instant a multi-second turn timer independently expires. See CLAUDE.md.
    */
   async makeOffer(roomId: string, playerId: string, caseId: string, amount: number): Promise<import('../engine/gameLoop.js').LegalCaseActionOutcome> {
-    if (this.advancingRooms.has(roomId)) return { success: false, reason: 'turn_resolving' };
+    if (this.advancingRooms.has(roomId)) {
+      const outcome: import('../engine/gameLoop.js').LegalCaseActionOutcome = { success: false, reason: 'turn_resolving' };
+      await this.logNegotiationAction('makeOffer', roomId, playerId, caseId, undefined, outcome, { amount });
+      return outcome;
+    }
     const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
+    const before = this.findCaseSnapshotInDbPlayers(dbPlayers, caseId);
     const outcome = this.gameLoop.makeOffer(playerId, caseId, amount, dbPlayers);
+    await this.logNegotiationAction('makeOffer', roomId, playerId, caseId, before, outcome, { amount });
     if (outcome.success) {
       await this.persistLegalCaseAction(outcome);
       this.emitLegalCaseUpdate(roomId, outcome);
@@ -445,9 +451,15 @@ export class GameEngine {
 
   /** Accept the other party's most recent offer — settles the case immediately. Same two-party persist/emit shape as `makeOffer`, including the same `advancingRooms` rejection (see `makeOffer`'s doc comment). */
   async acceptOffer(roomId: string, playerId: string, caseId: string): Promise<import('../engine/gameLoop.js').LegalCaseActionOutcome> {
-    if (this.advancingRooms.has(roomId)) return { success: false, reason: 'turn_resolving' };
+    if (this.advancingRooms.has(roomId)) {
+      const outcome: import('../engine/gameLoop.js').LegalCaseActionOutcome = { success: false, reason: 'turn_resolving' };
+      await this.logNegotiationAction('acceptOffer', roomId, playerId, caseId, undefined, outcome);
+      return outcome;
+    }
     const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
+    const before = this.findCaseSnapshotInDbPlayers(dbPlayers, caseId);
     const outcome = this.gameLoop.acceptOffer(playerId, caseId, dbPlayers);
+    await this.logNegotiationAction('acceptOffer', roomId, playerId, caseId, before, outcome);
     if (outcome.success) {
       await this.persistLegalCaseAction(outcome);
       this.emitLegalCaseUpdate(roomId, outcome);
@@ -472,9 +484,15 @@ export class GameEngine {
 
   /** End negotiation and send a case to trial — only marks it `awaiting_trial`; the verdict is drawn the next time this room's turn actually resolves. Same two-party persist/emit shape as `makeOffer`, including the same `advancingRooms` rejection (see `makeOffer`'s doc comment). */
   async goToCourt(roomId: string, playerId: string, caseId: string): Promise<import('../engine/gameLoop.js').LegalCaseActionOutcome> {
-    if (this.advancingRooms.has(roomId)) return { success: false, reason: 'turn_resolving' };
+    if (this.advancingRooms.has(roomId)) {
+      const outcome: import('../engine/gameLoop.js').LegalCaseActionOutcome = { success: false, reason: 'turn_resolving' };
+      await this.logNegotiationAction('goToCourt', roomId, playerId, caseId, undefined, outcome);
+      return outcome;
+    }
     const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
+    const before = this.findCaseSnapshotInDbPlayers(dbPlayers, caseId);
     const outcome = this.gameLoop.goToCourt(playerId, caseId, dbPlayers);
+    await this.logNegotiationAction('goToCourt', roomId, playerId, caseId, before, outcome);
     if (outcome.success) {
       await this.persistLegalCaseAction(outcome);
       this.emitLegalCaseUpdate(roomId, outcome);
@@ -484,14 +502,77 @@ export class GameEngine {
 
   /** Pay `gameSettings.digDeeperCost` to reveal the probability of success on a case you're the defendant on — instant, outside the turn-resolution cycle. Same two-party persist/emit shape as `makeOffer`, even though only the defendant's cash moves — including the same `advancingRooms` rejection (see `makeOffer`'s doc comment). */
   async digDeeperOnCase(roomId: string, playerId: string, caseId: string): Promise<import('../engine/gameLoop.js').LegalCaseActionOutcome> {
-    if (this.advancingRooms.has(roomId)) return { success: false, reason: 'turn_resolving' };
+    if (this.advancingRooms.has(roomId)) {
+      const outcome: import('../engine/gameLoop.js').LegalCaseActionOutcome = { success: false, reason: 'turn_resolving' };
+      await this.logNegotiationAction('digDeeperOnCase', roomId, playerId, caseId, undefined, outcome);
+      return outcome;
+    }
     const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
+    const before = this.findCaseSnapshotInDbPlayers(dbPlayers, caseId);
     const outcome = this.gameLoop.digDeeperOnCase(playerId, caseId, dbPlayers);
+    await this.logNegotiationAction('digDeeperOnCase', roomId, playerId, caseId, before, outcome);
     if (outcome.success) {
       await this.persistLegalCaseAction(outcome);
       this.emitLegalCaseUpdate(roomId, outcome);
     }
     return outcome;
+  }
+
+  /** Best-effort scan of `loadActiveCompanyPlayers`' result for a case by id, across
+   * either party's own `engineState.legalCases` copy — used only for `logNegotiationAction`'s
+   * "before" snapshot (forensic detail), never for any actual gameplay decision (that stays
+   * inside `GameLoop.findCaseAndParties`). Returns `undefined` if not found in either. */
+  private findCaseSnapshotInDbPlayers(
+    dbPlayers: Awaited<ReturnType<GameEngine['loadActiveCompanyPlayers']>>,
+    caseId: string,
+  ): LegalCaseData | undefined {
+    for (const p of dbPlayers) {
+      const cases = (p.company?.engineState as { legalCases?: LegalCaseData[] } | null | undefined)?.legalCases ?? [];
+      const found = cases.find((c) => c.id === caseId);
+      if (found) return found;
+    }
+    return undefined;
+  }
+
+  /**
+   * Forensic trail for `makeOffer`/`acceptOffer`/`goToCourt`/`digDeeperOnCase` — logs
+   * every call, success or rejection, to `EventLog` (`case.negotiation_action`). Added
+   * specifically because a real, reported "wrong party got to move" bug couldn't be
+   * reproduced or pinned down from code review alone; this exists purely so the NEXT
+   * occurrence leaves concrete evidence (the case's exact `offers`/status immediately
+   * before the call, the actor, and the server's outcome) instead of relying on a
+   * player's memory of what they clicked. Best-effort — `logEvent` itself never throws,
+   * so this can never affect the actual negotiation outcome.
+   */
+  private async logNegotiationAction(
+    action: 'makeOffer' | 'acceptOffer' | 'goToCourt' | 'digDeeperOnCase',
+    roomId: string,
+    playerId: string,
+    caseId: string,
+    before: LegalCaseData | undefined,
+    outcome: import('../engine/gameLoop.js').LegalCaseActionOutcome,
+    extra?: Record<string, unknown>,
+  ): Promise<void> {
+    await logEvent(this.prisma, {
+      eventType: 'case.negotiation_action',
+      severity: outcome.success ? 'info' : 'warning',
+      roomId,
+      playerId,
+      payload: {
+        action,
+        caseId,
+        success: outcome.success,
+        ...(outcome.success ? {} : { reason: outcome.reason }),
+        beforeStatus: before?.status,
+        beforePlaintiffId: before?.plaintiffId,
+        beforeDefendantId: before?.defendantId,
+        beforeOffers: before?.offers,
+        ...(outcome.success
+          ? { afterStatus: outcome.case.status, afterVerdict: outcome.case.verdict ?? null, afterOffers: outcome.case.offers }
+          : {}),
+        ...extra,
+      },
+    });
   }
 
   /** Writes both parties' Company rows for a successful `makeOffer`/`acceptOffer`/`goToCourt` outcome. `cash`/`variables` are only included in a party's write when they're actually present on that side's update (a settlement) — omitted entirely for an offer or a court decision, which never move cash. */

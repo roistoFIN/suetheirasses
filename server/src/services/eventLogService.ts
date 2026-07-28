@@ -44,6 +44,14 @@ export const EVENT_TYPES = [
   // Surfaced from an existing swallowed catch block — see CLAUDE.md's per-player
   // persistence isolation sections. severity is always 'warning' or 'error' for these.
   'error.persistence',
+  // One per makeOffer/acceptOffer/goToCourt/digDeeperOnCase call, success or rejection —
+  // forensic trail for the negotiation-turn-order race class of bug (see CLAUDE.md's
+  // negotiation-actions-vs-turn-resolution section). Added specifically because a
+  // reported "wrong party got to move" bug couldn't be reproduced or pinned down from
+  // code review alone; this exists so the NEXT occurrence leaves concrete evidence
+  // (exact case state, actor, and server-computed turn-owner at the moment of the call)
+  // instead of relying on a player's memory of what they clicked.
+  'case.negotiation_action',
 ] as const;
 
 export type EventType = (typeof EVENT_TYPES)[number];

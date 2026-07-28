@@ -2871,6 +2871,77 @@ describe('GameEngine', () => {
       const outcome = await engine.goToCourt(roomState.room.id, aliceId, 'case-1');
       expect(outcome.success).toBe(true);
     });
+
+    it('logs a case.negotiation_action event for a successful makeOffer, capturing the case state immediately before the call', async () => {
+      const { roomState, aliceId } = await makeTwoPartyCaseRoom();
+
+      await engine.makeOffer(roomState.room.id, aliceId, 'case-1', 5000);
+
+      const events = getLoggedEvents(mockPrisma).filter((e) => e.eventType === 'case.negotiation_action');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual(
+        expect.objectContaining({
+          severity: 'info',
+          roomId: roomState.room.id,
+          playerId: aliceId,
+          payload: expect.objectContaining({
+            action: 'makeOffer',
+            caseId: 'case-1',
+            success: true,
+            amount: 5000,
+            beforeOffers: [],
+            afterOffers: [{ by: 'defendant', amount: 5000 }],
+          }),
+        }),
+      );
+    });
+
+    it('logs a case.negotiation_action event for a rejected action too, including the reason and the case state that caused it', async () => {
+      const { roomState, bobId } = await makeTwoPartyCaseRoom();
+
+      // Plaintiff (Bob) tries to make the opening offer — only the defendant may move first.
+      await engine.makeOffer(roomState.room.id, bobId, 'case-1', 10000);
+
+      const events = getLoggedEvents(mockPrisma).filter((e) => e.eventType === 'case.negotiation_action');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual(
+        expect.objectContaining({
+          severity: 'warning',
+          playerId: bobId,
+          payload: expect.objectContaining({
+            action: 'makeOffer',
+            success: false,
+            reason: 'not_your_turn',
+            beforeOffers: [],
+          }),
+        }),
+      );
+    });
+
+    it('logs turn_resolving rejections too, even though there is no case snapshot available for them', async () => {
+      const { roomState, aliceId } = await makeTwoPartyCaseRoom();
+      let releaseUpdate: () => void = () => {};
+      const blocker = new Promise<void>((resolve) => { releaseUpdate = resolve; });
+      (mockPrisma.company.update as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        await blocker;
+        return {};
+      });
+      const turnPromise = engine.resolveGameTurn(roomState.room.id);
+
+      await engine.goToCourt(roomState.room.id, aliceId, 'case-1');
+
+      releaseUpdate();
+      await turnPromise;
+
+      const events = getLoggedEvents(mockPrisma).filter((e) => e.eventType === 'case.negotiation_action');
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            payload: expect.objectContaining({ action: 'goToCourt', success: false, reason: 'turn_resolving', beforeOffers: undefined }),
+          }),
+        ]),
+      );
+    });
   });
 
   describe('getKpiHistory', () => {
