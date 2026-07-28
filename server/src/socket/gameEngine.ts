@@ -421,8 +421,19 @@ export class GameEngine {
    * those single-player actions, a case touches BOTH parties: on success, both parties'
    * Company rows are written and both parties' sockets (not just the requester's) get
    * the update, via `persistLegalCaseAction`/`emitLegalCaseUpdate`.
+   *
+   * Rejects outright with `reason: 'turn_resolving'` — before reading anything — while
+   * this room's `advancingRooms` lock is held. A real, reported bug: a player's
+   * `goToCourt` landing at the same moment their room's turn happened to resolve could be
+   * silently clobbered by that same turn's Step 8b stale-offer auto-settle, since neither
+   * side knew about the other. This can't fully close the race (the lock could still be
+   * acquired a moment after this check, before this call's own persistence write lands —
+   * a full fix would need a real per-room mutex/queue, not just a check-and-reject), but
+   * it closes the overwhelmingly likely window: a live human clicking a negotiation button
+   * at the *exact* instant a multi-second turn timer independently expires. See CLAUDE.md.
    */
   async makeOffer(roomId: string, playerId: string, caseId: string, amount: number): Promise<import('../engine/gameLoop.js').LegalCaseActionOutcome> {
+    if (this.advancingRooms.has(roomId)) return { success: false, reason: 'turn_resolving' };
     const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
     const outcome = this.gameLoop.makeOffer(playerId, caseId, amount, dbPlayers);
     if (outcome.success) {
@@ -432,8 +443,9 @@ export class GameEngine {
     return outcome;
   }
 
-  /** Accept the other party's most recent offer — settles the case immediately. Same two-party persist/emit shape as `makeOffer`. */
+  /** Accept the other party's most recent offer — settles the case immediately. Same two-party persist/emit shape as `makeOffer`, including the same `advancingRooms` rejection (see `makeOffer`'s doc comment). */
   async acceptOffer(roomId: string, playerId: string, caseId: string): Promise<import('../engine/gameLoop.js').LegalCaseActionOutcome> {
+    if (this.advancingRooms.has(roomId)) return { success: false, reason: 'turn_resolving' };
     const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
     const outcome = this.gameLoop.acceptOffer(playerId, caseId, dbPlayers);
     if (outcome.success) {
@@ -458,8 +470,9 @@ export class GameEngine {
     return outcome;
   }
 
-  /** End negotiation and send a case to trial — only marks it `awaiting_trial`; the verdict is drawn the next time this room's turn actually resolves. Same two-party persist/emit shape as `makeOffer`. */
+  /** End negotiation and send a case to trial — only marks it `awaiting_trial`; the verdict is drawn the next time this room's turn actually resolves. Same two-party persist/emit shape as `makeOffer`, including the same `advancingRooms` rejection (see `makeOffer`'s doc comment). */
   async goToCourt(roomId: string, playerId: string, caseId: string): Promise<import('../engine/gameLoop.js').LegalCaseActionOutcome> {
+    if (this.advancingRooms.has(roomId)) return { success: false, reason: 'turn_resolving' };
     const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
     const outcome = this.gameLoop.goToCourt(playerId, caseId, dbPlayers);
     if (outcome.success) {
@@ -469,8 +482,9 @@ export class GameEngine {
     return outcome;
   }
 
-  /** Pay `gameSettings.digDeeperCost` to reveal the probability of success on a case you're the defendant on — instant, outside the turn-resolution cycle. Same two-party persist/emit shape as `makeOffer`, even though only the defendant's cash moves. */
+  /** Pay `gameSettings.digDeeperCost` to reveal the probability of success on a case you're the defendant on — instant, outside the turn-resolution cycle. Same two-party persist/emit shape as `makeOffer`, even though only the defendant's cash moves — including the same `advancingRooms` rejection (see `makeOffer`'s doc comment). */
   async digDeeperOnCase(roomId: string, playerId: string, caseId: string): Promise<import('../engine/gameLoop.js').LegalCaseActionOutcome> {
+    if (this.advancingRooms.has(roomId)) return { success: false, reason: 'turn_resolving' };
     const dbPlayers = await this.loadActiveCompanyPlayers(roomId);
     const outcome = this.gameLoop.digDeeperOnCase(playerId, caseId, dbPlayers);
     if (outcome.success) {
@@ -751,6 +765,7 @@ export class GameEngine {
       // pragmatic style as LegalCaseData.verdict, see CLAUDE.md), but only ever written
       // by this codebase's own resolve/settle paths, always one of the four real values.
       verdict: (c.verdict ?? undefined) as TimelineLawsuitEvent['verdict'],
+      resolvedAmount: c.resolvedAmount != null ? Number(c.resolvedAmount) : undefined,
     }));
 
     // The turn:resolved cache already carries gameOver/winnerId — no need to
@@ -951,6 +966,7 @@ export class GameEngine {
    * `where` clause is what prevents that.
    */
   private async recordLegalCaseHistory(c: LegalCaseData, round: number, nameById: Map<string, string>): Promise<void> {
+    const resolvedAmount = this.resolvedCaseAmount(c);
     await this.prisma.legalCaseHistory.upsert({
       where: { id: c.id },
       create: {
@@ -969,6 +985,7 @@ export class GameEngine {
         filedRound: round,
         resolvedRound: c.status === 'resolved' ? round : null,
         verdict: c.status === 'resolved' ? (c.verdict ?? null) : null,
+        resolvedAmount: c.status === 'resolved' ? resolvedAmount : null,
       },
       update: {},
     });
@@ -976,9 +993,23 @@ export class GameEngine {
     if (c.status === 'resolved') {
       await this.prisma.legalCaseHistory.updateMany({
         where: { id: c.id, resolvedRound: null },
-        data: { resolvedRound: round, verdict: c.verdict ?? null },
+        data: { resolvedRound: round, verdict: c.verdict ?? null, resolvedAmount },
       });
     }
+  }
+
+  /** The actual dollar amount that changed hands to resolve a case — `null` for
+   * 'lost'/'cancelled' (no payment). Mirrors `GamePhase.tsx`'s own "Settled — you
+   * received/paid X" News item math (`offers[offers.length-1]?.amount ?? stakes`) for a
+   * settlement, since a negotiated amount can differ from the pre-trial `stakes`
+   * estimate; a trial verdict always pays exactly `stakes` (see `GameLoop.resolveTurn`'s
+   * Step 9). Pulled out as its own helper so `recordLegalCaseHistory`'s two write sites
+   * (the upsert's `create` and the resolution `updateMany`) can't drift on how this is
+   * computed. */
+  private resolvedCaseAmount(c: LegalCaseData): number | null {
+    if (c.verdict === 'won') return c.stakes;
+    if (c.verdict === 'settled') return c.offers[c.offers.length - 1]?.amount ?? c.stakes;
+    return null;
   }
 
   /**

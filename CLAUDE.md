@@ -216,6 +216,22 @@ tick), and `resolveGameTurn`'s per-player persistence loops each wrap their own 
 try/catch so one missing row can't abort the room's turn. Keep both if you touch
 `advancingRooms` or either persistence loop again.
 
+The four instant, out-of-band settlement-negotiation actions (`makeOffer`/`acceptOffer`/
+`goToCourt`/`digDeeperOnCase` — see *Settlement negotiation* below) have the same class of
+race, fixed the same way: each rejects outright with `reason: 'turn_resolving'`, before
+reading anything, while `advancingRooms.has(roomId)` — a real, reported bug where a
+player's `goToCourt` landing at the same moment their room's turn happened to resolve
+could be silently overwritten by that same turn's own Step 8b stale-offer auto-settle,
+since neither side knew about the other. Unlike `finalizePlayerRemoval`'s retry-next-tick
+fix, there's no natural "next tick" for a player-initiated socket action, so this is a
+flat rejection (`CASE_ACTION_ERROR_COPY`'s `turn_resolving` copy on the client: "try again
+in a moment") rather than a queue — deliberately the simpler of two considered fixes; a
+full fix closing the race completely would need a real per-room mutex/queue instead of a
+check-and-reject (the lock could still be acquired a moment after the check, before the
+call's own persistence write lands), but that's judged not worth the complexity against a
+window this narrow (a live click landing in the same instant an independent multi-second
+turn timer expires).
+
 ### Settlement negotiation
 
 A filed case starts `status: 'negotiating'`. **Live negotiation** (`makeOffer`/
@@ -784,6 +800,38 @@ the same "every decision has a real benefit" scan (`server/src/data/game_engine.
 verified to return zero flagged decisions after the fix) — worth re-running after any
 future content addition to catch the same content-completeness gap early.
 
+**The exact same bug, independently affecting `target.*` fields, on a much larger scale —
+now a permanent test, not just a one-off scan.** A player reported "Forged Regulatory
+Violation Notice" (mail a forged violation notice to a rival's clients) showing only a cash
+cost, no visible harm to the rival at all despite the description clearly promising one.
+Root cause was identical to the pass above, just on the *attacking* side of the ledger this
+time: its `impacts` already declared a `target.scrutiny` field — the right slot for "this
+attack raises the rival's regulatory exposure" — but its schedule was `{"default": 0}`,
+never filled in, so `summarizeEffects` silently dropped the line. Re-running the same
+all-schedule-values-zero scan across the whole library (not just the field subset the first
+pass checked) found this was far from a one-off: **81 of 212 decisions, 104 individual
+fields**, split roughly 24 `target.*` placeholders (all on `Dirty`, `offensiveAction: true`
+decisions — `target.scrutiny`/`target.outrage`/`target.demand`) and 80 own-field
+placeholders the first pass's narrower field-and-decision selection had missed (`scrutiny`/
+`outrage`/`demand` on decisions that already had a *different* real benefit field alongside
+the dead one, plus a handful of purely-cosmetic `carbonFootprint`/`odorComplaints`/
+`stockVolume` placeholders — cosmetic fields have no formula reference and don't affect
+balance, but a zero schedule still means the effect line silently never renders, which is
+the actual player-facing complaint here). Fixed by filling every one of the 104 with a
+real, signed value, using the sign convention the existing non-zero examples of each field
+already established: own `scrutiny`/`outrage` negative = benefit (reduces risk/backlash),
+positive = cost (draws attention); own `demand` positive = grows sales, negative = hurts
+them; `target.scrutiny`/`target.outrage` positive = harms the rival (their own risk/backlash
+goes up); `target.demand` negative = harms the rival's sales; `carbonFootprint`/
+`odorComplaints` positive = worse, negative = better — magnitudes calibrated against each
+field's observed range in the library, scaled by the specific decision's described severity.
+This time the scan was turned into a committed regression test
+(`server/src/data/gameEngineData.test.ts`) instead of staying a throwaway script, precisely
+because the first pass's "worth re-running" note was never actually re-run — closing that
+gap is the point: any future content addition with the same picked-the-right-field/
+forgot-the-value gap now fails `npm test --workspace=server` immediately instead of waiting
+for another player report.
+
 ### The EFFECTS panel's "Ongoing" label was genuinely ambiguous — fixed by splitting duration AND audience
 
 A user-reported "almost all say ongoing and it's not clear how long they are ongoing" led
@@ -1074,6 +1122,27 @@ way: `plaintiffFullyInvestigated` false (sued on a hunch, never actually knew th
 always shows "Unknown," never a number the plaintiff never had, regardless of what
 `baseProbability` happens to hold (0 for a wrong guess/time-barred filing, a real value
 otherwise — the gate is what matters, not the number itself).
+
+**A resolved lawsuit happening names the actual winner and, when known, the real dollar
+amount.** Two real, reported gaps here: first, `happeningLabel`'s verdict text used to say
+"won by the plaintiff"/"lost by the plaintiff" — technically accurate but useless, since
+the "X vs. Y" header right before it already establishes who the plaintiff is; a reader
+has to do their own lookup to find out who actually won. Fixed by naming the winner
+directly ("won by Alice"/"won by Bob") instead of their fixed case role. Second, no dollar
+amount was ever shown for a resolved case at all, even though a WON verdict's payout is
+always exactly `stakes` (see `GameLoop.resolveTurn`'s Step 9) and a SETTLED case's payout
+is whatever the last accepted offer was — which can differ from the pre-trial `stakes`
+estimate. `LegalCaseHistory.resolvedAmount` (new column) stores this: `stakes` for 'won',
+`offers[offers.length-1]?.amount ?? stakes` for 'settled' (mirrors `GamePhase.tsx`'s own
+live "Settled — you received/paid X" News item math, now finally shared rather than
+recomputed ad hoc), `null` for 'lost'/'cancelled' (no payment). Computed once by
+`GameEngine.resolvedCaseAmount`, written by both of `recordLegalCaseHistory`'s write sites
+(the upsert's `create` and the resolution `updateMany`) so they can't drift. `getGameTimeline`
+maps a `null`-or-missing value to `undefined` (loose `!= null`, not strict `!==` — a row
+written before this column existed has no key at all, not literally `null`, and the two
+must be treated the same way client-side or `Number(undefined)` produces `NaN`).
+`happeningLabel` (both the real copy and `GameTimelineView.utils.test.ts`'s duplicated
+one) appends `(amount)`/`for amount` only when `resolvedAmount` is present.
 
 **A Buy Shares happening shows the acquired stake percentage.** `TimelineDecisionEvent.
 acquisitionFraction` mirrors `DeployedDecision.acquisitionFraction`/`SharesBoughtEvent.

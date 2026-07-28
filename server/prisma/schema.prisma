@@ -207,6 +207,13 @@ model LegalCaseHistory {
   resolvedRound              Int?
   // 'won' | 'lost' | 'settled' | 'cancelled' — mirrors LegalCaseData.verdict
   verdict                    String?
+  // The actual dollar amount that changed hands to resolve this case — 'won': stakes;
+  // 'lost'/'cancelled': null (no payment); 'settled': the accepted offer's amount (which
+  // can differ from `stakes`, the pre-trial estimate). Null until resolved. Added because
+  // the game-timeline "happenings" log had no way to show a settlement's actual dollar
+  // amount — only the live game's own NegotiationPanel/News item computed this
+  // (`offers[offers.length-1]?.amount ?? stakes`), never persisted anywhere durable.
+  resolvedAmount             Decimal? @db.Decimal(15, 2)
   createdAt                  DateTime @default(now())
 
   @@index([roomId])

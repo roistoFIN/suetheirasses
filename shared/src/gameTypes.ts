@@ -645,6 +645,11 @@ export interface TimelineLawsuitEvent {
   filedRound: number;
   resolvedRound?: number;
   verdict?: 'won' | 'lost' | 'settled' | 'cancelled';
+  /** The actual dollar amount that changed hands to resolve this case — undefined for
+   * 'lost'/'cancelled' (no payment) or a still-unresolved case. For 'won' this equals
+   * `stakes`; for 'settled' it's the accepted offer's amount, which can differ from the
+   * pre-trial `stakes` estimate. */
+  resolvedAmount?: number;
 }
 
 /** Response for `game:gameTimelineResult` — sent only to the requesting socket, the

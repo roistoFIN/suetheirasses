@@ -2800,6 +2800,10 @@ describe('GameEngine', () => {
       expect(row.verdict).toBe('settled');
       // The original filedRound is untouched by the resolution write.
       expect(row.filedRound).toBe(3);
+      // The actual accepted offer amount (10000), not the pre-trial stakes estimate
+      // (20000) — a real, reported gap: the game-timeline replay had no way to show what
+      // a settlement actually resolved for.
+      expect(row.resolvedAmount).toBe(10000);
     });
 
     it('goToCourt marks the case awaiting_trial and moves no cash', async () => {
@@ -2830,6 +2834,42 @@ describe('GameEngine', () => {
         (call: [string, ...unknown[]]) => call[0] === ServerEvents.GAME_LEGAL_CASE_UPDATE,
       );
       expect(legalCaseUpdateCalls).toHaveLength(0);
+    });
+
+    it('rejects makeOffer/acceptOffer/goToCourt/digDeeperOnCase with turn_resolving while this room\'s turn is mid-resolution, then allows them again once it finishes (regression — a real, reported bug where goToCourt landing at the same moment a turn resolved could be silently overwritten by that turn\'s own stale-offer auto-settle)', async () => {
+      const { roomState, aliceId, bobId } = await makeTwoPartyCaseRoom();
+      roomState.room.currentPhaseRound = 1;
+
+      // Block resolveGameTurn's per-player persistence mid-flight, so it stays inside
+      // its advancingRooms-held critical section for as long as this test needs — same
+      // technique as the player-removal race regression test above.
+      let releaseUpdate: () => void = () => {};
+      const blocker = new Promise<void>((resolve) => { releaseUpdate = resolve; });
+      (mockPrisma.company.update as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        await blocker;
+        return {};
+      });
+
+      const turnPromise = engine.resolveGameTurn(roomState.room.id);
+
+      // All four negotiation actions must reject outright — before touching the DB —
+      // while the lock is held, regardless of which player or case action.
+      await expect(engine.makeOffer(roomState.room.id, aliceId, 'case-1', 5000))
+        .resolves.toEqual({ success: false, reason: 'turn_resolving' });
+      await expect(engine.acceptOffer(roomState.room.id, bobId, 'case-1'))
+        .resolves.toEqual({ success: false, reason: 'turn_resolving' });
+      await expect(engine.goToCourt(roomState.room.id, aliceId, 'case-1'))
+        .resolves.toEqual({ success: false, reason: 'turn_resolving' });
+      await expect(engine.digDeeperOnCase(roomState.room.id, aliceId, 'case-1'))
+        .resolves.toEqual({ success: false, reason: 'turn_resolving' });
+
+      // Let resolveGameTurn finish and release the lock.
+      releaseUpdate();
+      await turnPromise;
+
+      // Once the lock is free, the exact same call succeeds normally again.
+      const outcome = await engine.goToCourt(roomState.room.id, aliceId, 'case-1');
+      expect(outcome.success).toBe(true);
     });
   });
 
@@ -2927,6 +2967,8 @@ describe('GameEngine', () => {
       // The plaintiff's own known odds at filing time, stamped once into history.
       expect(row.baseProbability).toBe(0.12);
       expect(row.plaintiffFullyInvestigated).toBe(true);
+      // The stale offer's own amount (8000), not the pre-trial stakes estimate (15000).
+      expect(row.resolvedAmount).toBe(8000);
     });
 
     it('does not write any history row for a turn with no legal cases at all', async () => {
@@ -2978,7 +3020,7 @@ describe('GameEngine', () => {
       (mockPrisma.legalCaseHistory as any)._rows.set('case-tl-1', {
         id: 'case-tl-1', roomId: roomState.room.id, plaintiffId: aliceId, plaintiffName: 'Alice', defendantId: bobId, defendantName: 'Bob',
         decisionName: 'Water Pumping', groundName: 'Environmental Violation', description: 'x', stakes: 12000, filedRound: 3, resolvedRound: 4, verdict: 'won',
-        baseProbability: 0.72, plaintiffFullyInvestigated: true,
+        baseProbability: 0.72, plaintiffFullyInvestigated: true, resolvedAmount: 12000,
       });
 
       const response = await engine.getGameTimeline(roomState.room.id);
@@ -3002,6 +3044,25 @@ describe('GameEngine', () => {
       // The plaintiff's own known odds at filing time — stamped once, never recomputed.
       expect(response!.lawsuits[0].baseProbability).toBe(0.72);
       expect(response!.lawsuits[0].plaintiffFullyInvestigated).toBe(true);
+      expect(response!.lawsuits[0].resolvedAmount).toBe(12000);
+    });
+
+    it('maps a missing resolvedAmount (a row from before this column existed) to undefined, not NaN', async () => {
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      roomState.room.status = RoomStatus.GAME_PHASE;
+      const [aliceId] = Array.from(roomState.players.keys());
+
+      (mockPrisma.legalCaseHistory as any)._rows.set('case-legacy-1', {
+        id: 'case-legacy-1', roomId: roomState.room.id, plaintiffId: aliceId, plaintiffName: 'Alice', defendantId: 'bob', defendantName: 'Bob',
+        decisionName: 'Water Pumping', groundName: 'Environmental Violation', description: 'x', stakes: 9000, filedRound: 1, resolvedRound: 2, verdict: 'lost',
+        baseProbability: 0.3, plaintiffFullyInvestigated: false,
+        // No resolvedAmount key at all — simulates a row written before the column existed.
+      });
+
+      const response = await engine.getGameTimeline(roomState.room.id);
+
+      expect(response!.lawsuits[0].resolvedAmount).toBeUndefined();
     });
 
     it('is reachable during AFTERMATH, not just GAME_PHASE — the finished-game replay depends on this', async () => {

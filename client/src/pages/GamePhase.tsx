@@ -2441,6 +2441,7 @@ const CASE_ACTION_ERROR_COPY: Record<string, string> = {
   not_your_turn: "It's not your turn to act on this case yet.",
   no_offer_to_accept: "There's no offer to accept yet.",
   invalid_amount: "That's outside the current negotiating range — someone may have just made a new offer, refreshing it.",
+  turn_resolving: "The turn is resolving right now — try again in a moment.",
 };
 
 /**

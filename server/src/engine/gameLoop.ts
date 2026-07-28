@@ -220,7 +220,13 @@ export interface LegalCaseSideUpdate {
 
 /** Result of a `makeOffer`/`acceptOffer`/`goToCourt` call — a two-party, out-of-band
  * mutation (not part of turn resolution). On success, the caller (`GameEngine`) persists
- * both `plaintiff` and `defendant` updates and emits `case` to both parties' sockets. */
+ * both `plaintiff` and `defendant` updates and emits `case` to both parties' sockets.
+ * `'turn_resolving'` is never produced by `GameLoop` itself (it has no concept of
+ * `GameEngine`'s `advancingRooms` lock) — it's returned directly by `GameEngine`'s wrapper
+ * methods, before ever calling into `GameLoop`, when this room's turn is mid-resolution.
+ * See CLAUDE.md's negotiation-actions-vs-turn-resolution race section for why this exists:
+ * a real, reported bug where a `goToCourt` landing at the exact moment a turn resolved
+ * could be silently clobbered by that same turn's Step 8b stale-offer auto-settle. */
 export type LegalCaseActionOutcome =
   | {
       success: false;
@@ -233,7 +239,8 @@ export type LegalCaseActionOutcome =
         | 'invalid_amount'
         | 'not_defendant'
         | 'already_investigated'
-        | 'insufficient_funds';
+        | 'insufficient_funds'
+        | 'turn_resolving';
     }
   | {
       success: true;

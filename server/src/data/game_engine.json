@@ -1137,7 +1137,7 @@
         "type": "absolute",
         "schedule": {
           "1": 0,
-          "default": 0
+          "default": 6
         }
       }
     },
@@ -5415,7 +5415,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 8
         }
       }
     },
@@ -5464,7 +5464,7 @@
       "odorComplaints": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -25
         }
       },
       "operatingExpenses": {
@@ -5574,7 +5574,7 @@
       "demand": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 8
         }
       },
       "cash": {
@@ -5741,7 +5741,7 @@
       "carbonFootprint": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -25
         }
       },
       "assets": {
@@ -6076,7 +6076,7 @@
       "odorComplaints": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -20
         }
       },
       "outrage": {
@@ -6352,7 +6352,7 @@
       "carbonFootprint": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -15
         }
       },
       "price": {
@@ -6420,7 +6420,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 12
         }
       }
     },
@@ -6493,7 +6493,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 14
         }
       }
     },
@@ -6560,7 +6560,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 15
         }
       }
     },
@@ -6632,7 +6632,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 16
         }
       }
     },
@@ -6699,13 +6699,13 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 10
         }
       },
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 15
         }
       }
     },
@@ -6771,7 +6771,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 18
         }
       }
     },
@@ -6831,13 +6831,13 @@
       "stockVolume": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -15
         }
       },
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 12
         }
       },
       "price": {
@@ -6915,7 +6915,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 10
         }
       }
     },
@@ -6988,7 +6988,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 8
         }
       }
     },
@@ -7061,7 +7061,7 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 18
         }
       }
     },
@@ -7122,7 +7122,7 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 14
         }
       },
       "scrutiny": {
@@ -7200,7 +7200,7 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 16
         }
       }
     },
@@ -7267,13 +7267,13 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 12
         }
       },
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 20
         }
       }
     },
@@ -7345,7 +7345,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 14
         }
       }
     },
@@ -7405,7 +7405,7 @@
       "carbonFootprint": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -4
         }
       },
       "outrage": {
@@ -7423,7 +7423,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 10
         }
       }
     },
@@ -7490,7 +7490,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 12
         }
       }
     },
@@ -7556,13 +7556,13 @@
       "demand": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 8
         }
       },
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 10
         }
       }
     },
@@ -7634,7 +7634,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 8
         }
       }
     },
@@ -7701,7 +7701,7 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 15
         }
       }
     },
@@ -7767,7 +7767,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 10
         }
       },
       "cash": {
@@ -7834,13 +7834,13 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 12
         }
       },
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 18
         }
       },
       "price": {
@@ -7924,7 +7924,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 14
         }
       }
     },
@@ -7997,7 +7997,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 22
         }
       }
     },
@@ -8070,7 +8070,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 20
         }
       }
     },
@@ -8131,13 +8131,13 @@
       "target.scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 22
         }
       },
       "target.outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 25
         }
       },
       "cash": {
@@ -8204,7 +8204,7 @@
       "target.demand": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -12
         }
       },
       "cash": {
@@ -8216,7 +8216,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 22
         }
       }
     },
@@ -8277,13 +8277,13 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 18
         }
       },
       "target.scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 25
         }
       },
       "cash": {
@@ -8362,7 +8362,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 25
         }
       }
     },
@@ -8434,7 +8434,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 18
         }
       }
     },
@@ -8501,7 +8501,7 @@
       "target.outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 30
         }
       },
       "cash": {
@@ -8653,7 +8653,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 20
         }
       }
     },
@@ -8787,13 +8787,13 @@
       "target.outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 28
         }
       },
       "target.scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 20
         }
       },
       "cash": {
@@ -8866,7 +8866,7 @@
       "target.outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 22
         }
       },
       "cash": {
@@ -8939,7 +8939,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 30
         }
       },
       "cash": {
@@ -9091,7 +9091,7 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 30
         }
       }
     },
@@ -9230,13 +9230,13 @@
       "demand": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 10
         }
       },
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 28
         }
       }
     },
@@ -9314,7 +9314,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 22
         }
       }
     },
@@ -9460,7 +9460,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 25
         }
       },
       "cash": {
@@ -9888,7 +9888,7 @@
       "odorComplaints": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -15
         }
       },
       "operatingExpenses": {
@@ -10415,7 +10415,7 @@
       "carbonFootprint": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -8
         }
       },
       "energyIntensity": {
@@ -10796,7 +10796,7 @@
       "demand": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": -8
         }
       }
     },
@@ -10862,13 +10862,13 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 18
         }
       },
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 14
         }
       },
       "operatingExpenses": {
@@ -10951,7 +10951,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 10
         }
       }
     },
@@ -11017,7 +11017,7 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 12
         }
       },
       "operatingExpenses": {
@@ -11094,7 +11094,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 8
         }
       },
       "cash": {
@@ -11239,7 +11239,7 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 16
         }
       },
       "operatingExpenses": {
@@ -11389,7 +11389,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 16
         }
       }
     },
@@ -11456,13 +11456,13 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 14
         }
       },
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 12
         }
       }
     },
@@ -11528,13 +11528,13 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 12
         }
       },
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 14
         }
       }
     },
@@ -11666,13 +11666,13 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 16
         }
       },
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 14
         }
       },
       "operatingExpenses": {
@@ -11755,7 +11755,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 12
         }
       }
     },
@@ -11821,13 +11821,13 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 16
         }
       },
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 20
         }
       },
       "operatingExpenses": {
@@ -11965,7 +11965,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 10
         }
       },
       "cash": {
@@ -12044,13 +12044,13 @@
       "demand": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 10
         }
       },
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 20
         }
       }
     },
@@ -12116,13 +12116,13 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 18
         }
       },
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 14
         }
       }
     },
@@ -12188,7 +12188,7 @@
       "outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 14
         }
       }
     },
@@ -12326,7 +12326,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 10
         }
       }
     },
@@ -12392,7 +12392,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 14
         }
       },
       "operatingExpenses": {
@@ -12530,7 +12530,7 @@
       "target.outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 25
         }
       },
       "cash": {
@@ -12597,13 +12597,13 @@
       "target.scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 18
         }
       },
       "target.outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 20
         }
       },
       "cash": {
@@ -12743,7 +12743,7 @@
       "target.outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 28
         }
       },
       "cash": {
@@ -12877,7 +12877,7 @@
       "target.outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 18
         }
       },
       "cash": {
@@ -13011,7 +13011,7 @@
       "target.scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 22
         }
       },
       "cash": {
@@ -13212,13 +13212,13 @@
       "target.outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 26
         }
       },
       "target.scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 20
         }
       },
       "cash": {
@@ -13419,13 +13419,13 @@
       "target.outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 24
         }
       },
       "target.scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 18
         }
       },
       "cash": {
@@ -13559,13 +13559,13 @@
       "target.outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 26
         }
       },
       "target.scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 22
         }
       },
       "cash": {
@@ -13632,7 +13632,7 @@
       "target.outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 32
         }
       },
       "cash": {
@@ -13839,7 +13839,7 @@
       "target.scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 16
         }
       },
       "cash": {
@@ -13906,13 +13906,13 @@
       "target.outrage": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 35
         }
       },
       "target.scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 25
         }
       },
       "cash": {
@@ -14225,7 +14225,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 14
         }
       }
     },
@@ -14298,7 +14298,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 16
         }
       }
     },
@@ -14370,7 +14370,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 12
         }
       }
     },
@@ -14437,7 +14437,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 25
         }
       },
       "cash": {
@@ -14510,7 +14510,7 @@
       "scrutiny": {
         "type": "absolute",
         "schedule": {
-          "default": 0
+          "default": 30
         }
       },
       "financeCost": {

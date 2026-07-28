@@ -6,6 +6,10 @@ import type { PlayerVariables, PlayerDerivedStats, GameTimelineResponse, Timelin
 // tabler-icons/@mantine/charts import chain)" convention GamePhase.utils.test.ts
 // already established — keep any copy in sync with the real implementation by hand.
 
+function fmt(n: number): string {
+  return '$' + new Intl.NumberFormat('en-US').format(Math.round(n));
+}
+
 function getKpiFieldValue(point: { variables: PlayerVariables; derived: PlayerDerivedStats; riskGauge: number }, field: string): number {
   if (field === 'riskGauge') return point.riskGauge;
   const [bucket, key] = field.split('.') as ['variables' | 'derived', string];
@@ -59,7 +63,11 @@ function happeningLabel(h: HappeningEntry): string {
       return `${h.plaintiffName} sued ${h.defendantName} over ${h.lawsuit.groundName}`;
     case 'lawsuitResolved': {
       const v = h.lawsuit.verdict;
-      const verdictText = v === 'won' ? 'won by the plaintiff' : v === 'lost' ? 'lost by the plaintiff' : v === 'settled' ? 'settled' : 'cancelled';
+      const amount = h.lawsuit.resolvedAmount;
+      const verdictText = v === 'won' ? `won by ${h.plaintiffName}${amount !== undefined ? ` (${fmt(amount)})` : ''}`
+        : v === 'lost' ? `won by ${h.defendantName}`
+        : v === 'settled' ? `settled${amount !== undefined ? ` for ${fmt(amount)}` : ''}`
+        : 'cancelled';
       return `${h.plaintiffName} vs. ${h.defendantName} (${h.lawsuit.groundName}) — ${verdictText}`;
     }
   }
@@ -314,6 +322,40 @@ describe('happeningLabel', () => {
     const entry = buildHappenings(data)[0];
 
     expect(happeningLabel(entry)).toBe('Alice deployed Bot Attack → Bob');
+  });
+
+  const baseLawsuit: TimelineLawsuitEvent = {
+    id: 'case-1', plaintiffId: 'p1', plaintiffName: 'Alice', defendantId: 'p2', defendantName: 'Bob',
+    decisionName: 'Water Pumping', groundName: 'Environmental Violation', description: 'x', stakes: 5000,
+    filedRound: 1, resolvedRound: 3, baseProbability: 0.4, plaintiffFullyInvestigated: true,
+  };
+
+  it('names the actual winner (plaintiff) rather than their fixed case role, for a won verdict', () => {
+    const data = makeData({ lawsuits: [{ ...baseLawsuit, verdict: 'won', resolvedAmount: 5000 }] });
+    const entry = buildHappenings(data).find((e) => e.type === 'lawsuitResolved')!;
+
+    expect(happeningLabel(entry)).toBe('Alice vs. Bob (Environmental Violation) — won by Alice ($5,000)');
+  });
+
+  it('names the actual winner (defendant) for a lost verdict, with no dollar amount shown', () => {
+    const data = makeData({ lawsuits: [{ ...baseLawsuit, verdict: 'lost' }] });
+    const entry = buildHappenings(data).find((e) => e.type === 'lawsuitResolved')!;
+
+    expect(happeningLabel(entry)).toBe('Alice vs. Bob (Environmental Violation) — won by Bob');
+  });
+
+  it('shows the actual settled dollar amount, which can differ from the pre-trial stakes estimate', () => {
+    const data = makeData({ lawsuits: [{ ...baseLawsuit, verdict: 'settled', resolvedAmount: 3200 }] });
+    const entry = buildHappenings(data).find((e) => e.type === 'lawsuitResolved')!;
+
+    expect(happeningLabel(entry)).toBe('Alice vs. Bob (Environmental Violation) — settled for $3,200');
+  });
+
+  it('shows no dollar amount for a cancelled case (bankruptcy waterfall, no clean settlement figure)', () => {
+    const data = makeData({ lawsuits: [{ ...baseLawsuit, verdict: 'cancelled' }] });
+    const entry = buildHappenings(data).find((e) => e.type === 'lawsuitResolved')!;
+
+    expect(happeningLabel(entry)).toBe('Alice vs. Bob (Environmental Violation) — cancelled');
   });
 });
 

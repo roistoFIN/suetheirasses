@@ -229,7 +229,17 @@ function happeningLabel(h: HappeningEntry): string {
       return `${h.plaintiffName} sued ${h.defendantName} over ${h.lawsuit.groundName}`;
     case 'lawsuitResolved': {
       const v = h.lawsuit.verdict;
-      const verdictText = v === 'won' ? 'won by the plaintiff' : v === 'lost' ? 'lost by the plaintiff' : v === 'settled' ? 'settled' : 'cancelled';
+      const amount = h.lawsuit.resolvedAmount;
+      // Names the actual winner rather than the case's fixed plaintiff/defendant role —
+      // "won by the plaintiff" told the reader nothing they didn't already know from the
+      // "X vs. Y" header (a lawsuit's plaintiff never changes), while "won by X" is the
+      // one thing this line adds. Includes the settlement dollar amount when known — a
+      // negotiated settlement can differ from the pre-trial `stakes` estimate shown in
+      // `lawsuitOddsAndStakes`, so this is the only place that number is ever surfaced.
+      const verdictText = v === 'won' ? `won by ${h.plaintiffName}${amount !== undefined ? ` (${fmt(amount)})` : ''}`
+        : v === 'lost' ? `won by ${h.defendantName}`
+        : v === 'settled' ? `settled${amount !== undefined ? ` for ${fmt(amount)}` : ''}`
+        : 'cancelled';
       return `${h.plaintiffName} vs. ${h.defendantName} (${h.lawsuit.groundName}) — ${verdictText}`;
     }
   }
