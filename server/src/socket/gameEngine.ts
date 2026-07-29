@@ -42,7 +42,7 @@ import { GameLoop } from '../engine/gameLoop.js';
 import type { BankruptedPlayer } from '../engine/gameLoop.js';
 import { generateAnnualReportBlurb } from '../services/llmService.js';
 import { logEvent, logEvents } from '../services/eventLogService.js';
-import { pickBotDecisions, pickBotShareBuy, pickAttacksToInvestigate, shouldFileLawsuit, decideBotNegotiationAction, firstYearCashImpact, BOT_CASH_RESERVE } from '../services/botService.js';
+import { pickBotDecisions, pickBotShareBuy, pickAttacksToInvestigate, shouldFileLawsuit, decideBotNegotiationAction, estimatedFirstYearCashEffect, computeEffectiveReserve, projectedNextTurnOwnCashEffect, isStructurallyUnprofitable, BOT_CASH_TREND_WINDOW } from '../services/botService.js';
 
 export class GameEngine {
   public rooms: Map<string, RoomState> = new Map();
@@ -78,6 +78,12 @@ export class GameEngine {
   // Each room's last resolved turn (or round-1 starting snapshot) — re-sent to a
   // reconnecting player immediately instead of making them wait for the next turn.
   private lastTurnResults: Map<string, TurnResolutionResult> = new Map();
+  // Each bot's own recent real (turn-resolved) cash readings, oldest first, capped at
+  // BOT_CASH_TREND_WINDOW — see botService.ts's isCashTrendDeclining/computeEffectiveReserve
+  // doc comments for why runBotTurn needs this beyond just lastTurnResults' single snapshot.
+  // Keyed by roomId (not roomId:botId) so room cleanup can drop it in one call, same
+  // convention as lastTurnResults itself; nested by botPlayerId to support >1 bot per room.
+  private botCashHistory: Map<string, Map<string, number[]>> = new Map();
   // Core turn-resolution engine — authoritative source of all GAME_PHASE calculations.
   // Definite-assignment: only ever used after loadGameData() resolves (see index.ts's
   // start() — awaited before httpServer.listen, so no socket can connect first).
@@ -307,11 +313,47 @@ export class GameEngine {
 
     let cash = botResult.variables.cash ?? 0;
     const { digDeeperCost, lawsuitFilingCost } = this.gameConfig.gameSettings;
+    const { interestRate } = this.gameConfig.adminVariables.finance;
+
+    // Record this turn's real cash reading and derive this turn's effective reserve from
+    // it — see botService.ts's isCashTrendDeclining/computeEffectiveReserve doc comments:
+    // a single-turn affordability check can't see a decision's backloaded (year 2-4) cost,
+    // so once the bot's own real cash is genuinely trending down, every discretionary
+    // spend below (digging, suing, new decisions, buying shares) backs off together by
+    // budgeting against a larger reserve until cash recovers.
+    const roomBotHistory = this.botCashHistory.get(roomId) ?? new Map<string, number[]>();
+    const cashHistory = roomBotHistory.get(botPlayerId) ?? [];
+    cashHistory.push(cash);
+    if (cashHistory.length > BOT_CASH_TREND_WINDOW) cashHistory.shift();
+    roomBotHistory.set(botPlayerId, cashHistory);
+    this.botCashHistory.set(roomId, roomBotHistory);
+    const deck = this.getRoomDeck(roomId);
+    // What the bot's OWN already-active decisions will cost/pay next turn regardless of
+    // anything picked this turn — folded into the reserve so a known upcoming bill (a
+    // backloaded financeCost schedule, say) isn't invisible to this turn's spending
+    // decisions. See botService.ts's projectedNextTurnOwnCashEffect doc comment.
+    const projectedNextTurn = projectedNextTurnOwnCashEffect(botResult.activeDecisions, deck, interestRate);
+    let effectiveReserve = computeEffectiveReserve(cashHistory, projectedNextTurn);
+    // Already losing money every turn on its own cost structure, regardless of any single
+    // turn's new picks (see isStructurallyUnprofitable's doc comment) — a company can
+    // coast on a large cash cushion for many turns while structurally underwater, only to
+    // crater once the cushion runs out. Once detected, block ALL discretionary spending
+    // this turn (reserve = current cash, so nothing but a net-cash-positive move clears
+    // it) until the structure improves — a harder stop than the trend/projection reserve
+    // bumps above, which only react to cash that's already moving.
+    const structurallyUnprofitable = isStructurallyUnprofitable(
+      botResult.variables.operatingExpenses ?? 0,
+      botResult.variables.staffCost ?? 0,
+      botResult.variables.otherIncome ?? 0,
+      botResult.derived.financeCost,
+      botResult.derived.revenue,
+    );
+    if (structurallyUnprofitable) effectiveReserve = Math.max(effectiveReserve, cash);
 
     // Dig up to 2 attacks that aren't fully revealed yet.
     const dugAttacks: IncomingAttackInfo[] = [];
     for (const attack of pickAttacksToInvestigate(botResult.incomingAttacks)) {
-      if (cash - digDeeperCost < BOT_CASH_RESERVE) break;
+      if (cash - digDeeperCost < effectiveReserve) break;
       const outcome = await this.digDeeper(roomId, botPlayerId, attack.attackId);
       if (outcome.success) {
         cash = outcome.newCash;
@@ -330,7 +372,7 @@ export class GameEngine {
       // bot's own strategy doesn't need to consider every suggested ground, just its best.
       const bestGroundName = attack.suggestedGrounds?.[0]?.name;
       if (!attack.attackerId || !attack.decisionName || !bestGroundName) continue;
-      if (!shouldFileLawsuit(attack, cash, lawsuitFilingCost)) continue;
+      if (!shouldFileLawsuit(attack, cash, lawsuitFilingCost, effectiveReserve)) continue;
       const feeOutcome = await this.fileLawsuit(roomId, botPlayerId);
       if (!feeOutcome.success) continue; // per-turn cap reached, or funds changed mid-loop
       cash = feeOutcome.newCash;
@@ -377,8 +419,19 @@ export class GameEngine {
     }
 
     const humanPlayerId = Array.from(roomState.players.values()).find((p) => !p.isBot)?.id;
-    const deck = this.getRoomDeck(roomId);
-    const picks = humanPlayerId ? pickBotDecisions(deck, cash, humanPlayerId, botResult.riskGauge) : [];
+    const picks = humanPlayerId
+      ? pickBotDecisions(
+          deck,
+          cash,
+          humanPlayerId,
+          botResult.riskGauge,
+          effectiveReserve,
+          interestRate,
+          structurallyUnprofitable,
+          botResult.activeDecisions,
+          this.gameConfig.gameSettings.permanentEffectCooldownYears,
+        )
+      : [];
 
     const decisions: SubmittedDecisions = { strategic: [], operational: [], financial: [], lawsuits };
     for (const entry of picks) {
@@ -387,14 +440,28 @@ export class GameEngine {
         def?.level === 'Strategic' ? 'strategic' : def?.level === 'Financial' ? 'financial' : 'operational';
       decisions[bucket].push(entry);
       // Track what pickBotDecisions' own picks would spend so pickBotShareBuy (below)
-      // doesn't independently think the same spare cash is still available.
-      if (def) cash += firstYearCashImpact(def);
+      // doesn't independently think the same spare cash is still available. Uses the same
+      // full cash-effect estimate pickBotDecisions itself budgets against (not just the
+      // `cash` field alone — see estimatedFirstYearCashEffect's own doc comment).
+      if (def) cash += estimatedFirstYearCashEffect(def, interestRate);
     }
 
     // Hostile-takeover threat: a genuine (if unsophisticated) Buy Shares strategy, on top
     // of pickBotDecisions' own picks — see botService.ts's pickBotShareBuy doc comment.
     if (humanPlayerId) {
-      const buyAmount = pickBotShareBuy(cash, decisions.financial.length, this.gameConfig.gameSettings.maxFinancialDecisionsPerTurn);
+      const humanResult = lastTurn?.players.find((p) => p.playerId === humanPlayerId);
+      const stockValue = humanResult?.variables.stockValue;
+      const totalShares = humanResult?.variables.totalSharesOutstanding;
+      // How much MORE spend is actually useful against this target — see
+      // pickBotShareBuy's own doc comment for the overpay bug this prevents. Left
+      // Infinity (uncapped) only when the target's stockValue genuinely isn't known yet
+      // (round 1, before any turn has priced it).
+      let maxUsefulSpend = Infinity;
+      if (stockValue !== undefined && totalShares && totalShares > 0) {
+        const currentBotFraction = humanResult?.variables.shareOwnership?.[botPlayerId] ?? 0;
+        maxUsefulSpend = Math.max(0, 1 - currentBotFraction) * totalShares * stockValue;
+      }
+      const buyAmount = pickBotShareBuy(cash, decisions.financial.length, this.gameConfig.gameSettings.maxFinancialDecisionsPerTurn, effectiveReserve, maxUsefulSpend);
       if (buyAmount !== undefined) {
         decisions.financial.push({ name: 'Buy Shares', targetId: humanPlayerId, amount: buyAmount });
       }
@@ -1341,6 +1408,7 @@ export class GameEngine {
             this.rooms.delete(roomId);
             this.roomLastActivity.delete(roomId);
             this.lastTurnResults.delete(roomId);
+            this.botCashHistory.delete(roomId);
             // Also clean up from DB to prevent ghost rooms
             this.prisma.room.delete({ where: { id: roomId } }).catch((err: Prisma.PrismaClientKnownRequestError) => {
               if (err.code !== 'P2025') {
@@ -1801,6 +1869,7 @@ export class GameEngine {
       this.clearBotJoinCheck(roomId);
       this.rooms.delete(roomId);
       this.lastTurnResults.delete(roomId);
+      this.botCashHistory.delete(roomId);
       // Also clean up the room from the database to prevent ghost rooms
       // from appearing in quick join queries
       try {
@@ -2489,6 +2558,7 @@ export class GameEngine {
       this.clearBotJoinCheck(roomId);
       this.rooms.delete(roomId);
       this.lastTurnResults.delete(roomId);
+      this.botCashHistory.delete(roomId);
       // Cascade-deletes any remaining bot's Player/Company rows too (see
       // schema.prisma's onDelete: Cascade) — no separate bot cleanup needed.
       try {

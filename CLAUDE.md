@@ -1335,8 +1335,8 @@ methodology above. What changed is purely heuristic:
   budget still available this turn, a minimum spare-cash bar, and a per-turn coin flip (not
   every turn, so it doesn't telegraph as a predictable drip) — spends half its spare cash
   above the reserve when it goes ahead. `GameEngine.runBotTurn` tracks what
-  `pickBotDecisions`' own picks would spend (`firstYearCashImpact`, now exported) before
-  calling this, so the two never independently double-commit the same spare cash.
+  `pickBotDecisions`' own picks would spend (`estimatedFirstYearCashEffect`, now exported)
+  before calling this, so the two never independently double-commit the same spare cash.
 
 **Settlement negotiation, previously entirely passive.** The bot used to never actively
 respond to an offer at all — any offer a human made just sat there until Step 8b's
@@ -1371,6 +1371,85 @@ never a bot-only path into `GameLoop`, same convention as the rest of this bot.
   block (confirms `runBotTurn` actually dispatches to the right real method for a
   favorable-offer scenario) — same two-layer split as the rest of this bot's coverage.
 
+**Self-preservation — the bot used to reliably bankrupt itself even against a fully idle
+human, with zero adversarial pressure involved at all.** Root-caused (via the same
+randomized-simulation methodology described above, adapted to a "human submits nothing,
+ever" opponent) to several independent gaps, each fixed in `botService.ts`:
+
+- **Affordability/scoring only ever read a decision's `cash` field at year 1** — invisible
+  to same-turn `operatingExpenses`/`staffCost`/`otherIncome`/`financeCost` movement, and to
+  a `debt` impact's real cost (`financeCost = baseFinanceCost + debt*interestRate +
+  financeCostDelta`, `calcEngine.ts`'s `calculatePL`). `estimatedFirstYearCashEffect`
+  folds all of these into one real dollar figure (a `debt` impact is converted via
+  `debtAsFinanceCost`, `raw * interestRate`); `FIELD_DIRECTION`/`DOLLAR_FIELDS` gained
+  `financeCost` so `scoreDecision` scores it too — a decision like "Payday Loan"/"Manure
+  Futures Speculation" (a real cash windfall funded by real recurring debt-service cost)
+  used to score as a near-pure windfall with none of its downside represented at all.
+- **Both were also blind to genuinely BACKLOADED costs** — a schedule value that's zero at
+  deployment but lands in a later year (e.g. "Manure Futures Speculation"'s `financeCost`:
+  `{"1":0,"2":12000,"3":12000}`) scored and budgeted as completely free at the exact
+  moment the bot had to decide whether to pick it at all. Fixed by scoring/budgeting
+  pessimistically against the single WORST year across a decision's whole schedule
+  (`worstScheduleValue`/`worstCaseCashEffect`), not just year 1 — used internally by
+  `scoreDecision` and `pickBotDecisions`'s affordability check.
+- **No general self-preservation against the bot's own real cash trajectory existed** —
+  `isCashTrendDeclining` (net decline over `BOT_CASH_TREND_WINDOW`, 3, turns of the bot's
+  own real post-resolution cash) and `isStructurallyUnprofitable`
+  (`operatingExpenses+staffCost+financeCost`, net of `otherIncome`, already exceeding
+  `revenue` — a company can coast on a cash cushion for many turns while already
+  structurally underwater every turn, right up until the cushion runs out).
+  `computeEffectiveReserve` folds the trend signal (multiplies `BOT_CASH_RESERVE` by
+  `BOT_CASH_TREND_RESERVE_MULTIPLIER`, 4, once declining) into one number `GameEngine.
+  runBotTurn` computes ONCE per turn and threads through digging/suing/picking/buying
+  alike, so every discretionary spend backs off together; `isStructurallyUnprofitable`
+  additionally forces the reserve to the bot's own current cash (blocking everything but a
+  net-cash-positive move) and vetoes any new decision in `pickBotDecisions` whose worst-case
+  effect isn't non-negative.
+- **No accounting for what ALREADY-active decisions will cost NEXT turn regardless of new
+  picks** — several already-active backloaded decisions could land their bills in the same
+  future turn, cratering cash in what looked like one sudden turn but was structural for
+  several turns before that. `projectedNextTurnOwnCashEffect` mirrors `DecisionEngine.
+  advanceAndApply`'s own "past its own maturity threshold, never applies its own schedule
+  again" gate closely enough to predict what each already-active instance will do next
+  turn (deliberately NOT full lookahead — it only reasons about commitments ALREADY made,
+  never simulates a hypothetical future pick), and its result (only the negative side) is
+  folded into `computeEffectiveReserve` too.
+- **Biggest single lever, by far: the bot never validated against `DecisionEngine.
+  canDeploy` at all** (still true in spirit — see the bot's own header — but this one
+  specific gap was directly, measurably responsible for most of the bankruptcies). It kept
+  "picking" a decision `canDeploy` would silently reject (permanent-effect redeploy-lock
+  cooldown, an own instance still maturing, forward/reverse `excludes` mutual exclusion) —
+  `GameLoop.processNewDecisions` drops an ineligible pick the same way it drops a real
+  player's rejected submission, which is fine for a single "wasted" pick in isolation. The
+  real bug: the bot's OWN cash accounting had already credited itself the full
+  (never-realized) windfall of that rejected pick, inflating what it believed it could
+  then afford to spend on OTHER things that same turn — Buy Shares chief among them — even
+  though the credited amount never actually landed. `pickBotDecisions` now takes the bot's
+  own `activeDecisions` and mirrors `canDeploy`'s exact conditions (`hasPermanentEffect`
+  redeploy lock, imported directly from `decisionEngine.ts` rather than reimplemented; the
+  more basic "own instance hasn't matured yet" rule; forward/reverse `excludes`) before a
+  candidate is even scored.
+- **`GameLoop.applyShareTransaction` charges the buyer's FULL requested spend even once
+  `fractionBought` has already capped at 1 (100% owned)** — nothing refunds the excess (see
+  its own doc comment: the surplus is distributed to the diluted sellers instead, a pure
+  loss for the buyer). `pickBotShareBuy`'s spend used to be sized purely off the bot's OWN
+  spare cash, with zero awareness of what the target was actually worth — once the bot's
+  own cash pile grew past the target's value, it could vastly overpay for a small/cheap
+  company in one move. `pickBotShareBuy` now takes an optional `maxUsefulSpend` (computed
+  by the caller as `(1 - currentBotOwnershipFraction) * totalSharesOutstanding *
+  stockValue`, mirroring `applyShareTransaction`'s own math) and clamps its spend to it.
+
+Regression-tested with the same randomized-simulation methodology described above, adapted
+to this specific scenario: `botService.idleOpponent.simulation.test.ts` plays many
+independent full games of the real bot (via the real `botService.ts` functions) against a
+human who submits nothing, ever, and asserts the bankruptcy rate within a realistic game
+length (20 rounds — comfortably inside CLAUDE.md's documented ~11-18-round typical range)
+stays well below the ~80%+ observed before these fixes. Individual mechanisms are also
+unit-tested directly in `botService.test.ts` (`estimatedFirstYearCashEffect`,
+`isCashTrendDeclining`/`computeEffectiveReserve`, `projectedNextTurnOwnCashEffect`,
+`isStructurallyUnprofitable`, the new `pickBotDecisions`/`scoreDecision`/`pickBotShareBuy`
+veto/clamp behaviors).
+
 ### Test layers, and which one to reach for
 
 - **`server/src/**/*.test.ts`** — Vitest, no Docker. `engine/*.test.ts` (GameLoop,
@@ -1392,6 +1471,9 @@ never a bot-only path into `GameLoop`, same convention as the rest of this bot.
 - **`gameLoop.simulation.test.ts`/`.simulation.smart.test.ts`** — see *Randomized-
   simulation testing* above; the go-to for "does this change destabilize the engine
   against the real, full decision library" rather than a hand-written fixture.
+- **`botService.idleOpponent.simulation.test.ts`** — same methodology, scoped to "does the
+  bot bankrupt itself" against a human who submits nothing at all — see *Server-injected
+  AI bot player*'s own *Self-preservation* section above.
 
 When you touch a mechanic documented above, its own section names the specific
 test file/describe block that exists to guard the invariant — extend that, not just

@@ -6,10 +6,18 @@ import {
   shouldFileLawsuit,
   scoreDecision,
   decideBotNegotiationAction,
+  estimatedFirstYearCashEffect,
+  isCashTrendDeclining,
+  computeEffectiveReserve,
+  projectedNextTurnOwnCashEffect,
+  isStructurallyUnprofitable,
   BOT_CASH_RESERVE,
   BOT_RISK_CAUTION_THRESHOLD,
   BOT_BUY_SHARES_MIN_SPARE_CASH,
   BOT_BUY_SHARES_SPEND_FRACTION,
+  BOT_CASH_TREND_WINDOW,
+  BOT_CASH_TREND_RESERVE_MULTIPLIER,
+  DEFAULT_INTEREST_RATE,
 } from './botService';
 import type { DecisionDefinition, IncomingAttackInfo, LegalCaseData } from '@suethemchickens/shared';
 
@@ -151,6 +159,213 @@ describe('pickBotDecisions', () => {
     const picks = pickBotDecisions([dirty], 500_000, 'human-1', BOT_RISK_CAUTION_THRESHOLD - 1);
     expect(picks.map((p) => p.name)).toEqual(['Dirty Pick']);
   });
+
+  // Regression: a decision like "Manure Futures Speculation" (cash +84,000 at year 1,
+  // financeCost +12,000 at years 2-3) used to look like a pure windfall to the year-1-only
+  // affordability check — the reserve check never saw the backloaded cost coming. Budgets
+  // now use the worst realistic year across the whole schedule (worstCaseCashEffect), not
+  // just year 1.
+  it('never picks a decision whose worst-year (not just year-1) cash effect would breach the reserve', () => {
+    const backloaded = makeDecisionDef({
+      decision: 'Backloaded',
+      impacts: {
+        cash: { type: 'absolute', schedule: { 1: 84_000, default: 0 } },
+        financeCost: { type: 'absolute', schedule: { 1: 0, 2: 200_000, default: 0 } },
+      },
+    });
+    const cash = BOT_CASH_RESERVE + 10_000; // affords the year-1 number, not the year-2 one
+    const picks = pickBotDecisions([backloaded], cash, 'human-1');
+    expect(picks).toEqual([]);
+  });
+
+  it('excludes any new decision whose worst-case cash effect is negative once structurallyUnprofitable is signaled', () => {
+    const costly = makeDecisionDef({ decision: 'Costly', impacts: { cash: { type: 'absolute', schedule: { 1: -1000, default: 0 } } } });
+    const free = makeDecisionDef({ decision: 'Free', impacts: {} });
+    const picks = pickBotDecisions([costly, free], 500_000, 'human-1', 0, BOT_CASH_RESERVE, DEFAULT_INTEREST_RATE, true);
+    expect(picks.map((p) => p.name)).toEqual(['Free']);
+  });
+
+  it('still allows a non-negative-cost decision even while structurallyUnprofitable', () => {
+    const positive = makeDecisionDef({ decision: 'Positive', impacts: { cash: { type: 'absolute', schedule: { 1: 1000, default: 0 } } } });
+    const picks = pickBotDecisions([positive], 500_000, 'human-1', 0, BOT_CASH_RESERVE, DEFAULT_INTEREST_RATE, true);
+    expect(picks.map((p) => p.name)).toEqual(['Positive']);
+  });
+
+  // Regression: the bot never validated against DecisionEngine.canDeploy at all, so it
+  // kept "picking" a permanent-effect decision still on its redeploy-lock cooldown every
+  // turn — GameLoop.processNewDecisions silently rejected the deployment, but the bot's
+  // own cash accounting had already credited itself the full (never-realized) windfall,
+  // inflating what it believed it could then afford to spend elsewhere.
+  it('excludes a permanent-effect decision still within its own redeploy-lock cooldown', () => {
+    const permanent = makeDecisionDef({
+      decision: 'Convertible Note Overhang',
+      impacts: { cash: { type: 'absolute', schedule: { default: 71_000 } } }, // 'default'-only => hasPermanentEffect
+    });
+    const activeDecisions = [{ decisionName: 'Convertible Note Overhang', elapsedYears: 1, isMatured: true, voidedByLawsuit: false }];
+    const picks = pickBotDecisions([permanent], 500_000, 'human-1', 0, BOT_CASH_RESERVE, DEFAULT_INTEREST_RATE, false, activeDecisions, 3);
+    expect(picks).toEqual([]);
+  });
+
+  it('allows redeploying a permanent-effect decision once its cooldown has passed', () => {
+    const permanent = makeDecisionDef({
+      decision: 'Convertible Note Overhang',
+      impacts: { cash: { type: 'absolute', schedule: { default: 71_000 } } },
+    });
+    const activeDecisions = [{ decisionName: 'Convertible Note Overhang', elapsedYears: 5, isMatured: true, voidedByLawsuit: false }];
+    const picks = pickBotDecisions([permanent], 500_000, 'human-1', 0, BOT_CASH_RESERVE, DEFAULT_INTEREST_RATE, false, activeDecisions, 3);
+    expect(picks.map((p) => p.name)).toEqual(['Convertible Note Overhang']);
+  });
+
+  it('allows redeploying a permanent-effect decision whose prior instance was voided by a lost lawsuit', () => {
+    const permanent = makeDecisionDef({
+      decision: 'Convertible Note Overhang',
+      impacts: { cash: { type: 'absolute', schedule: { default: 71_000 } } },
+    });
+    const activeDecisions = [{ decisionName: 'Convertible Note Overhang', elapsedYears: 1, isMatured: true, voidedByLawsuit: true }];
+    const picks = pickBotDecisions([permanent], 500_000, 'human-1', 0, BOT_CASH_RESERVE, DEFAULT_INTEREST_RATE, false, activeDecisions, 3);
+    expect(picks.map((p) => p.name)).toEqual(['Convertible Note Overhang']);
+  });
+
+  it('excludes ANY decision (not just permanent-effect ones) whose own prior instance has not yet matured', () => {
+    const def = makeDecisionDef({ decision: 'Slow Ramp', impacts: {} });
+    const activeDecisions = [{ decisionName: 'Slow Ramp', elapsedYears: 0, isMatured: false, voidedByLawsuit: false }];
+    const picks = pickBotDecisions([def], 500_000, 'human-1', 0, BOT_CASH_RESERVE, DEFAULT_INTEREST_RATE, false, activeDecisions);
+    expect(picks).toEqual([]);
+  });
+
+  it('excludes a decision forward-excluded by an unmatured active decision (canDeploy\'s mutual-exclusion rule)', () => {
+    const def = makeDecisionDef({ decision: 'New Pick', excludes: ['Old Pick'] });
+    const activeDecisions = [{ decisionName: 'Old Pick', elapsedYears: 0, isMatured: false, voidedByLawsuit: false }];
+    const picks = pickBotDecisions([def], 500_000, 'human-1', 0, BOT_CASH_RESERVE, DEFAULT_INTEREST_RATE, false, activeDecisions);
+    expect(picks).toEqual([]);
+  });
+
+  it('excludes a decision reverse-excluded by an unmatured active decision\'s own excludes list', () => {
+    // 'Old Pick' isn't itself a candidate here (only its excludes list matters) — using a
+    // separate 'Unrelated Pick' as the control keeps this isolated from the "own redeploy
+    // lock" rule (which would otherwise also block 'Old Pick' from being a candidate,
+    // conflating the two mechanisms in one assertion).
+    const newDef = makeDecisionDef({ decision: 'New Pick' });
+    const unrelatedDef = makeDecisionDef({ decision: 'Unrelated Pick' });
+    const activeDecisions = [{ decisionName: 'Old Pick', elapsedYears: 0, isMatured: false, voidedByLawsuit: false }];
+    // deck must include 'Old Pick' so its excludes list can be looked up by name, even
+    // though 'Old Pick' itself isn't expected to appear among the picks.
+    const oldDef = makeDecisionDef({ decision: 'Old Pick', excludes: ['New Pick'] });
+    const picks = pickBotDecisions([newDef, unrelatedDef, oldDef], 500_000, 'human-1', 0, BOT_CASH_RESERVE, DEFAULT_INTEREST_RATE, false, activeDecisions);
+    expect(picks.some((p) => p.name === 'New Pick')).toBe(false);
+    expect(picks.some((p) => p.name === 'Unrelated Pick')).toBe(true);
+  });
+});
+
+describe('estimatedFirstYearCashEffect', () => {
+  it('is just the cash field alone when nothing else is set', () => {
+    const def = makeDecisionDef({ impacts: { cash: { type: 'absolute', schedule: { 1: -25_000, default: 0 } } } });
+    expect(estimatedFirstYearCashEffect(def)).toBe(-25_000);
+  });
+
+  // Regression: "Non-Disclosure Severance" (cash -25,000, staffCost +15,000) used to look
+  // like a $25k spend when it actually cost ~$40k in real cash the very turn it deployed.
+  it('folds in DOLLAR_FIELDS (operatingExpenses/staffCost/otherIncome/financeCost) alongside the cash field', () => {
+    const def = makeDecisionDef({
+      impacts: {
+        cash: { type: 'absolute', schedule: { 1: -25_000, default: 0 } },
+        staffCost: { type: 'absolute', schedule: { 1: 15_000, default: 0 } },
+      },
+    });
+    expect(estimatedFirstYearCashEffect(def)).toBe(-40_000);
+  });
+
+  it('converts a debt impact into its financeCost-equivalent cost (debt * interestRate)', () => {
+    const def = makeDecisionDef({ impacts: { debt: { type: 'absolute', schedule: { 1: 100_000, default: 0 } } } });
+    expect(estimatedFirstYearCashEffect(def, 0.05)).toBe(-5000);
+  });
+
+  it('otherIncome contributes positively, not as a cost', () => {
+    const def = makeDecisionDef({ impacts: { otherIncome: { type: 'absolute', schedule: { 1: 12_000, default: 0 } } } });
+    expect(estimatedFirstYearCashEffect(def)).toBe(12_000);
+  });
+});
+
+describe('isCashTrendDeclining / computeEffectiveReserve', () => {
+  it('is false with fewer than BOT_CASH_TREND_WINDOW readings', () => {
+    expect(isCashTrendDeclining(Array(BOT_CASH_TREND_WINDOW - 1).fill(100))).toBe(false);
+  });
+
+  it('is true when cash over the window has net declined', () => {
+    const history = [100_000, 80_000, 60_000].slice(0, BOT_CASH_TREND_WINDOW);
+    expect(isCashTrendDeclining(history)).toBe(true);
+  });
+
+  it('is false when cash over the window has net risen, even with a dip in the middle', () => {
+    const history = [100_000, 50_000, 120_000].slice(0, BOT_CASH_TREND_WINDOW);
+    expect(isCashTrendDeclining(history)).toBe(false);
+  });
+
+  it('computeEffectiveReserve multiplies the base reserve once the trend is declining', () => {
+    const declining = [100_000, 80_000, 60_000].slice(0, BOT_CASH_TREND_WINDOW);
+    expect(computeEffectiveReserve(declining, 0, BOT_CASH_RESERVE)).toBe(BOT_CASH_RESERVE * BOT_CASH_TREND_RESERVE_MULTIPLIER);
+  });
+
+  it('computeEffectiveReserve adds the projected next-turn cost (if negative) on top', () => {
+    const stable = [100_000, 100_000, 100_000].slice(0, BOT_CASH_TREND_WINDOW);
+    expect(computeEffectiveReserve(stable, -30_000, BOT_CASH_RESERVE)).toBe(BOT_CASH_RESERVE + 30_000);
+  });
+
+  it('computeEffectiveReserve ignores a projected next-turn effect that is net positive', () => {
+    const stable = [100_000, 100_000, 100_000].slice(0, BOT_CASH_TREND_WINDOW);
+    expect(computeEffectiveReserve(stable, 30_000, BOT_CASH_RESERVE)).toBe(BOT_CASH_RESERVE);
+  });
+});
+
+describe('projectedNextTurnOwnCashEffect', () => {
+  const deck = [
+    makeDecisionDef({
+      decision: 'Manure Futures Speculation',
+      impacts: {
+        cash: { type: 'absolute', schedule: { 1: 84_000, default: 0 } },
+        financeCost: { type: 'absolute', schedule: { 1: 0, 2: 12_000, 3: 12_000, default: 0 } },
+      },
+    }),
+  ];
+
+  it('projects a backloaded cost landing next turn that year-1 pricing never saw', () => {
+    // elapsedYears 1 -> next turn is elapsedYears 2, well within maturityYears (3).
+    const activeDecisions = [{ decisionName: 'Manure Futures Speculation', elapsedYears: 1, maturityYears: 3, voidedByLawsuit: false }];
+    expect(projectedNextTurnOwnCashEffect(activeDecisions, deck)).toBe(-12_000);
+  });
+
+  it('projects nothing once the instance is past its own maturity threshold', () => {
+    const activeDecisions = [{ decisionName: 'Manure Futures Speculation', elapsedYears: 3, maturityYears: 3, voidedByLawsuit: false }];
+    expect(projectedNextTurnOwnCashEffect(activeDecisions, deck)).toBe(0);
+  });
+
+  it('projects nothing for an instance voided by a lost lawsuit', () => {
+    const activeDecisions = [{ decisionName: 'Manure Futures Speculation', elapsedYears: 1, maturityYears: 3, voidedByLawsuit: true }];
+    expect(projectedNextTurnOwnCashEffect(activeDecisions, deck)).toBe(0);
+  });
+
+  it('sums across multiple active decisions', () => {
+    const activeDecisions = [
+      { decisionName: 'Manure Futures Speculation', elapsedYears: 1, maturityYears: 3, voidedByLawsuit: false },
+      { decisionName: 'Manure Futures Speculation', elapsedYears: 1, maturityYears: 3, voidedByLawsuit: false },
+    ];
+    // Both instances project to the same next elapsedYears (2) => -12,000 each.
+    expect(projectedNextTurnOwnCashEffect(activeDecisions, deck)).toBe(-24_000);
+  });
+});
+
+describe('isStructurallyUnprofitable', () => {
+  it('is true when operatingExpenses+staffCost+financeCost (net of otherIncome) exceeds revenue', () => {
+    expect(isStructurallyUnprofitable(95_250, 26_000, 36_000, 84_000, 70_000)).toBe(true);
+  });
+
+  it('is false for a healthy company whose revenue covers its cost structure', () => {
+    expect(isStructurallyUnprofitable(20_000, 10_000, 0, 5_000, 100_000)).toBe(false);
+  });
+
+  it('is false exactly at breakeven', () => {
+    expect(isStructurallyUnprofitable(30_000, 10_000, 0, 10_000, 50_000)).toBe(false);
+  });
 });
 
 describe('scoreDecision', () => {
@@ -196,6 +411,34 @@ describe('scoreDecision', () => {
     const scoreAtThreshold = scoreDecision(dirty, BOT_RISK_CAUTION_THRESHOLD);
     expect(scoreAtThreshold).toBeLessThan(scoreBelow);
   });
+
+  // Regression: neither `debt` nor `financeCost` used to be scored at all, so a decision
+  // like "Payday Loan"/"Manure Futures Speculation" (a real cash windfall funded by taking
+  // on debt with a real recurring financeCost) scored as a near-pure windfall with none of
+  // its real cost represented — the bot's own scoring was actively biased toward exactly
+  // the decisions most likely to bankrupt it.
+  it('scores a financeCost increase as a real cost, not invisibly', () => {
+    const costly = makeDecisionDef({ impacts: { financeCost: { type: 'absolute', schedule: { 1: 9000, default: 0 } } } });
+    const free = makeDecisionDef({ impacts: {} });
+    expect(scoreDecision(costly, 0)).toBeLessThan(scoreDecision(free, 0));
+  });
+
+  it('scores a debt increase as a real cost via its financeCost-equivalent (debt * interestRate)', () => {
+    const indebted = makeDecisionDef({ impacts: { debt: { type: 'absolute', schedule: { 1: 100_000, default: 0 } } } });
+    const free = makeDecisionDef({ impacts: {} });
+    expect(scoreDecision(indebted, 0, 0.05)).toBeLessThan(scoreDecision(free, 0, 0.05));
+  });
+
+  // Regression: scoring only ever read a decision's year-1 value, so a genuinely
+  // backloaded cost (zero at deployment, landing hard in a later year) scored as
+  // completely free at the exact moment the bot had to decide whether to pick it —
+  // scoring is now pessimistic across the whole schedule (worstCaseCashEffect), not just
+  // year 1.
+  it('penalizes a backloaded financeCost cost even though its year-1 value is zero', () => {
+    const backloaded = makeDecisionDef({ impacts: { financeCost: { type: 'absolute', schedule: { 1: 0, 2: 50_000, default: 0 } } } });
+    const free = makeDecisionDef({ impacts: {} });
+    expect(scoreDecision(backloaded, 0)).toBeLessThan(scoreDecision(free, 0));
+  });
 });
 
 describe('pickBotShareBuy', () => {
@@ -216,6 +459,30 @@ describe('pickBotShareBuy', () => {
   });
 
   it('spends BOT_BUY_SHARES_SPEND_FRACTION of spare cash (above the reserve) when it does buy', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const cash = BOT_CASH_RESERVE + 100_000;
+    expect(pickBotShareBuy(cash, 0, 2)).toBe(Math.round(100_000 * BOT_BUY_SHARES_SPEND_FRACTION));
+  });
+
+  // Regression: GameLoop.applyShareTransaction charges the buyer's FULL requested amount
+  // even once fractionBought has already capped at 1 (100% owned) — nothing refunds the
+  // excess. A spare-cash-sized spend with no awareness of what the target is actually
+  // worth could vastly overpay for a small/cheap company once the bot's own cash pile
+  // outgrows it, a real observed cause of self-bankruptcy from one oversized Buy Shares
+  // move. maxUsefulSpend clamps the spend to what's actually useful.
+  it('clamps spend to maxUsefulSpend when it is lower than the spare-cash-based amount', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const cash = BOT_CASH_RESERVE + 100_000; // would otherwise spend 50,000
+    expect(pickBotShareBuy(cash, 0, 2, BOT_CASH_RESERVE, 10_000)).toBe(10_000);
+  });
+
+  it('never buys at all once maxUsefulSpend is zero or negative — nothing left worth acquiring', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const cash = BOT_CASH_RESERVE + 100_000;
+    expect(pickBotShareBuy(cash, 0, 2, BOT_CASH_RESERVE, 0)).toBeUndefined();
+  });
+
+  it('defaults maxUsefulSpend to Infinity (uncapped) when not passed — no behavior change for existing callers', () => {
     vi.spyOn(Math, 'random').mockReturnValue(0);
     const cash = BOT_CASH_RESERVE + 100_000;
     expect(pickBotShareBuy(cash, 0, 2)).toBe(Math.round(100_000 * BOT_BUY_SHARES_SPEND_FRACTION));
