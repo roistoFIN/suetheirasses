@@ -248,10 +248,18 @@ side of the bracket, mirrored client-side in `NegotiationPanel` for slider bound
 server is authoritative).
 
 **Step 8b** inside `resolveTurn` catches whatever live negotiation doesn't resolve by a
-turn boundary: a pending unanswered offer is treated as accepted (settles at that amount);
-if no offer was ever made, `turnsNegotiating` increments each boundary and forces
-`status: 'awaiting_trial'` once it reaches `gameSettings.negotiationPeriodTurns` (default
-2), resolving to a verdict that same turn via the normal trial loop.
+turn boundary: a pending offer left standing after GENUINE back-and-forth (`offers.length
+> 1` — both sides have been heard from at least once) is treated as accepted (settles at
+that amount). A case with either no offer at all, OR only a single, one-sided offer
+nobody ever responded to, is treated identically: `turnsNegotiating` increments each
+boundary and forces `status: 'awaiting_trial'` once it reaches
+`gameSettings.negotiationPeriodTurns` (default 2), resolving to a verdict that same turn
+via the normal trial loop. The one-sided-offer case was a real, reported bug: a lone
+defendant opening offer (e.g. a rational $0 move on a provably-hopeless, time-barred
+ground) used to auto-settle at the very next boundary purely because SOME offer object
+existed — even though the plaintiff never accepted, countered, or forced a trial, this
+read to them as "Settled" for an agreement they never made. `offers.length > 1` (not
+`> 0`) is the fix — a single unanswered opening move no longer counts as "engaged with."
 
 **Dig deeper on an open lawsuit** (`digDeeperOnCase`, `game:digDeeperCase`) reuses this
 same two-party persist/emit shape: the defendant pays `digDeeperCost` to flip

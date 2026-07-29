@@ -2473,9 +2473,16 @@ function CaseCard({ caseData, myPlayerId, playerNames, onRiskInfo, negotiationPe
         <Stack gap="sm" mt="sm">
           {negotiationPeriodTurns !== undefined && (
             <Text size="xs" c="dimmed" style={{ fontStyle: 'italic' }}>
-              {caseData.offers.length > 0
+              {/* A single one-sided offer (nobody has ever countered/accepted/gone to
+                  court) is treated exactly like no offer at all — only genuine
+                  back-and-forth (2+ offers) auto-settles at the standing amount when a
+                  turn boundary hits. See GameLoop's Step 8b doc comment for the real,
+                  reported bug this distinction fixes (a lone defendant opening offer,
+                  e.g. a rational $0 on a hopeless case, used to silently "settle" a case
+                  the plaintiff never actually agreed to anything on). */}
+              {caseData.offers.length > 1
                 ? '⚠️ A pending offer left unanswered when the turn ends is treated as accepted'
-                : `⏳ Goes to trial automatically in ${Math.max(0, negotiationPeriodTurns - caseData.turnsNegotiating)} more turn(s) if nobody makes an offer`}
+                : `⏳ Goes to trial automatically in ${Math.max(0, negotiationPeriodTurns - caseData.turnsNegotiating)} more turn(s) if this doesn't reach a real back-and-forth`}
             </Text>
           )}
           <NegotiationPanel caseData={caseData} myPlayerId={myPlayerId} socket={socket} />

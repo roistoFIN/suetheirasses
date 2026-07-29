@@ -826,20 +826,24 @@ export class GameLoop {
     // not part of this turn cycle) are a richer addition than spec. Two distinct things
     // can leave a case dangling at a turn boundary, and each gets a different fallback:
     //
-    // 1. A live offer was left on the table — someone made an offer (or counter) and
-    //    the round ended before the other side responded (accepted, countered, or went
-    //    to court). Rather than let it linger, the standing offer is treated as
+    // 1. GENUINE back-and-forth happened (`offers.length > 1` — both sides have been
+    //    heard from at least once) and the round ended before the other side answered
+    //    the latest move. Rather than let it linger, the standing offer is treated as
     //    accepted: the case settles right here for the last offer's amount, no
     //    probability draw needed. This is the *only* way a case can settle besides an
     //    explicit `acceptOffer` call — same cash-transfer shape (defendant pays
     //    plaintiff), tracked in `legalReceivedThisTurn` exactly like a trial payout so
     //    the §16 bankruptcy pool sees it as real income received this turn.
-    // 2. Nobody ever engaged at all (`offers` still empty) — the original gap this step
-    //    was built to close: nothing else would ever move a case out of 'negotiating'
-    //    between two solvent players (the only other exit was the bankruptcy waterfall
-    //    at Step 10b cancelling/settling it if a party fell), so it would sit forever.
-    //    This keeps the original fixed-timeout fallback, unchanged: after
-    //    `negotiationPeriodTurns` turns of silence, force to trial. The existing
+    // 2. Nobody ever really engaged — either `offers` is still empty, OR exactly ONE
+    //    one-sided offer sits there with zero response (a real, reported bug: the
+    //    defendant's own opening move, e.g. the bot's rational $0 offer on a
+    //    provably-hopeless case, used to auto-settle the very next boundary purely
+    //    because SOME offer object existed, even though the plaintiff never did
+    //    anything — accepted nothing, countered nothing, forced no trial. From their
+    //    side this read as "Settled" for an agreement they never made). A single
+    //    unengaged offer is treated exactly like no offer at all: after
+    //    `negotiationPeriodTurns` turns of silence, force to trial instead of quietly
+    //    accepting whatever the opening mover happened to propose. The existing
     //    trial-resolution loop right below reads the very same `allCases` objects this
     //    mutates, so a case crossing the threshold resolves in this SAME turn (not
     //    "starts waiting, resolves next turn") — the client never observes an
@@ -848,12 +852,13 @@ export class GameLoop {
     // A case with active back-and-forth (every offer answered before its turn boundary)
     // never reaches branch 2's cap — by construction, any exchange that never explicitly
     // accepts or goes to court always has an unanswered offer sitting at the next
-    // boundary check, so branch 1 settles it first. The cap only ever fires for a case
-    // nobody ever makes a single offer on.
+    // boundary check once a SECOND offer exists, so branch 1 settles it first. The cap
+    // only ever fires for a case nobody ever engages with beyond, at most, one one-sided
+    // opening move.
     const negotiationPeriodTurns = this.config.gameSettings.negotiationPeriodTurns;
     for (const case_ of negotiatingBeforeFiling) {
       case_.turnsNegotiating += 1;
-      if (case_.offers.length > 0) {
+      if (case_.offers.length > 1) {
         const lastOffer = case_.offers[case_.offers.length - 1];
         const defCtx = ctxs.get(case_.defendantId);
         const pltCtx = ctxs.get(case_.plaintiffId);

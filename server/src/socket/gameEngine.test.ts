@@ -3003,14 +3003,17 @@ describe('GameEngine', () => {
       roomState.room.currentPhaseRound = 5;
       const [aliceId, bobId] = Array.from(roomState.players.keys());
 
-      // A pending, unanswered offer from a prior turn — Step 8b's "leave an offer
-      // hanging" rule treats this as accepted the moment a new turn boundary hits,
-      // regardless of turnsNegotiating, settling the case this same turn.
+      // Genuine back-and-forth (defendant opened, plaintiff countered) left pending from
+      // a prior turn — Step 8b's "leave a standing offer hanging" rule treats this as
+      // accepted the moment a new turn boundary hits, regardless of turnsNegotiating,
+      // settling the case this same turn. A SINGLE one-sided offer no longer auto-settles
+      // this way (see gameLoop.test.ts's own regression coverage) — this fixture needs
+      // real back-and-forth to exercise this path.
       const case_ = {
         id: 'case-history-1', roomId: roomState.room.id, plaintiffId: bobId, defendantId: aliceId,
         decisionName: 'Water Pumping', groundName: 'Environmental Violation', description: 'Sue for environmental damage',
         baseProbability: 0.12, plaintiffFullyInvestigated: true, stakes: 15000, status: 'negotiating' as const,
-        offers: [{ by: 'defendant' as const, amount: 8000 }], turnsNegotiating: 1, createdAt: new Date(),
+        offers: [{ by: 'defendant' as const, amount: 8000 }, { by: 'plaintiff' as const, amount: 12000 }], turnsNegotiating: 1, createdAt: new Date(),
       };
 
       (mockPrisma.player.findMany as ReturnType<typeof vi.fn>).mockImplementation(({ where }: any) =>
@@ -3038,8 +3041,9 @@ describe('GameEngine', () => {
       // The plaintiff's own known odds at filing time, stamped once into history.
       expect(row.baseProbability).toBe(0.12);
       expect(row.plaintiffFullyInvestigated).toBe(true);
-      // The stale offer's own amount (8000), not the pre-trial stakes estimate (15000).
-      expect(row.resolvedAmount).toBe(8000);
+      // The stale standing offer's own amount (the plaintiff's counter, 12000), not the
+      // pre-trial stakes estimate (15000).
+      expect(row.resolvedAmount).toBe(12000);
     });
 
     it('does not write any history row for a turn with no legal cases at all', async () => {

@@ -1405,8 +1405,11 @@ describe('GameLoop', () => {
       const bobUpdate1 = outcome1.companyUpdates.find((u) => u.playerId === 'player-2')!;
       const caseId = aliceUpdate1.engineState.legalCases[0].id;
 
-      // The defendant (Alice) makes an offer out-of-band — nobody responds before the
-      // next turn boundary, so Step 8b treats the standing offer as accepted.
+      // The defendant (Alice) makes an offer out-of-band, the plaintiff (Bob) counters
+      // — genuine back-and-forth — and then nobody responds before the next turn
+      // boundary, so Step 8b treats the standing offer as accepted (a single one-sided
+      // offer alone no longer auto-settles — see this describe block's own regression
+      // tests — so this fixture needs real back-and-forth to exercise this path).
       const offerPlayers = makePlayers([
         { id: 'player-1', name: 'Alice', variables: aliceUpdate1.variables, engineState: aliceUpdate1.engineState },
         { id: 'player-2', name: 'Bob', variables: bobUpdate1.variables, engineState: bobUpdate1.engineState },
@@ -1415,9 +1418,17 @@ describe('GameLoop', () => {
       expect(offerOutcome.success).toBe(true);
       if (!offerOutcome.success) return;
 
-      const players2 = makePlayers([
+      const counterPlayers = makePlayers([
         { id: 'player-1', name: 'Alice', variables: aliceUpdate1.variables, engineState: offerOutcome.defendant.engineState },
         { id: 'player-2', name: 'Bob', variables: bobUpdate1.variables, engineState: offerOutcome.plaintiff.engineState },
+      ]);
+      const counterOutcome = gameLoop.makeOffer('player-2', caseId, 8000, counterPlayers);
+      expect(counterOutcome.success).toBe(true);
+      if (!counterOutcome.success) return;
+
+      const players2 = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: aliceUpdate1.variables, engineState: counterOutcome.defendant.engineState },
+        { id: 'player-2', name: 'Bob', variables: bobUpdate1.variables, engineState: counterOutcome.plaintiff.engineState },
       ]);
       const outcome2 = gameLoop.resolveTurn('room-1', 2, players2);
 
@@ -3224,11 +3235,12 @@ describe('GameLoop', () => {
   });
 
   describe('negotiation turn-boundary fallbacks (Step 8b)', () => {
-    it('auto-settles a case with a pending, unanswered offer at the very next turn boundary — the offer is treated as accepted', () => {
-      // The defendant offered 10000 last turn; nobody accepted/countered/went to court
-      // before this turn resolved. makeConfig's negotiationPeriodTurns is 2 — this must
-      // settle on this very first boundary check, not wait for the cap.
-      const case_ = makeCase({ offers: [{ by: 'defendant', amount: 10000 }] });
+    it('auto-settles a case with genuine back-and-forth (2+ offers) left unanswered at the very next turn boundary — the standing offer is treated as accepted', () => {
+      // Defendant opened at 8000, plaintiff countered to 10000 last turn; nobody
+      // accepted/countered/went to court before this turn resolved. makeConfig's
+      // negotiationPeriodTurns is 2 — this must settle on this very first boundary
+      // check, not wait for the cap, since real back-and-forth already happened.
+      const case_ = makeCase({ offers: [{ by: 'defendant', amount: 8000 }, { by: 'plaintiff', amount: 10000 }] });
       const withOffer = playersWithCase(case_, { 'player-1': 100000, 'player-2': 50000 });
       // Identical fixture but with no case at all — isolates exactly the settlement's
       // cash effect from everything else a turn's P&L/balance-sheet math also moves,
@@ -3254,7 +3266,8 @@ describe('GameLoop', () => {
       const bobBaselineCash = baseline.result.players.find((p) => p.playerId === 'player-2')!.variables.cash;
 
       // Defendant (Alice, player-1) paid the plaintiff (Bob, player-2) exactly the
-      // offer amount, on top of whatever the rest of the turn's math already did.
+      // standing (plaintiff's counter) offer, on top of whatever the rest of the
+      // turn's math already did.
       expect(aliceBaselineCash - aliceCash).toBeCloseTo(10000, 5);
       expect(bobCash - bobBaselineCash).toBeCloseTo(10000, 5);
     });
@@ -3262,7 +3275,7 @@ describe('GameLoop', () => {
     it('does not auto-settle a case with no offers yet on its first boundary check — the original negotiationPeriodTurns cap still applies', () => {
       // No offer was ever made — must NOT be settled or forced to trial after just one
       // turn (negotiationPeriodTurns is 2); this is the pre-existing timeout path,
-      // unaffected by the new offer-driven settle branch.
+      // unaffected by the offer-driven settle branch.
       const players = playersWithCase(makeCase());
 
       const outcome = gameLoop.resolveTurn('room-1', 2, players);
@@ -3270,6 +3283,51 @@ describe('GameLoop', () => {
       const aliceCase = outcome.result.players.find((p) => p.playerId === 'player-1')?.legalCases[0];
       expect(aliceCase?.status).toBe('negotiating');
       expect(aliceCase?.turnsNegotiating).toBe(1);
+    });
+
+    // Regression: a real, reported bug — a single one-sided opening offer (e.g. the
+    // defendant's own opening move) used to auto-settle at the very next boundary purely
+    // because SOME offer existed, even though the OTHER side never engaged at all
+    // (never accepted, countered, or forced a trial). This produced a confusing "Settled"
+    // outcome for a case nobody actually agreed to anything on — most visibly when the
+    // lone offer was $0 on a provably-hopeless (time-barred/already-sued) case. A single
+    // unanswered offer must now be treated exactly like no offer at all.
+    it('does NOT auto-settle a case with only ONE one-sided offer (no back-and-forth) on its first boundary check', () => {
+      const case_ = makeCase({ offers: [{ by: 'defendant', amount: 0 }] });
+      const players = playersWithCase(case_, { 'player-1': 100000, 'player-2': 50000 });
+
+      const outcome = gameLoop.resolveTurn('room-1', 2, players);
+
+      const aliceCase = outcome.result.players.find((p) => p.playerId === 'player-1')?.legalCases[0];
+      expect(aliceCase?.status).toBe('negotiating');
+      expect(aliceCase?.verdict).toBeUndefined();
+      expect(aliceCase?.turnsNegotiating).toBe(1);
+      // Neither party's cash moved — a real, reported bug had the defendant's $0 offer
+      // silently "pay" nothing while still stamping the case resolved/settled.
+      const aliceCash = outcome.result.players.find((p) => p.playerId === 'player-1')!.variables.cash;
+      const bobCash = outcome.result.players.find((p) => p.playerId === 'player-2')!.variables.cash;
+      const baseline = gameLoop.resolveTurn('room-1', 2, makePlayers([
+        { id: 'player-1', name: 'Alice', variables: makeVars({ cash: 100000 }) },
+        { id: 'player-2', name: 'Bob', variables: makeVars({ cash: 50000 }) },
+      ]));
+      expect(aliceCash).toBeCloseTo(baseline.result.players.find((p) => p.playerId === 'player-1')!.variables.cash, 5);
+      expect(bobCash).toBeCloseTo(baseline.result.players.find((p) => p.playerId === 'player-2')!.variables.cash, 5);
+    });
+
+    it('forces a one-sided-offer case to trial once negotiationPeriodTurns is reached, same as a genuinely untouched case', () => {
+      // turnsNegotiating already at 1 (one prior boundary check already passed) —
+      // makeConfig's negotiationPeriodTurns is 2, so this next check must cross the cap.
+      const case_ = makeCase({ offers: [{ by: 'defendant', amount: 0 }], turnsNegotiating: 1 });
+      const players = playersWithCase(case_, { 'player-1': 100000, 'player-2': 50000 });
+
+      const outcome = gameLoop.resolveTurn('room-1', 3, players);
+
+      const aliceCase = outcome.result.players.find((p) => p.playerId === 'player-1')?.legalCases[0];
+      // Resolved THIS turn via the normal trial loop (not left dangling as
+      // 'awaiting_trial' until a future turn) — same "resolves in the same turn it
+      // crosses the threshold" guarantee the no-offer path already has.
+      expect(aliceCase?.status).toBe('resolved');
+      expect(aliceCase?.verdict === 'won' || aliceCase?.verdict === 'lost').toBe(true);
     });
   });
 
