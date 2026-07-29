@@ -49,7 +49,7 @@ services:
       - DATABASE_URL=postgresql://stc:${POSTGRES_PASSWORD}@postgres:5432/stc_db
       - PORT=3001
       - NODE_ENV=production
-      - CLIENT_URL=https://suethemchickens.online
+      - CLIENT_URL=https://suethemchickens.online,https://www.suethemchickens.online
       - ADMIN_TOKEN=${ADMIN_TOKEN:?ADMIN_TOKEN must be set in .env}
     depends_on:
       postgres:

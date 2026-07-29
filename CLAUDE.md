@@ -350,8 +350,8 @@ effect is applied once, not compounded — is the one most likely to silently re
 
 Beyond spec: a decision can be sued over only within `gameSettings.statuteOfLimitationsYears`
 of deployment (`targetInstance.elapsedYears >= statuteOfLimitationsYears` forces
-`baseProbability` to 0 in both `LegalEngine.fileLawsuit` and `pickBestGround`'s pre-filing
-estimate, so a suggestion never quotes odds a real filing would immediately zero out).
+`baseProbability` to 0 in both `LegalEngine.fileLawsuit` and `pickAllGrounds`'s pre-filing
+estimates, so a suggestion never quotes odds a real filing would immediately zero out).
 Independent of `isMatured` — governs legal liability, not schedule-locking.
 
 A legal risk's `impact.type` matters for stakes, not just for the defendant's effect: an
@@ -369,10 +369,10 @@ is always safe already (`ctx.vars.equity` is written back every turn at Step 7).
 
 **The Step 8 fix above only covers the actual filing.** Two *other* call sites price the
 same relative-type grounds for DISPLAY, before a player ever files, and both had the exact
-same "$0" bug independently: `GameLoop.buildIncomingAttacks` (populates
-`suggestedGroundStakes` on every incoming-attack hint card, every turn) and `GameLoop.
-digDeeper` (the immediate reveal at the moment of clicking Dig Deeper) both fed
-`revealAttack`'s `pickBestGround` call raw `PlayerVariables` with no `revenue` patch at
+same "$0" bug independently: `GameLoop.buildIncomingAttacks` (populates every incoming-
+attack hint card's `suggestedGrounds[].stakes`, every turn) and `GameLoop.digDeeper` (the
+immediate reveal at the moment of clicking Dig Deeper) both fed `revealAttack`'s
+`pickAllGrounds` call raw `PlayerVariables` with no `revenue` patch at
 all — a real, reported bug (Venture Capital Shadow Money's hint showing $0 stakes, but
 affecting all 60 revenue-relative grounds identically). Fixed the same way as Step 8:
 `buildIncomingAttacks` now takes `plMap` and patches `revenue` from it before calling
@@ -383,6 +383,23 @@ has no live turn in progress to compute a `plMap` from at all — it's fixed via
 digDeeper` (which itself stays pure/Prisma-free, per its own design). Approximate
 (last-turn's figure, not "right now"), same tradeoff as every other out-of-band action
 that needs a P&L-derived number it can't afford to live-recompute.
+
+**A fully-investigated hint suggests EVERY viable ground, not just the strongest one.**
+`DecisionEngine.pickAllGrounds` (`decisionEngine.ts`) replaced the old `pickBestGround` —
+a real, reported gap: a decision with several `legalRisks` entries (e.g. "Risky
+Fundraising"'s two revenue/equity-relative grounds) used to only ever surface the single
+highest-probability one via `IncomingAttackInfo.suggestedGroundName` (a scalar field),
+silently hiding every other genuinely viable ground from a fully-investigated player.
+`IncomingAttackInfo.suggestedGrounds` is now an array (still sorted probability-descending,
+so `[0]` is still "the best one" for any caller that only wants that), and
+`AttackHintCard` (`GamePhase.tsx`) renders one suggestion box — description, estimated
+success, stakes, and its own "SUE NOW" button — per ground, since filing is always over
+one specific ground name. `botService.ts`'s own suing strategy (`shouldFileLawsuit`,
+`pickAttacksToInvestigate`) deliberately still only ever weighs `suggestedGrounds[0]` —
+showing every option is a human-facing information upgrade, not a bot-strategy change.
+`GameLoop.resolveTurn`'s `plaintiffFullyInvestigated` stamp (Step 8, filing time) was
+updated the same way: a plaintiff who sued over ANY of the grounds `pickAllGrounds`
+surfaced counts as having "known the odds," not just the one that happened to sort first.
 
 ### A case's probability is earned separately by each side, and displayed as a 5-band verbal likelihood
 

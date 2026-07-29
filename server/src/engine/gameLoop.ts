@@ -60,7 +60,7 @@ import {
   SELF_OWNERSHIP_KEY,
   EXTERNAL_MARKET_KEY,
 } from './calcEngine.js';
-import { DecisionEngine, MAX_INVESTIGATION_LEVEL, summarizeTargetImpacts, summarizeOwnImpacts, pickBestGround, meetsLegalRiskConditions } from './decisionEngine.js';
+import { DecisionEngine, MAX_INVESTIGATION_LEVEL, summarizeTargetImpacts, summarizeOwnImpacts, pickAllGrounds, meetsLegalRiskConditions } from './decisionEngine.js';
 import type { DeployedDecision, TargetImpactResult } from './decisionEngine.js';
 import { LegalEngine } from './legalEngine.js';
 import { buildFormulaSet, type FormulaSet } from './formulaEngine.js';
@@ -738,9 +738,12 @@ export class GameLoop {
         const targetVarsForFiling = { ...targetCtx.vars, revenue: plMap.get(filing.targetId)?.revenue ?? targetCtx.vars.revenue };
 
         // Does the plaintiff already know these odds from fully "Dig Deeper"-investigating
-        // the underlying attack, and are they suing over its exact suggested ground? Mirrors
-        // revealAttack's own level-3 computation exactly (same instance, same attacker vars),
-        // since that's the live hint the plaintiff would have seen just before filing.
+        // the underlying attack, and are they suing over one of the grounds that
+        // investigation actually surfaced? Mirrors revealAttack's own level-3 computation
+        // exactly (same instance, same attacker vars, same pickAllGrounds call) — matches
+        // ANY of the returned grounds, not just the first (highest-probability) one, since
+        // a fully-investigated player now sees every viable ground on the hint card, not
+        // just the single strongest.
         // Direct decisions must actually target the plaintiff; indirect ones (no target at
         // all — see isIndirectEffect) just need to be an instance of the cited decision
         // name on the cited defendant, since we're already scoped to `targetCtx`'s own
@@ -767,8 +770,8 @@ export class GameLoop {
           const rawLevel = ctx.engineState.investigations[attackInstance.id] ?? 0;
           const level = this.effectiveInvestigationLevel(rawLevel, ctxs.size);
           if (level >= MAX_INVESTIGATION_LEVEL) {
-            const best = pickBestGround(attackInstance.definition, attackInstance.elapsedYears, targetCtx.vars, this.adminVars, this.formulas, this.config.gameSettings.statuteOfLimitationsYears);
-            plaintiffFullyInvestigated = best?.name === filing.groundName;
+            const grounds = pickAllGrounds(attackInstance.definition, attackInstance.elapsedYears, targetCtx.vars, this.adminVars, this.formulas, this.config.gameSettings.statuteOfLimitationsYears);
+            plaintiffFullyInvestigated = grounds.some((g) => g.name === filing.groundName);
           }
         }
 
@@ -2045,11 +2048,11 @@ export class GameLoop {
       const attackerCtx = ctxs.get(attackerId)!;
       // `attackerCtx.vars` never carries `revenue` (like `equity`, it's only ever
       // materialized into `plMap` for this turn's broadcast — see the Step 8 stakes-
-      // calculation note) — patched in here for `revealAttack`'s `pickBestGround` call,
+      // calculation note) — patched in here for `revealAttack`'s `pickAllGrounds` call,
       // which needs the real figure to price a relative-type ground targeting revenue
       // (17 of the 25 in the real library). Reading `undefined` there was a real,
       // reported bug: every such ground's displayed "Stakes" showed $0 on every incoming-
-      // attack hint card, since `pickBestGround` falls back to 0 for a non-numeric target
+      // attack hint card, since `pickAllGrounds` falls back to 0 for a non-numeric target
       // field. Same fix Step 8's `targetVarsForFiling` already applies to the real filing.
       const attackerVarsForReveal = { ...attackerCtx.vars, revenue: plMap.get(attackerId)?.revenue ?? attackerCtx.vars.revenue };
       for (const d of attackerCtx.engineState.activeDecisions) {
@@ -2116,12 +2119,9 @@ export class GameLoop {
           : summarizeTargetImpacts(decision.definition.impacts, decision.elapsedYears);
     }
     if (level >= 3) {
-      const best = pickBestGround(decision.definition, decision.elapsedYears, attackerVars, this.adminVars, this.formulas, this.config.gameSettings.statuteOfLimitationsYears, decision.everSued, meetsLegalRiskConditions(decision.definition, decision));
-      if (best) {
-        info.suggestedGroundName = best.name;
-        info.suggestedGroundDescription = best.description;
-        info.successProbability = best.probability;
-        info.suggestedGroundStakes = best.stakes;
+      const grounds = pickAllGrounds(decision.definition, decision.elapsedYears, attackerVars, this.adminVars, this.formulas, this.config.gameSettings.statuteOfLimitationsYears, decision.everSued, meetsLegalRiskConditions(decision.definition, decision));
+      if (grounds.length > 0) {
+        info.suggestedGrounds = grounds;
       }
     }
     return info;

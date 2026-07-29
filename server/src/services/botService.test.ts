@@ -223,8 +223,8 @@ describe('pickBotShareBuy', () => {
 });
 
 describe('pickAttacksToInvestigate', () => {
-  it('excludes attacks that are already fully revealed (have a suggestedGroundName)', () => {
-    const revealed = makeAttack({ attackId: 'a', suggestedGroundName: 'Some Ground' });
+  it('excludes attacks that are already fully revealed (have suggestedGrounds)', () => {
+    const revealed = makeAttack({ attackId: 'a', suggestedGrounds: [{ name: 'Some Ground', description: 'x', probability: 0.5, stakes: 1000 }] });
     const notRevealed = makeAttack({ attackId: 'b', investigationLevel: 1 });
     const picks = pickAttacksToInvestigate([revealed, notRevealed]);
     expect(picks.map((a) => a.attackId)).toEqual(['b']);
@@ -257,19 +257,31 @@ describe('shouldFileLawsuit', () => {
   });
 
   it('is false when the estimated win chance is at or below 30%', () => {
-    const attack = makeAttack({ suggestedGroundName: 'Ground', successProbability: 0.3 });
+    const attack = makeAttack({ suggestedGrounds: [{ name: 'Ground', description: 'x', probability: 0.3, stakes: 1000 }] });
     expect(shouldFileLawsuit(attack, 500_000, filingCost)).toBe(false);
   });
 
   it('is true once the estimated win chance clears 30% and cash covers the fee plus reserve', () => {
-    const attack = makeAttack({ suggestedGroundName: 'Ground', successProbability: 0.31 });
+    const attack = makeAttack({ suggestedGrounds: [{ name: 'Ground', description: 'x', probability: 0.31, stakes: 1000 }] });
     expect(shouldFileLawsuit(attack, 500_000, filingCost)).toBe(true);
   });
 
   it('is false when filing would breach the reserve, even with good odds', () => {
-    const attack = makeAttack({ suggestedGroundName: 'Ground', successProbability: 0.9 });
+    const attack = makeAttack({ suggestedGrounds: [{ name: 'Ground', description: 'x', probability: 0.9, stakes: 1000 }] });
     const cash = BOT_CASH_RESERVE + filingCost - 1;
     expect(shouldFileLawsuit(attack, cash, filingCost)).toBe(false);
+  });
+
+  it('only ever weighs the single strongest ground (index 0), ignoring weaker alternatives even if listed', () => {
+    // Already sorted probability-descending by pickAllGrounds — a weak second entry
+    // should never accidentally drag the decision down (or up).
+    const attack = makeAttack({
+      suggestedGrounds: [
+        { name: 'Strong', description: 'x', probability: 0.9, stakes: 1000 },
+        { name: 'Weak', description: 'x', probability: 0.05, stakes: 1000 },
+      ],
+    });
+    expect(shouldFileLawsuit(attack, 500_000, filingCost)).toBe(true);
   });
 });
 

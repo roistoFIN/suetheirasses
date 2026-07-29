@@ -145,12 +145,15 @@ function simulateSmartGame(seed: number, maxRounds: number): SmartGameResult {
         result.digsPerformed++;
       }
 
-      // Only sue over a fully-investigated, genuinely promising suggested ground.
+      // Only sue over a fully-investigated, genuinely promising suggested ground — the
+      // single strongest one (suggestedGrounds[0], already sorted probability-descending
+      // by pickAllGrounds), same "sue over your best option" strategy the bot itself uses.
       for (const attack of state[id].incomingAttacks) {
         if (suitsThisTurn >= config.gameSettings.maxLawsuitsPerPlayerPerTurn) break;
-        if (attack.investigationLevel < 3 || !attack.suggestedGroundName || !attack.attackerId || !attack.decisionName) continue;
-        if ((attack.successProbability ?? 0) <= 0.2) continue;
-        const key = `${attack.attackerId}:${attack.decisionName}:${attack.suggestedGroundName}`;
+        const bestGround = attack.suggestedGrounds?.[0];
+        if (attack.investigationLevel < 3 || !bestGround || !attack.attackerId || !attack.decisionName) continue;
+        if (bestGround.probability <= 0.2) continue;
+        const key = `${attack.attackerId}:${attack.decisionName}:${bestGround.name}`;
         if (state[id].alreadySued.has(key)) continue;
         if (state[id].cash < config.gameSettings.lawsuitFilingCost) continue;
         const engineInputsForFee: EngineDataInput[] = activeIds.map((pid) => ({
@@ -160,7 +163,7 @@ function simulateSmartGame(seed: number, maxRounds: number): SmartGameResult {
         if (!fee.success) continue;
         state[id].variables = fee.variables;
         state[id].cash = fee.newCash;
-        sub.lawsuits.push({ targetId: attack.attackerId, decisionName: attack.decisionName, groundName: attack.suggestedGroundName });
+        sub.lawsuits.push({ targetId: attack.attackerId, decisionName: attack.decisionName, groundName: bestGround.name });
         state[id].alreadySued.add(key);
         suitsThisTurn++;
         result.lawsuitsFiled++;

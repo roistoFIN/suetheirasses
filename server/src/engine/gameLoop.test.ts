@@ -1169,6 +1169,36 @@ describe('GameLoop', () => {
         const bobCase = outcome2.result.players.find((p) => p.playerId === 'player-2')?.legalCases[0];
         expect(bobCase?.plaintiffFullyInvestigated).toBe(true);
       });
+
+      it('stamps true when fully investigated and suing over ANY suggested ground on a multi-ground decision, not just the strongest one', () => {
+        // 'Risky Fundraising' carries two legalRisks — a fully-investigated player now
+        // sees both (see the dedicated "surfaces ALL of them" describe block above), and
+        // choosing the weaker of the two should count exactly the same as choosing the
+        // strongest: both were genuinely shown to them.
+        gameLoop.submitDecisions('room-1', 'player-1', {
+          strategic: [], operational: [{ name: 'Risky Fundraising' }], financial: [], lawsuits: [],
+        });
+        const deployOutcome = gameLoop.resolveTurn('room-1', 1, withBotAttack());
+        const rfInstance = deployOutcome.result.players
+          .find((p) => p.playerId === 'player-1')!.activeDecisions
+          .find((d) => d.decisionName === 'Risky Fundraising')!;
+
+        const persistedAlice = deployOutcome.companyUpdates.find((u) => u.playerId === 'player-1')!;
+        gameLoop.submitDecisions('room-1', 'player-2', {
+          strategic: [], operational: [], financial: [],
+          // The WEAKER of the two suggested grounds, not the top-sorted one.
+          lawsuits: [{ targetId: 'player-1', decisionName: 'Risky Fundraising', groundName: 'Unfair Competition via Fundraising' }],
+        });
+        const players2 = makePlayers([
+          { id: 'player-1', name: 'Alice', variables: persistedAlice.variables, engineState: persistedAlice.engineState },
+          { id: 'player-2', name: 'Bob', engineState: { investigations: { [rfInstance.id]: 3 } } },
+          { id: 'player-3', name: 'Carol' },
+        ]);
+        const outcome2 = gameLoop.resolveTurn('room-1', 2, players2);
+
+        const bobCase = outcome2.result.players.find((p) => p.playerId === 'player-2')?.legalCases[0];
+        expect(bobCase?.plaintiffFullyInvestigated).toBe(true);
+      });
     });
   });
 
@@ -1234,7 +1264,7 @@ describe('GameLoop', () => {
 
   describe('resolveTurn — incoming-attack hint stakes correctly price a revenue-relative ground (regression)', () => {
     // A real, reported bug, one step over from the filing-time fix above: `revealAttack`
-    // (populates the incoming-attack hint's `suggestedGroundStakes`, via `pickBestGround`)
+    // (populates the incoming-attack hint's `suggestedGrounds[].stakes`, via `pickAllGrounds`)
     // reads `attackerCtx.vars.revenue` directly — but like `equity`, `revenue` is never
     // actually persisted onto `PlayerVariables`, only ever materialized fresh into a
     // turn's own local `plMap`. Every relative-type ground targeting revenue (17 of the
@@ -1264,11 +1294,11 @@ describe('GameLoop', () => {
       const bobAttacks = outcome2.result.players.find((p) => p.playerId === 'player-2')!.incomingAttacks;
       const rfAttack = bobAttacks.find((a) => a.decisionName === 'Revenue Manipulation Scheme');
       expect(rfAttack).toBeDefined();
-      expect(rfAttack!.suggestedGroundName).toBe('Revenue Misrepresentation Claim');
+      expect(rfAttack!.suggestedGrounds?.[0]?.name).toBe('Revenue Misrepresentation Claim');
 
       const aliceRevenueTurn2 = outcome2.result.players.find((p) => p.playerId === 'player-1')!.derived.revenue;
-      expect(rfAttack!.suggestedGroundStakes).toBeCloseTo(aliceRevenueTurn2 * 0.4, 4);
-      expect(rfAttack!.suggestedGroundStakes).toBeGreaterThan(1); // sanity check against the $0 bug
+      expect(rfAttack!.suggestedGrounds?.[0]?.stakes).toBeCloseTo(aliceRevenueTurn2 * 0.4, 4);
+      expect(rfAttack!.suggestedGrounds?.[0]?.stakes).toBeGreaterThan(1); // sanity check against the $0 bug
     });
   });
 
@@ -2491,7 +2521,7 @@ describe('GameLoop', () => {
       expect(outcome.attack.attackerId).toBe('player-1');
       expect(outcome.attack.attackerName).toBe('Alice');
       expect(outcome.attack.decisionName).toBeUndefined();
-      expect(outcome.attack.suggestedGroundName).toBeUndefined();
+      expect(outcome.attack.suggestedGrounds).toBeUndefined();
       expect(outcome.engineStateUpdate.investigations[ATTACK_ID]).toBe(1);
     });
 
@@ -2503,7 +2533,7 @@ describe('GameLoop', () => {
       expect(outcome.attack.investigationLevel).toBe(2);
       expect(outcome.attack.decisionName).toBe('Bot Attack');
       expect(outcome.attack.effectSummary).toContain('Outrage');
-      expect(outcome.attack.suggestedGroundName).toBeUndefined();
+      expect(outcome.attack.suggestedGrounds).toBeUndefined();
     });
 
     it('dig 3 adds the suggested lawsuit ground, a success probability, and its estimated stakes', () => {
@@ -2512,12 +2542,12 @@ describe('GameLoop', () => {
       expect(outcome.success).toBe(true);
       if (!outcome.success) return;
       expect(outcome.attack.investigationLevel).toBe(3);
-      expect(outcome.attack.suggestedGroundName).toBe('CFAA Digital Sabotage Lawsuit');
-      expect(outcome.attack.successProbability).toBeGreaterThan(0);
-      expect(outcome.attack.successProbability).toBeLessThanOrEqual(1);
+      expect(outcome.attack.suggestedGrounds?.[0]?.name).toBe('CFAA Digital Sabotage Lawsuit');
+      expect(outcome.attack.suggestedGrounds?.[0]?.probability).toBeGreaterThan(0);
+      expect(outcome.attack.suggestedGrounds?.[0]?.probability).toBeLessThanOrEqual(1);
       // Same figure a real filed case's LegalCaseData.stakes would carry — see
-      // pickBestGround/fileLawsuit's shared stakes calc.
-      expect(outcome.attack.suggestedGroundStakes).toBeGreaterThan(0);
+      // pickAllGrounds/fileLawsuit's shared stakes calc.
+      expect(outcome.attack.suggestedGrounds?.[0]?.stakes).toBeGreaterThan(0);
     });
 
     it('dig 3 still names a suggested ground but quotes 0% once the attack is past the statute of limitations (makeConfig: 10 years)', () => {
@@ -2525,8 +2555,8 @@ describe('GameLoop', () => {
 
       expect(outcome.success).toBe(true);
       if (!outcome.success) return;
-      expect(outcome.attack.suggestedGroundName).toBe('CFAA Digital Sabotage Lawsuit');
-      expect(outcome.attack.successProbability).toBe(0);
+      expect(outcome.attack.suggestedGrounds?.[0]?.name).toBe('CFAA Digital Sabotage Lawsuit');
+      expect(outcome.attack.suggestedGrounds?.[0]?.probability).toBe(0);
     });
 
     it('sequential digs accumulate cost — the second dig charges from the already-decremented cash', () => {
@@ -2642,7 +2672,7 @@ describe('GameLoop', () => {
       expect(outcome.attack.attackerName).toBe('Alice');
       expect(outcome.attack.decisionName).toBe('Bot Attack');
       expect(outcome.attack.effectSummary).toContain('Outrage');
-      expect(outcome.attack.suggestedGroundName).toBeUndefined();
+      expect(outcome.attack.suggestedGrounds).toBeUndefined();
       // The persisted RAW level still only advances by 1 per dig, same as always — it's
       // only what gets revealed for a given raw level that shifts in a heads-up game.
       expect(outcome.engineStateUpdate.investigations[ATTACK_ID]).toBe(1);
@@ -2654,8 +2684,8 @@ describe('GameLoop', () => {
       expect(outcome.success).toBe(true);
       if (!outcome.success) return;
       expect(outcome.attack.investigationLevel).toBe(3);
-      expect(outcome.attack.suggestedGroundName).toBe('CFAA Digital Sabotage Lawsuit');
-      expect(outcome.attack.successProbability).toBeGreaterThan(0);
+      expect(outcome.attack.suggestedGrounds?.[0]?.name).toBe('CFAA Digital Sabotage Lawsuit');
+      expect(outcome.attack.suggestedGrounds?.[0]?.probability).toBeGreaterThan(0);
     });
 
     it('dig 3 fails — already fully investigated after only 2 paid digs, no charge', () => {
@@ -2712,7 +2742,7 @@ describe('GameLoop', () => {
       expect(outcome.attack.investigationLevel).toBe(2);
       expect(outcome.attack.decisionName).toBe('Water Pumping');
       expect(outcome.attack.effectSummary).toContain('Material Cost Per Ton');
-      expect(outcome.attack.suggestedGroundName).toBeUndefined();
+      expect(outcome.attack.suggestedGrounds).toBeUndefined();
     });
 
     it('dig 3 adds the suggested lawsuit ground and a success probability, same mechanism as a direct attack', () => {
@@ -2721,8 +2751,8 @@ describe('GameLoop', () => {
       expect(outcome.success).toBe(true);
       if (!outcome.success) return;
       expect(outcome.attack.investigationLevel).toBe(3);
-      expect(outcome.attack.suggestedGroundName).toBe('Environmental Violation');
-      expect(outcome.attack.successProbability).toBeGreaterThan(0);
+      expect(outcome.attack.suggestedGrounds?.[0]?.name).toBe('Environmental Violation');
+      expect(outcome.attack.suggestedGrounds?.[0]?.probability).toBeGreaterThan(0);
     });
 
     it('lets any other active player dig in, not just a single "victim" (there is none)', () => {
@@ -2743,6 +2773,49 @@ describe('GameLoop', () => {
       const outcome = gameLoop.digDeeper('player-1', WATER_PUMPING_ID, makeIndirectFixture());
 
       expect(outcome).toEqual({ success: false, reason: 'invalid_attack' });
+    });
+  });
+
+  describe('digDeeper — a decision with several legal risks surfaces ALL of them at level 3, not just the strongest', () => {
+    // 'Risky Fundraising' (shared fixture library above) carries two legalRisks entries —
+    // the exact scenario a player reported: only one ground was ever suggested, silently
+    // hiding the other. No target.* impacts, so this is an indirect-effect hint.
+    const RF_ID = 'rf-1';
+    function makeMultiGroundFixture(): EngineDataInput[] {
+      // Carol is a third, otherwise-uninvolved active player — keeps this fixture OUT of
+      // the heads-up (exactly 2 active players) investigation shortcut, same reasoning
+      // as the Bot Attack fixture above: with only 2 players, raw level 2 would already
+      // count as fully-investigated (effectiveInvestigationLevel's +1 bump), leaving
+      // nothing left for this dig to reveal.
+      return makePlayers([
+        {
+          id: 'player-1', name: 'Alice',
+          // Both of Risky Fundraising's grounds are relative-type (equity/revenue) —
+          // both fields need a real non-zero value here for their stakes to price above
+          // $0, since digDeeper reads the attacker's CURRENT persisted vars directly
+          // (no fresh balance-sheet recompute, unlike a real turn resolution).
+          variables: makeVars({ equity: 500000, revenue: 200000 }),
+          engineState: { activeDecisions: [{ id: RF_ID, definitionName: 'Risky Fundraising', deployedYear: 1, elapsedYears: 0, isMatured: true }] },
+        },
+        { id: 'player-2', name: 'Bob', variables: makeVars({ cash: 100000 }), engineState: { investigations: { [RF_ID]: 2 } } },
+        { id: 'player-3', name: 'Carol' },
+      ]);
+    }
+
+    it('dig 3 lists every legal risk the decision carries, sorted by estimated probability descending', () => {
+      const outcome = gameLoop.digDeeper('player-2', RF_ID, makeMultiGroundFixture());
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.attack.investigationLevel).toBe(3);
+      expect(outcome.attack.suggestedGrounds).toHaveLength(2);
+      expect(outcome.attack.suggestedGrounds!.map((g) => g.name)).toEqual([
+        'Fraudulent Capital Procurement',
+        'Unfair Competition via Fundraising',
+      ]);
+      expect(outcome.attack.suggestedGrounds![0].probability).toBeGreaterThan(outcome.attack.suggestedGrounds![1].probability);
+      // Both grounds' stakes are real, non-zero numbers — not just the top one's.
+      expect(outcome.attack.suggestedGrounds!.every((g) => g.stakes > 0)).toBe(true);
     });
   });
 

@@ -2732,19 +2732,21 @@ function AttackHintCard({ attack, cash, digDeeperCost, filingCost, maxLawsuits, 
   const canAfford = cash >= digDeeperCost;
   const canAffordSue = cash >= filingCost;
   const atLawsuitLimit = pending.lawsuits.length >= maxLawsuits;
-  const [suing, setSuing] = useState(false);
+  // Which specific ground (by name) is currently being filed — a decision can carry
+  // several legalRisks entries, each shown with its own "SUE NOW" button below, so this
+  // has to track WHICH one is in flight rather than a single shared boolean.
+  const [suingGround, setSuingGround] = useState<string | null>(null);
   const [sueError, setSueError] = useState<string | null>(null);
 
   // Same "charge the flat fee instantly, only queue into pending once that succeeds"
   // pattern as SueModal's own handleFile — see that function's doc comment. attackId is
   // always known here (this card's own instance), unlike SueModal's general flow.
-  const handleSueNow = () => {
-    if (!socket || suing || !canAffordSue || atLawsuitLimit) return;
+  const handleSueNow = (groundName: string) => {
+    if (!socket || suingGround || !canAffordSue || atLawsuitLimit) return;
     const targetId = attack.attackerId!;
     const decisionName = attack.decisionName!;
-    const groundName = attack.suggestedGroundName!;
     const attackId = attack.attackId;
-    setSuing(true);
+    setSuingGround(groundName);
     setSueError(null);
 
     const cleanup = () => {
@@ -2753,13 +2755,13 @@ function AttackHintCard({ attack, cash, digDeeperCost, filingCost, maxLawsuits, 
     };
     const onResult = () => {
       cleanup();
-      setSuing(false);
+      setSuingGround(null);
       onSubmitPending({ ...pending, lawsuits: [...pending.lawsuits, { targetId, decisionName, groundName, attackId }] });
     };
     const onError = (data: { code: string; message: string }) => {
       if (data.code !== 'FILE_LAWSUIT_FAILED' && data.code !== 'INVALID_FILE_LAWSUIT') return;
       cleanup();
-      setSuing(false);
+      setSuingGround(null);
       setSueError(FILE_LAWSUIT_ERROR_COPY[data.message] ?? 'Could not file lawsuit — please try again.');
     };
 
@@ -2814,30 +2816,39 @@ function AttackHintCard({ attack, cash, digDeeperCost, filingCost, maxLawsuits, 
         <Text size="xs" c="dimmed" style={{ fontStyle: 'italic', lineHeight: 1.4 }}>{attack.decisionDescription}</Text>
       )}
 
-      {attack.suggestedGroundName && (
-        <Box style={{ marginTop: 8, padding: 8, background: '#fff', border: `1px solid ${suggestedBoxBorder}`, borderRadius: 6 }}>
-          <Text style={{ ...boldStyle, fontSize: '0.75rem' }}>Suggested: {attack.suggestedGroundName}</Text>
-          <Text size="xs" c="dimmed" style={{ lineHeight: 1.4 }}>{attack.suggestedGroundDescription}</Text>
-          <Flex justify="space-between" align="center" style={{ marginTop: 4 }}>
-            <Text size="xs">Estimated success: <strong>{likelihoodLabel(attack.successProbability ?? 0)}</strong></Text>
-            <Text size="xs">Stakes: <strong>{fmt(attack.suggestedGroundStakes ?? 0)}</strong></Text>
-          </Flex>
-          <Button
-            size="xs"
-            color="red"
-            fullWidth
-            mt={6}
-            loading={suing}
-            disabled={!canAffordSue || atLawsuitLimit}
-            leftSection={<IconGavel size={12} />}
-            onClick={handleSueNow}
-          >
-            SUE NOW ({fmt(filingCost)}){!canAffordSue ? ' — not enough cash' : atLawsuitLimit ? ' — limit reached' : ''}
-          </Button>
+      {/* Every viable legal ground this decision carries, not just the strongest one —
+          a real, reported gap: a decision with several legalRisks entries used to only
+          ever surface a single suggestion, silently hiding the rest even from a fully-
+          investigated player. Each gets its own card and its own "SUE NOW" button, since
+          filing is always over one specific ground. */}
+      {attack.suggestedGrounds && attack.suggestedGrounds.length > 0 && (
+        <Stack gap={6} style={{ marginTop: 8 }}>
+          {attack.suggestedGrounds.map((ground) => (
+            <Box key={ground.name} style={{ padding: 8, background: '#fff', border: `1px solid ${suggestedBoxBorder}`, borderRadius: 6 }}>
+              <Text style={{ ...boldStyle, fontSize: '0.75rem' }}>Suggested: {ground.name}</Text>
+              <Text size="xs" c="dimmed" style={{ lineHeight: 1.4 }}>{ground.description}</Text>
+              <Flex justify="space-between" align="center" style={{ marginTop: 4 }}>
+                <Text size="xs">Estimated success: <strong>{likelihoodLabel(ground.probability)}</strong></Text>
+                <Text size="xs">Stakes: <strong>{fmt(ground.stakes)}</strong></Text>
+              </Flex>
+              <Button
+                size="xs"
+                color="red"
+                fullWidth
+                mt={6}
+                loading={suingGround === ground.name}
+                disabled={(suingGround !== null && suingGround !== ground.name) || !canAffordSue || atLawsuitLimit}
+                leftSection={<IconGavel size={12} />}
+                onClick={() => handleSueNow(ground.name)}
+              >
+                SUE NOW ({fmt(filingCost)}){!canAffordSue ? ' — not enough cash' : atLawsuitLimit ? ' — limit reached' : ''}
+              </Button>
+            </Box>
+          ))}
           {sueError && (
-            <Text size="xs" c="red" style={{ marginTop: 4 }}>{sueError}</Text>
+            <Text size="xs" c="red">{sueError}</Text>
           )}
-        </Box>
+        </Stack>
       )}
 
       {!fullyInvestigated && (

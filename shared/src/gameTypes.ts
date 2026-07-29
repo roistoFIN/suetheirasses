@@ -79,7 +79,7 @@ export interface GameSettings {
    * value), suing over it is time-barred: the case still gets created (same "real but
    * hopeless" shape as guessing a decision the target never deployed at all), but its
    * probability of winning is forced to 0, both at actual filing (`LegalEngine.fileLawsuit`)
-   * and in the "suggested ground" estimate `pickBestGround` surfaces via Dig Deeper/SUE
+   * and in the "suggested ground" estimates `pickAllGrounds` surfaces via Dig Deeper/SUE
    * NOW — so the suggestion a player sees never quotes odds a real filing wouldn't honor.
    * Independent of a decision's own `isMatured` (maturity is about when an impact
    * schedule locks in, not legal liability) — a decision can be long
@@ -429,6 +429,21 @@ export interface LegalCaseData {
  * sends attacker identity or case details below the player's own unlocked investigation
  * level, so there's no client-side reveal to inspect via devtools before paying for it.
  */
+/** The recommended lawsuit ground for an incoming attack, with an estimated win
+ * probability — shared shape so `IncomingAttackInfo.suggestedGrounds` (client-facing)
+ * and `DecisionEngine.pickAllGrounds`'s return type (server-internal) can never drift. */
+export interface SuggestedGround {
+  name: string;
+  description: string;
+  probability: number;
+  /** Estimated dollar amount that would change hands if this ground is sued over and won
+   * — priced the exact same way `LegalEngine.fileLawsuit` prices a real case's `stakes`
+   * (see its own doc comment), so the number shown here before filing matches what the
+   * real case will actually carry. Not adjusted by probability — this is "what's at
+   * stake if it lands," not an expected value. */
+  stakes: number;
+}
+
 export interface IncomingAttackInfo {
   /** Stable id of the attacking decision instance — pass back to `game:digDeeper`. */
   attackId: string;
@@ -463,16 +478,14 @@ export interface IncomingAttackInfo {
   decisionDescription?: string;
   /** Human-readable summary of the current per-turn effect, e.g. "+20 Outrage, -20% Capacity Utilization". */
   effectSummary?: string;
-  /** Revealed at investigationLevel >= 3 — the recommended lawsuit ground and an estimated win probability. */
-  suggestedGroundName?: string;
-  suggestedGroundDescription?: string;
-  /** 0-1 estimate using the attacker's current scrutiny/legal exposure — the real probability is still recomputed at trial time. */
-  successProbability?: number;
-  /** Estimated dollar amount at stake if this ground is sued over and won — priced the
-   * same way a real filed case's `LegalCaseData.stakes` is (see `DecisionEngine.
-   * pickBestGround`/`LegalEngine.fileLawsuit`), so it matches what the real case will
-   * actually carry once filed. Not an expected value — not discounted by `successProbability`. */
-  suggestedGroundStakes?: number;
+  /** Revealed at investigationLevel >= 3 — EVERY viable lawsuit ground this decision's
+   * `legalRisks` offers (not just the single strongest one — a real, reported gap: a
+   * decision with several legal risks only ever surfaced one, silently hiding the rest
+   * from a fully-investigated player), sorted by estimated win probability descending.
+   * Empty/undefined only if the decision has no `legalRisks` at all. Each entry's own
+   * `probability`/`stakes` uses the same estimate math `pickAllGrounds` always has —
+   * see `SuggestedGround`'s own doc comment for the `stakes` pricing note. */
+  suggestedGrounds?: SuggestedGround[];
 }
 
 /** One rival's active decision, narrated for their "annual report" — see `game:getAnnualReport`. */

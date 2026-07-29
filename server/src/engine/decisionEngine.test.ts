@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { DecisionEngine, hasPermanentEffect, pickBestGround, meetsLegalRiskConditions, type DeployedDecision } from './decisionEngine';
+import { DecisionEngine, hasPermanentEffect, pickAllGrounds, meetsLegalRiskConditions, type DeployedDecision } from './decisionEngine';
 import type { DecisionDefinition, PlayerVariables, AdminVariables } from '@suethemchickens/shared';
 import { buildFormulaSet } from './formulaEngine';
 import { DEFAULT_FORMULA_SEEDS } from './defaultFormulas';
@@ -429,7 +429,7 @@ describe('DecisionEngine', () => {
     });
   });
 
-  describe('pickBestGround', () => {
+  describe('pickAllGrounds', () => {
     const def = makeDecisionDef({
       decision: 'Water Pumping',
       legalRisks: [
@@ -444,33 +444,38 @@ describe('DecisionEngine', () => {
     const attackerVars = makeVars({ scrutiny: 30, legalExposureRatio: 0 });
 
     it('should return a non-zero probability by default', () => {
-      const best = pickBestGround(def, 2, attackerVars, makeAdmin(), DEFAULT_FORMULAS);
+      const [best] = pickAllGrounds(def, 2, attackerVars, makeAdmin(), DEFAULT_FORMULAS);
       expect(best?.probability).toBeGreaterThan(0);
     });
 
     it('should floor probability to 0 once already claimed (everSued), regardless of elapsedYears', () => {
-      const best = pickBestGround(def, 2, attackerVars, makeAdmin(), DEFAULT_FORMULAS, Infinity, true);
+      const [best] = pickAllGrounds(def, 2, attackerVars, makeAdmin(), DEFAULT_FORMULAS, Infinity, true);
       expect(best?.name).toBe('Environmental Violation');
       expect(best?.probability).toBe(0);
     });
 
     it('should still floor probability to 0 when time-barred, independent of alreadyClaimed', () => {
-      const best = pickBestGround(def, 10, attackerVars, makeAdmin(), DEFAULT_FORMULAS, 10, false);
+      const [best] = pickAllGrounds(def, 10, attackerVars, makeAdmin(), DEFAULT_FORMULAS, 10, false);
       expect(best?.probability).toBe(0);
     });
 
     it('should floor probability to 0 when meetsConditions is false (e.g. a Buy Shares purchase below its legalRiskConditions threshold)', () => {
-      const best = pickBestGround(def, 2, attackerVars, makeAdmin(), DEFAULT_FORMULAS, Infinity, false, false);
+      const [best] = pickAllGrounds(def, 2, attackerVars, makeAdmin(), DEFAULT_FORMULAS, Infinity, false, false);
       expect(best?.name).toBe('Environmental Violation');
       expect(best?.probability).toBe(0);
     });
 
+    it('should return an empty array for a decision with no legalRisks at all', () => {
+      const noRisksDef = makeDecisionDef({ decision: 'Sell Shares', legalRisks: [] });
+      expect(pickAllGrounds(noRisksDef, 2, attackerVars, makeAdmin(), DEFAULT_FORMULAS)).toEqual([]);
+    });
+
     // Regression coverage for the "show Stakes alongside Estimated success" feature —
-    // pickBestGround's stakes estimate must match LegalEngine.fileLawsuit's real stakes
+    // pickAllGrounds's stakes estimate must match LegalEngine.fileLawsuit's real stakes
     // calc exactly, since the whole point is that what a player sees before filing is
     // what the real case will actually carry.
     it('should compute stakes as the absolute schedule value for an absolute-type ground', () => {
-      const best = pickBestGround(def, 2, attackerVars, makeAdmin(), DEFAULT_FORMULAS);
+      const [best] = pickAllGrounds(def, 2, attackerVars, makeAdmin(), DEFAULT_FORMULAS);
       expect(best?.stakes).toBe(22050);
     });
 
@@ -487,8 +492,56 @@ describe('DecisionEngine', () => {
         ],
       });
       const vars = makeVars({ scrutiny: 30, legalExposureRatio: 0, equity: 100000 });
-      const best = pickBestGround(relativeDef, 2, vars, makeAdmin(), DEFAULT_FORMULAS);
+      const [best] = pickAllGrounds(relativeDef, 2, vars, makeAdmin(), DEFAULT_FORMULAS);
       expect(best?.stakes).toBe(45000); // abs(100000 * -0.45)
+    });
+
+    // The actual reported gap this function exists to fix: a decision with SEVERAL
+    // legalRisks entries used to only ever surface the single strongest one
+    // (pickBestGround), silently hiding the rest from a fully-investigated player.
+    it('returns EVERY legal risk, not just the strongest one, sorted by probability descending', () => {
+      const multiGroundDef = makeDecisionDef({
+        decision: 'Vertical Integration',
+        legalRisks: [
+          {
+            name: 'Weakest Ground',
+            description: 'A long-shot claim',
+            probability: { default: 0.05 },
+            impact: { type: 'absolute', target: 'cash', schedule: { default: 10000 } },
+          },
+          {
+            name: 'Strongest Ground',
+            description: 'A near-certain claim',
+            probability: { default: 0.9 },
+            impact: { type: 'absolute', target: 'cash', schedule: { default: 50000 } },
+          },
+          {
+            name: 'Middle Ground',
+            description: 'A middling claim',
+            probability: { default: 0.4 },
+            impact: { type: 'absolute', target: 'cash', schedule: { default: 30000 } },
+          },
+        ],
+      });
+      const grounds = pickAllGrounds(multiGroundDef, 2, attackerVars, makeAdmin(), DEFAULT_FORMULAS);
+      expect(grounds).toHaveLength(3);
+      expect(grounds.map((g) => g.name)).toEqual(['Strongest Ground', 'Middle Ground', 'Weakest Ground']);
+      // Every ground's own probability is still monotonically decreasing.
+      expect(grounds[0].probability).toBeGreaterThan(grounds[1].probability);
+      expect(grounds[1].probability).toBeGreaterThan(grounds[2].probability);
+    });
+
+    it('floors EVERY ground to 0 probability once time-barred, not just the top one', () => {
+      const multiGroundDef = makeDecisionDef({
+        decision: 'Vertical Integration',
+        legalRisks: [
+          { name: 'Ground A', description: 'x', probability: { default: 0.9 }, impact: { type: 'absolute', target: 'cash', schedule: { default: 1000 } } },
+          { name: 'Ground B', description: 'x', probability: { default: 0.5 }, impact: { type: 'absolute', target: 'cash', schedule: { default: 2000 } } },
+        ],
+      });
+      const grounds = pickAllGrounds(multiGroundDef, 10, attackerVars, makeAdmin(), DEFAULT_FORMULAS, 10);
+      expect(grounds).toHaveLength(2);
+      expect(grounds.every((g) => g.probability === 0)).toBe(true);
     });
   });
 

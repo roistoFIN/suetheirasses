@@ -197,7 +197,7 @@ export class GameEngine {
     // stakes-calculation note), and this is an out-of-band action with no live turn in
     // progress to compute one. Patch in the latest known figure from KpiSnapshot history
     // instead — see `latestKnownRevenueByPlayer`'s doc comment for the real bug this
-    // fixes (revealAttack's pickBestGround silently pricing every relative-type,
+    // fixes (revealAttack's pickAllGrounds silently pricing every relative-type,
     // revenue-targeting ground's stakes at $0).
     const revenueByPlayer = await this.latestKnownRevenueByPlayer(roomId);
     const playersForDig = dbPlayers.map((p) => {
@@ -321,16 +321,20 @@ export class GameEngine {
 
     // Anything already fully revealed this turn (no dig needed) plus whatever the
     // digging above just revealed — either can now clear the suing bar.
-    const candidateAttacks = [...botResult.incomingAttacks.filter((a) => a.suggestedGroundName !== undefined), ...dugAttacks];
+    const candidateAttacks = [...botResult.incomingAttacks.filter((a) => a.suggestedGrounds !== undefined), ...dugAttacks];
 
     const lawsuits: SubmittedLawsuitEntry[] = [];
     for (const attack of candidateAttacks) {
-      if (!attack.attackerId || !attack.decisionName || !attack.suggestedGroundName) continue;
+      // Files over its single strongest ground (suggestedGrounds[0], already sorted
+      // probability-descending) — see shouldFileLawsuit's own doc comment for why the
+      // bot's own strategy doesn't need to consider every suggested ground, just its best.
+      const bestGroundName = attack.suggestedGrounds?.[0]?.name;
+      if (!attack.attackerId || !attack.decisionName || !bestGroundName) continue;
       if (!shouldFileLawsuit(attack, cash, lawsuitFilingCost)) continue;
       const feeOutcome = await this.fileLawsuit(roomId, botPlayerId);
       if (!feeOutcome.success) continue; // per-turn cap reached, or funds changed mid-loop
       cash = feeOutcome.newCash;
-      lawsuits.push({ targetId: attack.attackerId, decisionName: attack.decisionName, groundName: attack.suggestedGroundName });
+      lawsuits.push({ targetId: attack.attackerId, decisionName: attack.decisionName, groundName: bestGroundName });
       // chargeLawsuitFilingFee's per-turn cap check reads the already-queued count off
       // GameLoop's own submissions map (see its doc comment) — must be reflected here
       // before the next fee charge, same "charge fees one at a time" requirement a real
@@ -1264,7 +1268,7 @@ export class GameEngine {
    * for it. Reads the latest `KpiSnapshot` row per player instead (`distinct: ['playerId']`
    * combined with `orderBy: { round: 'desc' }` gets Prisma to return exactly the newest
    * row per player). A real, reported bug this fixes: without it, `revealAttack`'s
-   * `pickBestGround` call fell back to 0 for any relative-type legal-risk ground
+   * `pickAllGrounds` call fell back to 0 for any relative-type legal-risk ground
    * targeting revenue (17 of the 25 in the real library), showing a flatly wrong "$0"
    * stakes on the Dig Deeper reveal for those. Approximate (last-turn's figure, not
    * "right now") — same "can't afford a live recomputation out-of-band" tradeoff as

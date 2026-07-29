@@ -1108,12 +1108,12 @@ describe('GameEngine', () => {
                 {
                   attackId: 'attack-a', isIndirect: false, investigationLevel: 3,
                   attackerId: 'attacker-a', attackerName: 'Attacker A',
-                  decisionName: 'Bot Attack', suggestedGroundName: 'Ground A', successProbability: 0.9,
+                  decisionName: 'Bot Attack', suggestedGrounds: [{ name: 'Ground A', description: 'x', probability: 0.9, stakes: 1000 }],
                 },
                 {
                   attackId: 'attack-b', isIndirect: false, investigationLevel: 3,
                   attackerId: 'attacker-b', attackerName: 'Attacker B',
-                  decisionName: 'Bot Attack', suggestedGroundName: 'Ground B', successProbability: 0.9,
+                  decisionName: 'Bot Attack', suggestedGrounds: [{ name: 'Ground B', description: 'x', probability: 0.9, stakes: 1000 }],
                 },
               ],
             },
@@ -1165,7 +1165,7 @@ describe('GameEngine', () => {
                 {
                   attackId: 'attack-a', isIndirect: false, investigationLevel: 3,
                   attackerId: 'attacker-a', attackerName: 'Attacker A',
-                  decisionName: 'Bot Attack', suggestedGroundName: 'Ground A', successProbability: 0.9,
+                  decisionName: 'Bot Attack', suggestedGrounds: [{ name: 'Ground A', description: 'x', probability: 0.9, stakes: 1000 }],
                 },
               ],
             },
@@ -3658,12 +3658,17 @@ describe('GameEngine', () => {
       expect(outcome.success).toBe(true);
       if (!outcome.success) return;
       expect(outcome.attack.investigationLevel).toBe(3);
-      expect(outcome.attack.suggestedGroundName).toBeDefined();
-      expect(outcome.attack.suggestedGroundStakes).toBeGreaterThan(1000); // sanity check against the $0 bug
+      expect(outcome.attack.suggestedGrounds).toBeDefined();
       // Both of Vertical Integration's grounds are revenue-relative with a `default`
-      // multiplier of -0.05/-0.06 — either way, stakes must be a real fraction of the
-      // mocked $300,000 revenue, not a number computed off an undefined field.
-      expect(outcome.attack.suggestedGroundStakes).toBeLessThanOrEqual(300000 * 0.06);
+      // multiplier of -0.05/-0.06 — either way, every ground's stakes must be a real
+      // fraction of the mocked $300,000 revenue, not a number computed off an undefined
+      // field (the actual $0 bug this test guards against), and neither ground should be
+      // silently dropped from the list.
+      expect(outcome.attack.suggestedGrounds!.length).toBeGreaterThanOrEqual(1);
+      for (const ground of outcome.attack.suggestedGrounds!) {
+        expect(ground.stakes).toBeGreaterThan(1000);
+        expect(ground.stakes).toBeLessThanOrEqual(300000 * 0.06);
+      }
     });
 
     it('falls back gracefully (no crash, real ground selection still works) when no KpiSnapshot history exists yet', async () => {
@@ -3695,8 +3700,8 @@ describe('GameEngine', () => {
 
       expect(outcome.success).toBe(true);
       if (!outcome.success) return;
-      expect(outcome.attack.suggestedGroundName).toBeDefined();
-      expect(outcome.attack.suggestedGroundStakes).toBe(0);
+      expect(outcome.attack.suggestedGrounds).toBeDefined();
+      expect(outcome.attack.suggestedGrounds!.every((g) => g.stakes === 0)).toBe(true);
     });
   });
 

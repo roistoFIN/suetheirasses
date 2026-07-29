@@ -3,7 +3,7 @@
  * and impact application.
  */
 
-import type { DecisionDefinition, PlayerVariables, AdminVariables } from '@suethemchickens/shared';
+import type { DecisionDefinition, PlayerVariables, AdminVariables, SuggestedGround } from '@suethemchickens/shared';
 import {
   applyDecisionImpacts,
   calculateMaturityYears as calcMaturity,
@@ -141,28 +141,21 @@ export function summarizeOwnImpacts(
   return summarizeImpacts(ownImpacts, elapsedYears);
 }
 
-/** The recommended lawsuit ground for an incoming attack, with an estimated win probability. */
-export interface SuggestedGround {
-  name: string;
-  description: string;
-  probability: number;
-  /** Estimated dollar amount that would change hands if this ground is sued over and won
-   * — priced the exact same way `LegalEngine.fileLawsuit` prices a real case's `stakes`
-   * (see its own doc comment), so the number shown here before filing matches what the
-   * real case will actually carry. Not adjusted by probability — this is "what's at
-   * stake if it lands," not an expected value. */
-  stakes: number;
-}
-
 /**
- * Suggests the strongest lawsuit ground against a decision's `legalRisks`, using the
- * SAME probability math as real trial resolution (`calculateAdjustedProbability`,
+ * Suggests EVERY viable lawsuit ground against a decision's `legalRisks`, using the SAME
+ * probability math as real trial resolution (`calculateAdjustedProbability`,
  * `gameLoop.ts` Step 8) evaluated against the attacker's current scrutiny/legal
- * exposure — an estimate shown at investigation tier 3. Real trial probability is
+ * exposure — the estimates shown at investigation tier 3. Real trial probability is
  * still recomputed fresh at resolution time; this never substitutes for it.
  *
+ * Sorted by estimated probability descending, so callers wanting "just the strongest
+ * one" (e.g. `revealAttack`'s own display order) can take index 0 — but ALL grounds are
+ * returned. A real, reported gap: this used to return only that single strongest ground
+ * (`pickBestGround`), silently hiding every other viable ground a decision with multiple
+ * `legalRisks` entries actually carries from a fully-investigated player.
+ *
  * `statuteOfLimitationsYears` (`GameSettings.statuteOfLimitationsYears`, default 10)
- * mirrors `LegalEngine.fileLawsuit`'s own time-bar: once `elapsedYears` reaches it, a
+ * mirrors `LegalEngine.fileLawsuit`'s own time-bar: once `elapsedYears` reaches it, every
  * ground's probability is floored to 0 here too, so a "SUE NOW" suggestion never quotes
  * winnable-looking odds for a decision a real filing would immediately resolve to 0%
  * for being too old. Defaulted so existing callers/tests that don't pass it keep the
@@ -179,7 +172,7 @@ export interface SuggestedGround {
  * `minPercentAcquiredInSingleTransaction`); a purchase too small to cross that threshold
  * has no real legal exposure to suggest suing over.
  */
-export function pickBestGround(
+export function pickAllGrounds(
   def: DecisionDefinition,
   elapsedYears: number,
   attackerVars: PlayerVariables,
@@ -188,29 +181,28 @@ export function pickBestGround(
   statuteOfLimitationsYears = Infinity,
   alreadyClaimed = false,
   meetsConditions = true,
-): SuggestedGround | null {
-  if (!def.legalRisks || def.legalRisks.length === 0) return null;
+): SuggestedGround[] {
+  if (!def.legalRisks || def.legalRisks.length === 0) return [];
   const timeBarred = alreadyClaimed || !meetsConditions || elapsedYears >= statuteOfLimitationsYears;
-  let best: SuggestedGround | null = null;
+  const grounds: SuggestedGround[] = [];
   for (const risk of def.legalRisks) {
     const base = timeBarred ? 0 : getScheduleValue(risk.probability, elapsedYears);
     // Same formula as real trial resolution (calcEngine's calculateAdjustedProbability
     // can exceed 1 for high scrutiny/exposure defendants, which trial resolution treats
     // as a guaranteed win — clamp to [0,1] here purely for a sane percentage display.
     const adjusted = Math.min(1, Math.max(0, calculateAdjustedProbability(base, attackerVars.scrutiny, attackerVars.legalExposureRatio ?? 0, admin, formulas)));
-    if (!best || adjusted > best.probability) {
-      // Mirrors LegalEngine.fileLawsuit's own stakes calc exactly (same fixed
-      // 'default'-or-year-1 schedule read, same relative-vs-absolute branch) — see
-      // SuggestedGround's doc comment for why this has to match the real thing.
-      const scheduleValue = risk.impact.schedule['default'] ?? risk.impact.schedule[1] ?? 0;
-      const targetFieldValue = (attackerVars as unknown as Record<string, unknown>)[risk.impact.target];
-      const stakes = risk.impact.type === 'relative'
-        ? Math.abs((typeof targetFieldValue === 'number' ? targetFieldValue : 0) * scheduleValue)
-        : Math.abs(scheduleValue);
-      best = { name: risk.name, description: risk.description, probability: adjusted, stakes };
-    }
+    // Mirrors LegalEngine.fileLawsuit's own stakes calc exactly (same fixed
+    // 'default'-or-year-1 schedule read, same relative-vs-absolute branch) — see
+    // SuggestedGround's doc comment for why this has to match the real thing.
+    const scheduleValue = risk.impact.schedule['default'] ?? risk.impact.schedule[1] ?? 0;
+    const targetFieldValue = (attackerVars as unknown as Record<string, unknown>)[risk.impact.target];
+    const stakes = risk.impact.type === 'relative'
+      ? Math.abs((typeof targetFieldValue === 'number' ? targetFieldValue : 0) * scheduleValue)
+      : Math.abs(scheduleValue);
+    grounds.push({ name: risk.name, description: risk.description, probability: adjusted, stakes });
   }
-  return best;
+  grounds.sort((a, b) => b.probability - a.probability);
+  return grounds;
 }
 
 /**

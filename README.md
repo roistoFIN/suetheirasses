@@ -1123,7 +1123,7 @@ meaningfully sued over. Once a target's cited instance has been active at least 
 years (`elapsedYears >= statuteOfLimitationsYears`), suing over it — even correctly, over
 a ground the target genuinely triggered — is time-barred: the case is still created (the
 same "real but hopeless" shape a wrong guess gets), just with `baseProbability` forced to
-`0`. The same cutoff applies to the "suggested ground" estimate `pickBestGround` computes
+`0`. The same cutoff applies to every "suggested ground" estimate `pickAllGrounds` computes
 for Dig Deeper's tier-3 reveal and the "SUE NOW" shortcut, so a suggestion never quotes
 winnable-looking odds for a decision a real filing would immediately zero out for being too
 old. This is independent of the decision's own maturity (maturity is about
@@ -1300,22 +1300,25 @@ attack instance in `Company.engineState.investigations`:
    annual-report blurb"* for why this has to be computed in `GameEngine`, not `GameLoop`.
 2. **What** — the decision name, description, and a human-readable effect summary (e.g.
    *"-20% Capacity Utilization"*), via `decisionEngine.summarizeTargetImpacts`
-3. **Suggested lawsuit + estimated odds + estimated stakes** — the strongest `legalRisks`
-   ground against that decision, picked by `decisionEngine.pickBestGround` using the *same*
-   adjusted-probability formula as real trial resolution evaluated against the attacker's
-   current scrutiny/legal exposure — an estimate, shown as a 5-band verbal likelihood
-   (Highly Unlikely/Unlikely/Moderate/Likely/Highly Likely) rather than an exact
-   percentage, since it's a pre-filing snapshot that typically only grows from here (every
-   case later opened against the same target raises everyone's odds against them, this
-   one included, once it exists) — the real probability is still recomputed fresh at trial
-   time. Shown alongside it: an estimated dollar **stakes** figure, priced
+3. **Suggested lawsuits + estimated odds + estimated stakes** — EVERY viable `legalRisks`
+   ground against that decision (not just the strongest one — a decision can carry
+   several), picked by `decisionEngine.pickAllGrounds` using the *same* adjusted-
+   probability formula as real trial resolution evaluated against the attacker's current
+   scrutiny/legal exposure, sorted strongest-first. Each is an estimate, shown as a 5-band
+   verbal likelihood (Highly Unlikely/Unlikely/Moderate/Likely/Highly Likely) rather than
+   an exact percentage, since it's a pre-filing snapshot that typically only grows from
+   here (every case later opened against the same target raises everyone's odds against
+   them, this one included, once it exists) — the real probability is still recomputed
+   fresh at trial time. Shown alongside each: an estimated dollar **stakes** figure, priced
    the exact same way a real filed case's `LegalCaseData.stakes` is (`LegalEngine.
    fileLawsuit`'s own calc — absolute-type grounds use the schedule value directly,
    relative-type grounds scale it against the attacker's own current field value), so the
    number shown here before filing matches what the real case will actually carry once
-   filed — not an expected value, not discounted by the probability next to it. A
-   **SUE NOW** button at this tier pre-fills `SueModal` with the right target and ground
-   (still requires the player's own QUEUE LAWSUIT confirmation).
+   filed — not an expected value, not discounted by the probability next to it. Every
+   suggested ground gets its own **SUE NOW** button, which files that exact ground
+   directly — no modal, no further confirmation step (see `AttackHintCard`'s own doc
+   comment for why: by full investigation, everything `SueModal` would otherwise ask the
+   player to pick is already known and already shown on the card).
 
 Once fully investigated (tier 3), the button disables — no further charge. The button is
 also disabled client-side whenever cash is below `digDeeperCost`; the server enforces the

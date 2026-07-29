@@ -260,12 +260,12 @@ export function pickBotShareBuy(
  * Up to `maxPicks` incoming attacks worth spending a Dig Deeper on this turn, prioritizing
  * whichever is already partway investigated (mirrors the "smart" randomized-simulation
  * strategy documented in CLAUDE.md — never abandon a half-paid-for investigation). An
- * attack that's already fully revealed (`suggestedGroundName` present) needs no further
+ * attack that's already fully revealed (`suggestedGrounds` present) needs no further
  * digging — see `shouldFileLawsuit` instead.
  */
 export function pickAttacksToInvestigate(attacks: IncomingAttackInfo[], maxPicks = 2): IncomingAttackInfo[] {
   return [...attacks]
-    .filter((a) => a.suggestedGroundName === undefined)
+    .filter((a) => a.suggestedGrounds === undefined)
     .sort((a, b) => b.investigationLevel - a.investigationLevel)
     .slice(0, maxPicks);
 }
@@ -273,8 +273,12 @@ export function pickAttacksToInvestigate(attacks: IncomingAttackInfo[], maxPicks
 /**
  * Whether a fully-investigated incoming attack is worth suing over: a real estimated win
  * chance above 30% (the user-specified threshold) and enough cash to cover the filing fee
- * without breaching the reserve. An attack that isn't fully revealed yet (no
- * `suggestedGroundName`/`successProbability`) never qualifies — nothing to sue over yet.
+ * without breaching the reserve. Only ever weighs the single strongest ground
+ * (`suggestedGrounds[0]`, already sorted probability-descending by `pickAllGrounds`) — the
+ * bot still sues over its best option, same as before this field became a list; showing
+ * every viable ground is a human-facing information upgrade, not a bot-strategy change.
+ * An attack that isn't fully revealed yet (no `suggestedGrounds`) never qualifies —
+ * nothing to sue over yet.
  */
 export function shouldFileLawsuit(
   attack: IncomingAttackInfo,
@@ -282,8 +286,9 @@ export function shouldFileLawsuit(
   filingCost: number,
   reserve: number = BOT_CASH_RESERVE,
 ): boolean {
-  if (attack.suggestedGroundName === undefined || attack.successProbability === undefined) return false;
-  if (attack.successProbability <= 0.3) return false;
+  const best = attack.suggestedGrounds?.[0];
+  if (!best) return false;
+  if (best.probability <= 0.3) return false;
   return cash - filingCost >= reserve;
 }
 
