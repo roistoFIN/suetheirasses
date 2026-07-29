@@ -768,6 +768,61 @@ describe('GameLoop', () => {
 
       expect(bob.incomingAttacks).toHaveLength(0);
     });
+
+    // Regression: a real, reported gap — once an attacking instance is past
+    // statuteOfLimitationsYears, suing over it is already forced to 0% and (for a direct
+    // attack) its own target.* effect has already stopped re-applying every turn, so the
+    // hint card has nothing left to warn about or act on. It used to keep appearing
+    // forever anyway, a stale, un-actionable notification. Covers BOTH the direct
+    // ("did something to you") and indirect ("indirectly affects you") hint shapes.
+    it('stops surfacing a DIRECT attack hint once the instance ages past statuteOfLimitationsYears (10)', () => {
+      const players = makePlayers([
+        {
+          id: 'player-1', name: 'Alice',
+          engineState: { activeDecisions: [{ id: 'ba-1', definitionName: 'Bot Attack', deployedYear: 1, elapsedYears: 9, isMatured: true, targetId: 'player-2' }] },
+        },
+        { id: 'player-2', name: 'Bob' },
+      ]);
+
+      const outcome = gameLoop.resolveTurn('room-1', 11, players);
+      const bob = outcome.result.players.find((p) => p.playerId === 'player-2')!;
+
+      // elapsedYears becomes 10 this turn — at the statute — so the hint must disappear.
+      expect(bob.incomingAttacks).toHaveLength(0);
+    });
+
+    it('still surfaces a DIRECT attack hint the turn before it ages past the statute', () => {
+      const players = makePlayers([
+        {
+          id: 'player-1', name: 'Alice',
+          engineState: { activeDecisions: [{ id: 'ba-1', definitionName: 'Bot Attack', deployedYear: 1, elapsedYears: 8, isMatured: true, targetId: 'player-2' }] },
+        },
+        { id: 'player-2', name: 'Bob' },
+      ]);
+
+      const outcome = gameLoop.resolveTurn('room-1', 10, players);
+      const bob = outcome.result.players.find((p) => p.playerId === 'player-2')!;
+
+      expect(bob.incomingAttacks).toHaveLength(1);
+    });
+
+    it('stops surfacing an INDIRECT effect hint once the instance ages past statuteOfLimitationsYears (10)', () => {
+      const players = makePlayers([
+        {
+          id: 'player-1', name: 'Alice',
+          engineState: { activeDecisions: [{ id: 'wp-1', definitionName: 'Water Pumping', deployedYear: 1, elapsedYears: 9, isMatured: true }] },
+        },
+        { id: 'player-2', name: 'Bob' },
+        { id: 'player-3', name: 'Carol' },
+      ]);
+
+      const outcome = gameLoop.resolveTurn('room-1', 11, players);
+      const bob = outcome.result.players.find((p) => p.playerId === 'player-2')!;
+      const carol = outcome.result.players.find((p) => p.playerId === 'player-3')!;
+
+      expect(bob.incomingAttacks).toHaveLength(0);
+      expect(carol.incomingAttacks).toHaveLength(0);
+    });
   });
 
   describe('resolveTurn — decisionEvents/durationMs telemetry (regression)', () => {

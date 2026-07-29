@@ -185,6 +185,23 @@ remain, since "who attacked me" is never actually in question with one possible 
 the persisted level is still a plain per-dig counter; only what a given level *reveals*
 shifts. `activePlayerCount` must always include the investigating player themselves.
 
+**A hint stops appearing entirely once its instance is past `statuteOfLimitationsYears`** —
+a user-reported gap: both the direct ("did something to you") and indirect ("did something
+that indirectly affects you") hint shapes used to keep showing up every turn forever, even
+though suing over that instance is already forced to 0% (`LegalEngine.fileLawsuit`/
+`pickAllGrounds`) and, for a direct attack, its own `target.*` effect has already stopped
+re-applying every turn (see the "Root historical bug" note above — `collectTargetImpacts`'
+own statute cutoff) — nothing left to warn about or act on, so it's a stale,
+un-actionable notification rather than real information. `buildIncomingAttacks` now skips
+any instance with `elapsedYears >= statuteOfLimitationsYears` outright, same exclusion
+point as the existing `voidedByLawsuit` check, applied uniformly to both hint shapes.
+Deliberately scoped to just the hint card, not `digDeeper` itself — a player who was
+already mid-investigation (say, level 2) before the instance aged out can still complete
+their final dig and see the correctly-zeroed odds (a separate, already-existing, still-
+intentional behavior — see `gameLoop.test.ts`'s "dig 3 still names a suggested ground but
+quotes 0%..." test); only the ability to *discover or continue watching* an attack that's
+already expired disappears, not an in-flight investigation's own completion.
+
 ### Four exceptions to "everything happens in resolveTurn" — plus settlement negotiation as a fifth/sixth
 
 Almost every gameplay effect only happens inside the turn-timer-driven `resolveTurn`/

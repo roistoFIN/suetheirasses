@@ -2070,6 +2070,15 @@ export class GameLoop {
       const attackerVarsForReveal = { ...attackerCtx.vars, revenue: plMap.get(attackerId)?.revenue ?? attackerCtx.vars.revenue };
       for (const d of attackerCtx.engineState.activeDecisions) {
         if (d.voidedByLawsuit) continue;
+        // A real, reported gap: once an instance is past `statuteOfLimitationsYears`,
+        // suing over it is already forced to 0% (LegalEngine.fileLawsuit/pickAllGrounds),
+        // and a direct attack's own target.* effect has already stopped re-applying every
+        // turn (see CLAUDE.md's "Root historical bug" note — collectTargetImpacts' own
+        // statute cutoff) — the hint card (direct "did something to you" AND indirect
+        // "indirectly affects you" alike) has nothing left to warn about or act on, so it
+        // must stop appearing rather than lingering forever as a stale, un-actionable
+        // notification.
+        if (d.elapsedYears >= this.config.gameSettings.statuteOfLimitationsYears) continue;
         const targetImpacts = this.decisionEngine.getTargetImpacts(d.definition.impacts);
         const isIndirect = this.isIndirectEffect(d.definition, targetImpacts, d.targetId);
         // Direct: only the specific player it targets sees it. Indirect: every other
