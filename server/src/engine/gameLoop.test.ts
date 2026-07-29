@@ -2177,9 +2177,66 @@ describe('GameLoop', () => {
       expect(typeof merged.finalRiskGauge).toBe('number');
 
       // Carol's case against Alice gets paid from the waterfall pool, same as a bankruptcy would.
+      // Regression: this used to be stamped verdict 'settled', indistinguishable from a
+      // real negotiated settlement — a real, reported bug (a case a player explicitly sent
+      // to trial, or never negotiated at all, showed up as "Settled" once the defendant
+      // was eliminated before it could resolve any other way). It's now its own distinct
+      // 'waterfall_payout' verdict, with the actual amount paid tracked separately from
+      // `stakes` (see LegalCaseData.verdict's own doc comment).
       const carol = outcome.result.players.find((p) => p.playerId === 'player-3')!;
       expect(carol.legalCases[0].status).toBe('resolved');
+      expect(carol.legalCases[0].verdict).toBe('waterfall_payout');
+      expect(carol.legalCases[0].waterfallPayoutAmount).toBe(5000); // full stakes — pool covered it
       expect(carol.variables.cash).toBeGreaterThan(makeVars().cash); // received a payout
+    });
+
+    // Regression counterpart: when the waterfall pool can't cover every open case, the
+    // ones left unpaid must stay 'cancelled' (no waterfallPayoutAmount) — the paid/unpaid
+    // distinction is the whole point of this fix, so both branches need their own coverage.
+    it('leaves a case unpaid (cancelled, not waterfall_payout) when the waterfall pool runs out before reaching it', () => {
+      const targetVars = makeVars({
+        cash: 1000, totalSharesOutstanding: 10000, stockValue: 10,
+        shareOwnership: { [SELF_OWNERSHIP_KEY]: 0.55, 'player-3': 0.45 },
+      });
+      // Filed earlier — first in the payout queue, and expensive enough it consumes the
+      // ENTIRE pool by itself (a partial payment — still 'waterfall_payout', just less
+      // than its own `stakes`).
+      const earlyCase: LegalCaseData = {
+        id: 'case-1', roomId: 'room-1', plaintiffId: 'player-3', defendantId: 'player-1',
+        decisionName: 'Water Pumping', groundName: 'Environmental Violation', description: 'x',
+        baseProbability: 0.5, adjustedProbability: undefined, plaintiffFullyInvestigated: false,
+        defendantInvestigated: false, stakes: 50_000_000, status: 'negotiating', offers: [], turnsNegotiating: 0,
+        verdict: undefined, createdAt: new Date('2024-01-01'), resolvedAt: undefined,
+      };
+      // Filed later — by the time the (now-exhausted) pool reaches this one, nothing's left.
+      const lateCase: LegalCaseData = {
+        id: 'case-2', roomId: 'room-1', plaintiffId: 'player-3', defendantId: 'player-1',
+        decisionName: 'Bank Loan', groundName: 'Fraudulent Misrepresentation', description: 'y',
+        baseProbability: 0.5, adjustedProbability: undefined, plaintiffFullyInvestigated: false,
+        defendantInvestigated: false, stakes: 500, status: 'negotiating', offers: [], turnsNegotiating: 0,
+        verdict: undefined, createdAt: new Date('2024-06-01'), resolvedAt: undefined,
+      };
+
+      gameLoop.submitDecisions('room-1', 'player-2', {
+        strategic: [{ name: 'Buy Shares', targetId: 'player-1', amount: 60000 }], operational: [], financial: [], lawsuits: [],
+      });
+
+      const outcome = gameLoop.resolveTurn('room-1', 1, makePlayers([
+        { id: 'player-1', name: 'Alice', variables: targetVars, engineState: { legalCases: [earlyCase, lateCase] } },
+        { id: 'player-2', name: 'Bob', variables: makeVars({ cash: 200000 }) },
+        { id: 'player-3', name: 'Carol', variables: makeVars(), engineState: { legalCases: [earlyCase, lateCase] } },
+      ]));
+
+      const carol = outcome.result.players.find((p) => p.playerId === 'player-3')!;
+      const resolvedEarly = carol.legalCases.find((c) => c.id === 'case-1')!;
+      const resolvedLate = carol.legalCases.find((c) => c.id === 'case-2')!;
+      expect(resolvedEarly.status).toBe('resolved');
+      expect(resolvedEarly.verdict).toBe('waterfall_payout');
+      expect(resolvedEarly.waterfallPayoutAmount).toBeGreaterThan(0);
+      expect(resolvedEarly.waterfallPayoutAmount).toBeLessThan(earlyCase.stakes); // partial — pool ran out
+      expect(resolvedLate.status).toBe('resolved');
+      expect(resolvedLate.verdict).toBe('cancelled');
+      expect(resolvedLate.waterfallPayoutAmount).toBeUndefined();
     });
 
     it('transfers the eliminated company\'s cash/assets/intangibleAssets to the acquirer', () => {

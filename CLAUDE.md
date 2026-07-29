@@ -311,7 +311,7 @@ re-deriving "the" attacking instance by name+targeting only) and got the same fi
 ### Winning a case voids the sued decision instance; a permanent effect also naturally expires
 
 Whenever the defendant pays out on a case (trial loss, or any settlement where they pay —
-not the bankruptcy-waterfall forced settle/cancel), `GameLoop.voidSuedDecisionInstance`
+not the bankruptcy/merger waterfall's `'waterfall_payout'`/`'cancelled'`), `GameLoop.voidSuedDecisionInstance`
 cancels the instance's *forthcoming* effects, forces `isMatured: true` (freeing it for
 redeployment via `canDeploy`'s existing maturity rule), and flags `voidedByLawsuit: true`
 (shown as a gray **VOIDED — SUED** badge). Matched by instance id
@@ -400,6 +400,49 @@ showing every option is a human-facing information upgrade, not a bot-strategy c
 `GameLoop.resolveTurn`'s `plaintiffFullyInvestigated` stamp (Step 8, filing time) was
 updated the same way: a plaintiff who sued over ANY of the grounds `pickAllGrounds`
 surfaced counts as having "known the odds," not just the one that happened to sort first.
+
+### A bankruptcy/merger waterfall payout is not a settlement — `'waterfall_payout'`, distinct from `'settled'`
+
+A user-reported bug: a case they had explicitly sent to trial via **"Go to Court"** (the
+defendant had made one opening offer, the plaintiff deliberately declined to negotiate
+further and forced a probability verdict instead) showed up as **"Settled"** once the
+defendant went bankrupt from an unrelated cash problem before the trial could draw its
+verdict — with no offer ever having been accepted, or in other cases, no offer ever having
+been made at all (a lawsuit filed the very same turn the defendant happened to go
+bankrupt). Root cause: `GameLoop.distributeCaseWaterfall` (the bankruptcy/merger
+elimination payout — see *Share Ownership & Takeover* above for why the same function
+serves both) paid out every unresolved case against the falling player and stamped
+`verdict: 'settled'` on every one it paid, regardless of how (or whether) negotiation had
+ever happened — a real, pre-existing inconsistency: the client's own doc comments already
+assumed `'settled'` meant "a real negotiated agreement" (`GamePhase.tsx`'s
+`detectNewlySettledCases`), while `LegalCaseData`'s own type comment described `'settled'`
+as a bankruptcy-waterfall outcome — two contradictory ideas of what the same string meant,
+neither of which anyone had reconciled until a live game exposed the gap.
+
+Fixed by giving the waterfall's paid branch its own distinct verdict, `'waterfall_payout'`
+— `'settled'` now means ONLY a real negotiated agreement (an explicit `acceptOffer`, or
+Step 8b's stale-offer auto-accept, both genuinely requiring an offer someone made and the
+other side implicitly or explicitly accepted). `LegalCaseData.waterfallPayoutAmount`
+tracks the actual amount paid (which the waterfall's own `Math.min(case_.stakes,
+remaining)` can make LESS than `stakes` if the pool runs dry partway through paying it) —
+`GameEngine.resolvedCaseAmount` reads this the same way it reads `offers[...]` for a real
+settlement. The waterfall's other branch (cases the pool never reached at all) is
+unchanged — still `'cancelled'`, still no payment, still no `waterfallPayoutAmount`. Client
+surfaces this as its own distinct News item ("⚰️ CASE CLOSED — OPPONENT ELIMINATED", never
+"🤝 CASE SETTLED") via a new `detectNewlyWaterfallPaidCases` (mirroring
+`detectNewlySettledCases`'s exact shape) and its own `GameTimelineView.tsx`
+`happeningLabel` branch ("closed — X was eliminated ($Y paid)"). `voidSuedDecisionInstance`
+was never called from the waterfall to begin with (matches the pre-existing "not the
+bankruptcy-waterfall forced settle/cancel" exclusion) — this fix only renames/separates
+the *label*, it doesn't change which mechanisms trigger a voided decision instance.
+
+Regression-tested at both layers, same convention as the rest of this file: server-side,
+`gameLoop.test.ts`'s waterfall tests assert `verdict: 'waterfall_payout'` (with the actual
+`waterfallPayoutAmount`, including a partial-payment case where the pool runs out mid-case
+rather than between cases) instead of `'settled'`, and a dedicated case confirming the
+UNPAID tail still gets `'cancelled'` with no payout amount; client-side,
+`GamePhase.utils.test.ts`/`GameTimelineView.utils.test.ts` each assert `'waterfall_payout'`
+is excluded from the real-settlement detector/label and produces its own distinct one.
 
 ### A case's probability is earned separately by each side, and displayed as a 5-band verbal likelihood
 

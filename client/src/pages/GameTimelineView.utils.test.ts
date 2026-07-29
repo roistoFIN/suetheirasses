@@ -67,6 +67,7 @@ function happeningLabel(h: HappeningEntry): string {
       const verdictText = v === 'won' ? `won by ${h.plaintiffName}${amount !== undefined ? ` (${fmt(amount)})` : ''}`
         : v === 'lost' ? `won by ${h.defendantName}`
         : v === 'settled' ? `settled${amount !== undefined ? ` for ${fmt(amount)}` : ''}`
+        : v === 'waterfall_payout' ? `closed — ${h.defendantName} was eliminated${amount !== undefined ? ` (${fmt(amount)} paid)` : ''}`
         : 'cancelled';
       return `${h.plaintiffName} vs. ${h.defendantName} (${h.lawsuit.groundName}) — ${verdictText}`;
     }
@@ -351,7 +352,17 @@ describe('happeningLabel', () => {
     expect(happeningLabel(entry)).toBe('Alice vs. Bob (Environmental Violation) — settled for $3,200');
   });
 
-  it('shows no dollar amount for a cancelled case (bankruptcy waterfall, no clean settlement figure)', () => {
+  // Regression: a case explicitly sent to trial (or never negotiated at all) used to show
+  // up as "settled" once the defendant was eliminated (bankruptcy/takeover) before it
+  // could resolve any other way — see LegalCaseData.verdict's own doc comment.
+  it('names the eliminated defendant and the actual amount paid for a waterfall_payout verdict, distinct from a real settlement', () => {
+    const data = makeData({ lawsuits: [{ ...baseLawsuit, verdict: 'waterfall_payout', resolvedAmount: 1800 }] });
+    const entry = buildHappenings(data).find((e) => e.type === 'lawsuitResolved')!;
+
+    expect(happeningLabel(entry)).toBe('Alice vs. Bob (Environmental Violation) — closed — Bob was eliminated ($1,800 paid)');
+  });
+
+  it('shows no dollar amount for a cancelled case (bankruptcy/merger waterfall pool ran out, no payment at all)', () => {
     const data = makeData({ lawsuits: [{ ...baseLawsuit, verdict: 'cancelled' }] });
     const entry = buildHappenings(data).find((e) => e.type === 'lawsuitResolved')!;
 

@@ -209,12 +209,15 @@ export interface SettledCaseForMe {
 }
 
 /**
- * Cases I'm a party to that resolved via `verdict: 'settled'` (negotiation, not a trial —
- * see `detectNewlyResolvedCases` for the won/lost trial-verdict counterpart, and why
- * 'cancelled' — the bankruptcy-waterfall outcome — isn't covered by either: that's
- * surfaced via the separate bankruptcy takeover, not a settlement the player negotiated).
- * Drives the "Case settled" News item. Pure/exported for the same reason as
- * detectNewlySuedCases.
+ * Cases I'm a party to that resolved via a REAL negotiated `verdict: 'settled'` (an
+ * explicit `acceptOffer`, or a pending offer left unanswered at a turn boundary — see
+ * CLAUDE.md's negotiation section) — never a trial verdict (see `detectNewlyResolvedCases`
+ * for that counterpart) and never a bankruptcy/merger waterfall payout (see
+ * `detectNewlyWaterfallPaidCases` for that — a real, reported bug used to have a case a
+ * player explicitly sent `goToCourt` on show up here as "Settled" once the defendant went
+ * bankrupt before the trial could draw, with no offer ever made at all; `verdict` is now
+ * `'waterfall_payout'` for that case, distinct from this one). Drives the "Case settled"
+ * News item. Pure/exported for the same reason as detectNewlySuedCases.
  */
 export function detectNewlySettledCases(
   previousCases: LegalCaseData[],
@@ -228,6 +231,44 @@ export function detectNewlySettledCases(
   for (const c of currentCases) {
     if (c.status !== 'resolved' || previouslyResolvedIds.has(c.id)) continue;
     if (c.verdict !== 'settled') continue;
+    const amPlaintiff = c.plaintiffId === myPlayerId;
+    const amDefendant = c.defendantId === myPlayerId;
+    if (!amPlaintiff && !amDefendant) continue;
+    results.push({ case: c, role: amPlaintiff ? 'plaintiff' : 'defendant' });
+  }
+  return results;
+}
+
+/** One of my own cases that got paid out (in full or in part) by the bankruptcy/merger
+ * waterfall (`GameLoop.distributeCaseWaterfall`) because the other party fell before the
+ * case could resolve any other way — never a real negotiated settlement, see
+ * `SettledCaseForMe`'s own doc comment for the bug this distinction fixes. */
+export interface WaterfallPayoutCaseForMe {
+  case: LegalCaseData;
+  role: 'plaintiff' | 'defendant';
+}
+
+/**
+ * Cases I'm a party to that resolved via `verdict: 'waterfall_payout'` since the last
+ * turn — the other party was eliminated (bankruptcy or majority-ownership takeover)
+ * before this case could resolve through negotiation or trial, and it got paid out (in
+ * full or in part, see `LegalCaseData.waterfallPayoutAmount`) from the elimination
+ * waterfall instead. Drives its own distinct News item — see `detectNewlySettledCases`'s
+ * doc comment for why this must never be folded into "Case settled." Pure/exported for
+ * the same reason as detectNewlySuedCases.
+ */
+export function detectNewlyWaterfallPaidCases(
+  previousCases: LegalCaseData[],
+  currentCases: LegalCaseData[],
+  myPlayerId: string,
+): WaterfallPayoutCaseForMe[] {
+  const previouslyResolvedIds = new Set(
+    previousCases.filter((c) => c.status === 'resolved').map((c) => c.id),
+  );
+  const results: WaterfallPayoutCaseForMe[] = [];
+  for (const c of currentCases) {
+    if (c.status !== 'resolved' || previouslyResolvedIds.has(c.id)) continue;
+    if (c.verdict !== 'waterfall_payout') continue;
     const amPlaintiff = c.plaintiffId === myPlayerId;
     const amDefendant = c.defendantId === myPlayerId;
     if (!amPlaintiff && !amDefendant) continue;
@@ -255,6 +296,7 @@ type PostTurnEvent =
   | { type: 'sued'; case: LegalCaseData }
   | { type: 'verdict'; outcome: 'won' | 'lost'; case: LegalCaseData }
   | { type: 'settlement'; case: SettledCaseForMe }
+  | { type: 'waterfallPayout'; case: WaterfallPayoutCaseForMe }
   | { type: 'sharesBought'; buyerId: string; buyerName: string; fractionBought: number }
   | { type: 'turnChange'; round: number };
 
@@ -274,6 +316,7 @@ function newsTopic(event: PostTurnEvent): string {
     case 'sued': return 'You have been sued';
     case 'verdict': return event.outcome === 'won' ? 'Case won' : 'Case lost';
     case 'settlement': return 'Case settled';
+    case 'waterfallPayout': return 'Case closed — opponent eliminated';
     case 'sharesBought': return 'Your shares were bought';
     case 'turnChange': return 'Next turn';
   }
@@ -682,6 +725,7 @@ export default function GamePhase() {
         const newlySued = detectNewlySuedCases(previousMyData.legalCases, myPlayer.legalCases, player.id);
         const newlyResolved = detectNewlyResolvedCases(previousMyData.legalCases, myPlayer.legalCases, player.id);
         const newlySettled = detectNewlySettledCases(previousMyData.legalCases, myPlayer.legalCases, player.id);
+        const newlyWaterfallPaid = detectNewlyWaterfallPaidCases(previousMyData.legalCases, myPlayer.legalCases, player.id);
         // Unlike the three detectors above, sharesBoughtThisTurn needs no before/after
         // diff — the server already scopes it to exactly the trades that executed THIS
         // turn (see gameLoop.ts's Step 1b), so myPlayer's own copy IS the "what's new"
@@ -694,6 +738,7 @@ export default function GamePhase() {
           ...newlySued.map((c): PostTurnEvent => ({ type: 'sued', case: c })),
           ...newlyResolved.map((r): PostTurnEvent => ({ type: 'verdict', outcome: r.outcome, case: r.case })),
           ...newlySettled.map((s): PostTurnEvent => ({ type: 'settlement', case: s })),
+          ...newlyWaterfallPaid.map((w): PostTurnEvent => ({ type: 'waterfallPayout', case: w })),
           ...newlySharesBought.map((e): PostTurnEvent => ({ type: 'sharesBought', buyerId: e.buyerId, buyerName: e.buyerName, fractionBought: e.fractionBought })),
         ];
         if (newEvents.length > 0) {
@@ -1038,6 +1083,7 @@ export default function GamePhase() {
             {currentEvent?.type === 'sued' && "⚖️ YOU'VE BEEN SUED"}
             {currentEvent?.type === 'verdict' && (currentEvent.outcome === 'won' ? '🏆 CASE WON' : '💩 CASE LOST')}
             {currentEvent?.type === 'settlement' && '🤝 CASE SETTLED'}
+            {currentEvent?.type === 'waterfallPayout' && '⚰️ CASE CLOSED — OPPONENT ELIMINATED'}
             {currentEvent?.type === 'sharesBought' && '📈 SHARES BOUGHT'}
             {currentEvent?.type === 'turnChange' && `🔔 NEXT TURN`}
           </Text>
@@ -1120,6 +1166,35 @@ export default function GamePhase() {
                     Ground: {c.groundName} — {outcomeLine}
                   </Text>
                 </Box>
+              );
+            })()}
+            <Button fullWidth onClick={dismissCurrentEvent}>
+              Close
+            </Button>
+          </Stack>
+        )}
+
+        {currentEvent?.type === 'waterfallPayout' && (
+          <Stack gap="md">
+            {(() => {
+              const { case: c, role } = currentEvent.case;
+              const opponentName = playerNames.get(role === 'plaintiff' ? c.defendantId : c.plaintiffId) ?? 'Unknown';
+              const amount = c.waterfallPayoutAmount ?? c.stakes;
+              return (
+                <>
+                  <Image src={role === 'plaintiff' ? '/images/lawsuit-won.png' : '/images/lawsuit-lost.png'} alt="Case closed by elimination" radius="md" />
+                  <Box style={{ borderLeft: '3px solid var(--mantine-color-gray-6)', paddingLeft: 8 }}>
+                    <Text size="sm" fw={600}>
+                      {role === 'plaintiff' ? `Your case against ${opponentName}` : `${opponentName}'s case against you`} over "{c.decisionName}"
+                    </Text>
+                    <Text size="sm" c="dimmed">
+                      Ground: {c.groundName} — {opponentName} was eliminated before this case could be decided.
+                      {role === 'plaintiff'
+                        ? ` You received ${fmt(amount)} from what remained — never a negotiated settlement.`
+                        : ` ${fmt(amount)} was paid out to ${opponentName} from what remained.`}
+                    </Text>
+                  </Box>
+                </>
               );
             })()}
             <Button fullWidth onClick={dismissCurrentEvent}>

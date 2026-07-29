@@ -1953,6 +1953,13 @@ export class GameLoop {
    * (untouched by the pool math above, which is a separate, more optimistic figure used
    * only to size the payout) — the caller persists this as `BankruptedPlayer.finalCash`
    * and, for a merger, credits it to the acquirer.
+   *
+   * A paid-out case's verdict is `'waterfall_payout'`, NOT `'settled'` — a real, reported
+   * bug: a case a player had explicitly sent to `goToCourt` (forcing a probability
+   * verdict, deliberately bypassing negotiation) showed up as "Settled" once the
+   * defendant went bankrupt before the trial could draw, with no offer ever made or
+   * accepted at all. See `LegalCaseData.verdict`'s own doc comment for the full
+   * distinction between this, a real negotiated `'settled'`, and an unpaid `'cancelled'`.
    */
   private distributeCaseWaterfall(
     pid: string,
@@ -1994,7 +2001,8 @@ export class GameLoop {
         pltCtx.vars.cash += payment;
       }
       case_.status = 'resolved';
-      case_.verdict = 'settled';
+      case_.verdict = 'waterfall_payout';
+      case_.waterfallPayoutAmount = payment;
       case_.resolvedAt = new Date();
       remaining -= payment;
     }

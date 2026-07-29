@@ -236,9 +236,14 @@ function happeningLabel(h: HappeningEntry): string {
       // one thing this line adds. Includes the settlement dollar amount when known — a
       // negotiated settlement can differ from the pre-trial `stakes` estimate shown in
       // `lawsuitOddsAndStakes`, so this is the only place that number is ever surfaced.
+      // 'waterfall_payout' is deliberately distinct from 'settled' — a real, reported bug
+      // had a case that was explicitly sent to trial (or never negotiated at all) show up
+      // as "settled" once the defendant was eliminated (bankruptcy/takeover) before the
+      // case could resolve any other way; see LegalCaseData.verdict's own doc comment.
       const verdictText = v === 'won' ? `won by ${h.plaintiffName}${amount !== undefined ? ` (${fmt(amount)})` : ''}`
         : v === 'lost' ? `won by ${h.defendantName}`
         : v === 'settled' ? `settled${amount !== undefined ? ` for ${fmt(amount)}` : ''}`
+        : v === 'waterfall_payout' ? `closed — ${h.defendantName} was eliminated${amount !== undefined ? ` (${fmt(amount)} paid)` : ''}`
         : 'cancelled';
       return `${h.plaintiffName} vs. ${h.defendantName} (${h.lawsuit.groundName}) — ${verdictText}`;
     }

@@ -415,8 +415,28 @@ export interface LegalCaseData {
   offers: Array<{ by: 'plaintiff' | 'defendant'; amount: number }>;
   /** How many turns this case has spent at status 'negotiating' — see `GameSettings.negotiationPeriodTurns`. */
   turnsNegotiating: number;
-  /** 'won'/'lost' = decided at trial; 'settled'/'cancelled' = resolved via bankruptcy/merger waterfall. */
-  verdict?: 'won' | 'lost' | 'settled' | 'cancelled';
+  /**
+   * 'won'/'lost' — decided at trial (a real probability draw).
+   * 'settled' — resolved by REAL negotiation: an explicit `acceptOffer`, or a pending
+   * offer left unanswered at a turn boundary (Step 8b's stale-offer auto-accept) — either
+   * way, an actual offer was on the table and (implicitly or explicitly) accepted.
+   * 'waterfall_payout' — the defendant (or plaintiff, if the case was itself abandoned by
+   * an eliminated plaintiff) fell to bankruptcy or a majority-ownership merger before this
+   * case could resolve any other way, and it got paid out (in full or in part) from
+   * `distributeCaseWaterfall`'s pool — see that function's own doc comment. Deliberately
+   * NOT 'settled': a real, reported bug had a case a player explicitly sent `goToCourt`
+   * (bypassing negotiation on purpose, to force a probability verdict) show up as
+   * "Settled" once the defendant went bankrupt before the trial could draw, with no offer
+   * ever having been made or accepted at all. `waterfallPayoutAmount` carries the actual
+   * amount paid (can be less than `stakes` if the pool ran out before reaching this case).
+   * 'cancelled' — the waterfall's pool ran out (or the case had no defendant left to pay
+   * from) before this case's turn in the payout queue; no money changes hands.
+   */
+  verdict?: 'won' | 'lost' | 'settled' | 'waterfall_payout' | 'cancelled';
+  /** Set only when `verdict === 'waterfall_payout'` — the actual dollar amount paid from
+   * the bankruptcy/merger waterfall pool, which can be less than `stakes` if the pool ran
+   * out before fully covering this case. See `verdict`'s own doc comment. */
+  waterfallPayoutAmount?: number;
   /** Filing time — used to order bankruptcy/merger waterfall payouts oldest-first. */
   createdAt: Date;
   resolvedAt?: Date;
@@ -657,11 +677,13 @@ export interface TimelineLawsuitEvent {
   plaintiffFullyInvestigated: boolean;
   filedRound: number;
   resolvedRound?: number;
-  verdict?: 'won' | 'lost' | 'settled' | 'cancelled';
+  verdict?: 'won' | 'lost' | 'settled' | 'waterfall_payout' | 'cancelled';
   /** The actual dollar amount that changed hands to resolve this case — undefined for
    * 'lost'/'cancelled' (no payment) or a still-unresolved case. For 'won' this equals
    * `stakes`; for 'settled' it's the accepted offer's amount, which can differ from the
-   * pre-trial `stakes` estimate. */
+   * pre-trial `stakes` estimate; for 'waterfall_payout' it's the actual amount paid from
+   * the bankruptcy/merger waterfall pool (see `LegalCaseData.verdict`'s own doc comment —
+   * can be less than `stakes` if the pool ran out). */
   resolvedAmount?: number;
 }
 

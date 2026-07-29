@@ -372,7 +372,7 @@ function detectNewlySuedCases<T extends MinimalLegalCaseForSued>(
 interface MinimalLegalCaseForVerdict {
   id: string;
   status: 'negotiating' | 'awaiting_trial' | 'resolved';
-  verdict?: 'won' | 'lost' | 'settled' | 'cancelled';
+  verdict?: 'won' | 'lost' | 'settled' | 'waterfall_payout' | 'cancelled';
   plaintiffId: string;
   defendantId: string;
 }
@@ -422,6 +422,35 @@ function detectNewlySettledCases<T extends MinimalLegalCaseForVerdict>(
   for (const c of currentCases) {
     if (c.status !== 'resolved' || previouslyResolvedIds.has(c.id)) continue;
     if (c.verdict !== 'settled') continue;
+    const amPlaintiff = c.plaintiffId === myPlayerId;
+    const amDefendant = c.defendantId === myPlayerId;
+    if (!amPlaintiff && !amDefendant) continue;
+    results.push({ case: c, role: amPlaintiff ? 'plaintiff' : 'defendant' });
+  }
+  return results;
+}
+
+// ── "Case closed — opponent eliminated" News item trigger — my own cases paid out by the
+// bankruptcy/merger waterfall, never a real negotiated settlement (see
+// detectNewlySettledCases's own doc comment in GamePhase.tsx for the bug this fixes) ──
+
+interface WaterfallPayoutCaseForMe<T> {
+  case: T;
+  role: 'plaintiff' | 'defendant';
+}
+
+function detectNewlyWaterfallPaidCases<T extends MinimalLegalCaseForVerdict>(
+  previousCases: T[],
+  currentCases: T[],
+  myPlayerId: string,
+): WaterfallPayoutCaseForMe<T>[] {
+  const previouslyResolvedIds = new Set(
+    previousCases.filter((c) => c.status === 'resolved').map((c) => c.id),
+  );
+  const results: WaterfallPayoutCaseForMe<T>[] = [];
+  for (const c of currentCases) {
+    if (c.status !== 'resolved' || previouslyResolvedIds.has(c.id)) continue;
+    if (c.verdict !== 'waterfall_payout') continue;
     const amPlaintiff = c.plaintiffId === myPlayerId;
     const amDefendant = c.defendantId === myPlayerId;
     if (!amPlaintiff && !amDefendant) continue;
@@ -1397,6 +1426,16 @@ describe('GamePhase utilities', () => {
       expect(detectNewlySettledCases([previous], [cancelled], me)).toEqual([]);
     });
 
+    // Regression: a case explicitly sent to trial (or never negotiated at all) used to
+    // show up here as "Settled" once the defendant was eliminated (bankruptcy/takeover)
+    // before the case could resolve any other way — a real, reported bug. 'waterfall_payout'
+    // must never be treated as a negotiated settlement.
+    it('should ignore a waterfall_payout verdict — a bankruptcy/merger payout, not a negotiated settlement', () => {
+      const previous = negotiating({ status: 'awaiting_trial' });
+      const waterfallPaid = { ...previous, status: 'resolved' as const, verdict: 'waterfall_payout' as const };
+      expect(detectNewlySettledCases([previous], [waterfallPaid], me)).toEqual([]);
+    });
+
     it('should ignore a case I have nothing to do with', () => {
       const previous = negotiating({ plaintiffId: 'player-3', defendantId: 'player-4' });
       const current = { ...previous, status: 'resolved' as const, verdict: 'settled' as const };
@@ -1406,6 +1445,65 @@ describe('GamePhase utilities', () => {
     it('should not re-report a case that was already resolved last turn', () => {
       const alreadyResolved = negotiating({ status: 'resolved', verdict: 'settled' });
       expect(detectNewlySettledCases([alreadyResolved], [alreadyResolved], me)).toEqual([]);
+    });
+  });
+
+  describe('detectNewlyWaterfallPaidCases', () => {
+    const me = 'player-1';
+    const rival = 'player-2';
+
+    const negotiating = (overrides: Partial<MinimalLegalCaseForVerdict> = {}): MinimalLegalCaseForVerdict => ({
+      id: 'case-1',
+      status: 'negotiating',
+      plaintiffId: me,
+      defendantId: rival,
+      ...overrides,
+    });
+
+    it('should return nothing when there are no cases at all', () => {
+      expect(detectNewlyWaterfallPaidCases([], [], me)).toEqual([]);
+    });
+
+    it('should not report a case that is still negotiating', () => {
+      const stillOpen = negotiating();
+      expect(detectNewlyWaterfallPaidCases([stillOpen], [stillOpen], me)).toEqual([]);
+    });
+
+    it('should detect a waterfall payout as plaintiff', () => {
+      const previous = negotiating();
+      const current = { ...previous, status: 'resolved' as const, verdict: 'waterfall_payout' as const };
+      expect(detectNewlyWaterfallPaidCases([previous], [current], me)).toEqual([{ case: current, role: 'plaintiff' }]);
+    });
+
+    it('should detect a waterfall payout as defendant', () => {
+      const previous = negotiating({ plaintiffId: rival, defendantId: me });
+      const current = { ...previous, status: 'resolved' as const, verdict: 'waterfall_payout' as const };
+      expect(detectNewlyWaterfallPaidCases([previous], [current], me)).toEqual([{ case: current, role: 'defendant' }]);
+    });
+
+    // Regression counterpart: a real negotiated settlement/trial/no-payment cancellation
+    // must never show up as a waterfall payout either.
+    it('should ignore won/lost/settled/cancelled verdicts — not a waterfall payout', () => {
+      const previous = negotiating({ status: 'awaiting_trial' });
+      const won = { ...previous, status: 'resolved' as const, verdict: 'won' as const };
+      const lost = { ...previous, status: 'resolved' as const, verdict: 'lost' as const };
+      const settled = { ...previous, status: 'resolved' as const, verdict: 'settled' as const };
+      const cancelled = { ...previous, status: 'resolved' as const, verdict: 'cancelled' as const };
+      expect(detectNewlyWaterfallPaidCases([previous], [won], me)).toEqual([]);
+      expect(detectNewlyWaterfallPaidCases([previous], [lost], me)).toEqual([]);
+      expect(detectNewlyWaterfallPaidCases([previous], [settled], me)).toEqual([]);
+      expect(detectNewlyWaterfallPaidCases([previous], [cancelled], me)).toEqual([]);
+    });
+
+    it('should ignore a case I have nothing to do with', () => {
+      const previous = negotiating({ plaintiffId: 'player-3', defendantId: 'player-4' });
+      const current = { ...previous, status: 'resolved' as const, verdict: 'waterfall_payout' as const };
+      expect(detectNewlyWaterfallPaidCases([previous], [current], me)).toEqual([]);
+    });
+
+    it('should not re-report a case that was already resolved last turn', () => {
+      const alreadyResolved = negotiating({ status: 'resolved', verdict: 'waterfall_payout' });
+      expect(detectNewlyWaterfallPaidCases([alreadyResolved], [alreadyResolved], me)).toEqual([]);
     });
   });
 

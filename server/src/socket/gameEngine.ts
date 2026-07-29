@@ -1155,12 +1155,15 @@ export class GameEngine {
    * received/paid X" News item math (`offers[offers.length-1]?.amount ?? stakes`) for a
    * settlement, since a negotiated amount can differ from the pre-trial `stakes`
    * estimate; a trial verdict always pays exactly `stakes` (see `GameLoop.resolveTurn`'s
-   * Step 9). Pulled out as its own helper so `recordLegalCaseHistory`'s two write sites
-   * (the upsert's `create` and the resolution `updateMany`) can't drift on how this is
-   * computed. */
+   * Step 9); 'waterfall_payout' uses `waterfallPayoutAmount` (see `LegalCaseData.verdict`'s
+   * own doc comment — can be less than `stakes` if the bankruptcy/merger waterfall pool
+   * ran out before fully covering this case). Pulled out as its own helper so
+   * `recordLegalCaseHistory`'s two write sites (the upsert's `create` and the resolution
+   * `updateMany`) can't drift on how this is computed. */
   private resolvedCaseAmount(c: LegalCaseData): number | null {
     if (c.verdict === 'won') return c.stakes;
     if (c.verdict === 'settled') return c.offers[c.offers.length - 1]?.amount ?? c.stakes;
+    if (c.verdict === 'waterfall_payout') return c.waterfallPayoutAmount ?? c.stakes;
     return null;
   }
 
