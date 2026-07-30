@@ -52,7 +52,13 @@ function makeConfig(overrides: Partial<GameConfig> = {}): GameConfig {
       maxStrategicDecisionsPerTurn: 2,
       maxOperationalDecisionsPerTurn: 3,
       maxFinancialDecisionsPerTurn: 1,
-      totalMarketVolumeTonnesPerYear: 50000,
+      // 25000/player * 2 players (this file's dominant scenario) reproduces the exact
+      // same 50000 flat total the old totalMarketVolumeTonnesPerYear constant gave every
+      // test here — keeps every existing expected volume/revenue number in this file
+      // unchanged. marketFixed: true means demandPriceElasticity/referencePrice below are
+      // never actually read by these tests; see the dedicated describe blocks further
+      // down for tests that flip this and exercise per-player-scaling/elasticity.
+      marketVolumePerPlayerTonnesPerYear: 25000,
       marketFixed: true,
       digDeeperCost: 10000,
       negotiationPeriodTurns: 2,
@@ -68,6 +74,10 @@ function makeConfig(overrides: Partial<GameConfig> = {}): GameConfig {
       lateGameTakeoverBoost: 1.5,
       mergerIntegrationCostRate: 0.25,
       wealthScaledFeeRate: 0.03,
+      // 0 by default so every OTHER test in this file (which asserts exact decision-cost
+      // cash numbers) is unaffected — see the dedicated describe block further down for
+      // tests that override this.
+      decisionCostWealthScaleRate: 0,
     },
     playerStartingValues: {
       cash: 100000,
@@ -108,6 +118,8 @@ function makeConfig(overrides: Partial<GameConfig> = {}): GameConfig {
         competitivenessWeight_loss_wl: 0.15,
         competitivenessWeight_demand_wd: 0.1,
         outrageDemandWeight: 0.5,
+        demandPriceElasticity: 1.0,
+        referencePrice: 500,
       },
       finance: {
         baseFinanceCost: 2000,
@@ -992,6 +1004,216 @@ describe('GameLoop', () => {
       expect(outcome.result.players[0].riskGauge).toBeLessThanOrEqual(100);
     });
 
+  });
+
+  // Regression/new-behavior coverage for a real, reported gap: the market pie used to be
+  // a flat config constant so far above any realistic per-player capacity that market
+  // share never actually bound volume/revenue in practice — see CLAUDE.md's market-share
+  // section. These tests use their OWN small GameLoop/config (not the shared
+  // beforeEach's, which deliberately keeps its pie huge/inert for every other test in
+  // this file) so the pie is small enough to actually bind, the way a real game's default
+  // marketVolumePerPlayerTonnesPerYear (400) does against the real default maxSupply (350).
+  describe('resolveTurn — market share & demand elasticity actually affect revenue (real-world dynamics)', () => {
+    function makeMarketConfig(overrides: { marketVolumePerPlayerTonnesPerYear?: number; marketFixed?: boolean; referencePrice?: number; demandPriceElasticity?: number } = {}): GameConfig {
+      const base = makeConfig();
+      return {
+        ...base,
+        gameSettings: {
+          ...base.gameSettings,
+          marketVolumePerPlayerTonnesPerYear: overrides.marketVolumePerPlayerTonnesPerYear ?? 4000,
+          marketFixed: overrides.marketFixed ?? false,
+        },
+        adminVariables: {
+          ...base.adminVariables,
+          competitiveness: {
+            ...base.adminVariables.competitiveness,
+            referencePrice: overrides.referencePrice ?? 500,
+            demandPriceElasticity: overrides.demandPriceElasticity ?? 1.0,
+          },
+        },
+      };
+    }
+
+    function makeMarketLoop(config: GameConfig): GameLoop {
+      const loop = new GameLoop(config);
+      loop.loadFormulas(DEFAULT_FORMULA_SEEDS);
+      loop.loadDecisions([]);
+      return loop;
+    }
+
+    it('a competitiveness disadvantage now actually costs revenue, once the pie is right-sized (the core bug this fixes)', () => {
+      const loop = makeMarketLoop(makeMarketConfig({ marketFixed: true })); // isolate the pie-sizing fix from elasticity
+      const players = makePlayers([
+        { id: 'strong', name: 'Strong', variables: makeVars({ processingLevel: 0.9, supplySecurity: 0.9, processLoss: 0.02 }) },
+        { id: 'weak', name: 'Weak', variables: makeVars({ processingLevel: 0.2, supplySecurity: 0.1, processLoss: 0.3 }) },
+      ]);
+
+      const outcome = loop.resolveTurn('room-1', 1, players);
+      const strong = outcome.result.players.find((p) => p.playerId === 'strong')!;
+      const weak = outcome.result.players.find((p) => p.playerId === 'weak')!;
+
+      expect(strong.derived.marketShare).toBeGreaterThan(weak.derived.marketShare);
+      // The actual bug: with the old flat 10,000-ton pie, BOTH of these would be capacity-
+      // bound (8000) regardless of the share gap, and this assertion would fail.
+      expect(strong.derived.revenue).toBeGreaterThan(weak.derived.revenue);
+    });
+
+    it('scales the pie by active player count — a 2-player and a 4-player game at parity get the same per-player theoretical volume', () => {
+      const config = makeMarketConfig({ marketFixed: true, marketVolumePerPlayerTonnesPerYear: 100 }); // small enough to stay share-bound (never hits maxSupply 8000) at any of these player counts
+      const twoP = makeMarketLoop(config).resolveTurn('room-2p', 1, makePlayers([
+        { id: 'p1', name: 'P1' }, { id: 'p2', name: 'P2' },
+      ]));
+      const fourP = makeMarketLoop(config).resolveTurn('room-4p', 1, makePlayers([
+        { id: 'p1', name: 'P1' }, { id: 'p2', name: 'P2' }, { id: 'p3', name: 'P3' }, { id: 'p4', name: 'P4' },
+      ]));
+
+      expect(twoP.result.players[0].derived.volume).toBeCloseTo(fourP.result.players[0].derived.volume, 4);
+    });
+
+    it('demand elasticity shrinks the WHOLE pie when the average price rises, not just each player\'s own share of a fixed pie', () => {
+      // Both players priced identically in both scenarios, so their SHARE split stays
+      // 50/50 either way — any volume difference between scenarios must come from the
+      // pie itself changing size (elasticity), not redistribution between players.
+      const atReference = makeMarketLoop(makeMarketConfig({ referencePrice: 500 })).resolveTurn('room-a', 1, makePlayers([
+        { id: 'p1', name: 'P1', variables: makeVars({ price: 500 }) },
+        { id: 'p2', name: 'P2', variables: makeVars({ price: 500 }) },
+      ]));
+      const aboveReference = makeMarketLoop(makeMarketConfig({ referencePrice: 500 })).resolveTurn('room-b', 1, makePlayers([
+        { id: 'p1', name: 'P1', variables: makeVars({ price: 750 }) }, // 50% above reference
+        { id: 'p2', name: 'P2', variables: makeVars({ price: 750 }) },
+      ]));
+
+      // factor = 1 - 1.0*0.5 = 0.5 -> pie (and therefore each player's volume) halved.
+      expect(aboveReference.result.players[0].derived.volume).toBeCloseTo(atReference.result.players[0].derived.volume * 0.5, 1);
+      expect(aboveReference.result.players[1].derived.volume).toBeCloseTo(atReference.result.players[1].derived.volume * 0.5, 1);
+    });
+
+    it('a price hike by ONE player shrinks total volume for the OTHER player too, once elasticity is enabled — a real macro effect, not just relative redistribution', () => {
+      const baseline = makeMarketLoop(makeMarketConfig({ referencePrice: 500 })).resolveTurn('room-c', 1, makePlayers([
+        { id: 'raiser', name: 'Raiser', variables: makeVars({ price: 500 }) },
+        { id: 'bystander', name: 'Bystander', variables: makeVars({ price: 500 }) },
+      ]));
+      const afterHike = makeMarketLoop(makeMarketConfig({ referencePrice: 500 })).resolveTurn('room-d', 1, makePlayers([
+        { id: 'raiser', name: 'Raiser', variables: makeVars({ price: 900 }) }, // raiser's own move only
+        { id: 'bystander', name: 'Bystander', variables: makeVars({ price: 500 }) }, // unchanged
+      ]));
+
+      const bystanderBefore = baseline.result.players.find((p) => p.playerId === 'bystander')!.derived.volume;
+      const bystanderAfter = afterHike.result.players.find((p) => p.playerId === 'bystander')!.derived.volume;
+      expect(bystanderAfter).toBeLessThan(bystanderBefore);
+    });
+
+    it('marketFixed disables elasticity entirely — symmetric price moves leave volume unchanged', () => {
+      const atReference = makeMarketLoop(makeMarketConfig({ marketFixed: true, referencePrice: 500 })).resolveTurn('room-e', 1, makePlayers([
+        { id: 'p1', name: 'P1', variables: makeVars({ price: 500 }) },
+        { id: 'p2', name: 'P2', variables: makeVars({ price: 500 }) },
+      ]));
+      const aboveReference = makeMarketLoop(makeMarketConfig({ marketFixed: true, referencePrice: 500 })).resolveTurn('room-f', 1, makePlayers([
+        { id: 'p1', name: 'P1', variables: makeVars({ price: 750 }) },
+        { id: 'p2', name: 'P2', variables: makeVars({ price: 750 }) },
+      ]));
+
+      expect(aboveReference.result.players[0].derived.volume).toBeCloseTo(atReference.result.players[0].derived.volume, 4);
+    });
+  });
+
+  // Company-size-scaled decision cost surcharge — real-world dynamics: a decision's own
+  // flat, absolute `cash` cost previously stayed identical for a round-1 startup and a
+  // late-game giant, unlike wealthScaledFee's litigation fees or a relative legal-risk
+  // ground's stakes, both of which already scale off the payer/defendant's own size. See
+  // calcEngine.ts's `applyDecisionImpacts` doc comment.
+  describe('resolveTurn — decision costs scale with the deploying player\'s own company size (real-world dynamics)', () => {
+    function makeWealthScaleConfig(rate: number): GameConfig {
+      const base = makeConfig();
+      return { ...base, gameSettings: { ...base.gameSettings, decisionCostWealthScaleRate: rate } };
+    }
+
+    it('charges a wealthy player a real surcharge on top of a decision\'s flat cost', () => {
+      const decisions = [{
+        decision: 'Costly Move', level: 'Strategic' as const, description: 'x', nature: 'Traditional' as const, offensiveAction: false, excludes: [],
+        impacts: { cash: { type: 'absolute' as const, schedule: { 1: -10000, default: 0 } } },
+      }];
+      const players = () => makePlayers([
+        { id: 'rich', name: 'Rich', variables: makeVars({ cash: 1000000 }) },
+        { id: 'other', name: 'Other', variables: makeVars({ cash: 1000000 }) },
+      ]);
+
+      const noSurcharge = new GameLoop(makeWealthScaleConfig(0));
+      noSurcharge.loadFormulas(DEFAULT_FORMULA_SEEDS);
+      noSurcharge.loadDecisions(decisions);
+      noSurcharge.submitDecisions('room-a', 'rich', { strategic: [{ name: 'Costly Move' }], operational: [], financial: [], lawsuits: [] });
+      noSurcharge.submitDecisions('room-a', 'other', { strategic: [], operational: [], financial: [], lawsuits: [] });
+      const baseline = noSurcharge.resolveTurn('room-a', 1, players());
+
+      const withSurcharge = new GameLoop(makeWealthScaleConfig(0.02));
+      withSurcharge.loadFormulas(DEFAULT_FORMULA_SEEDS);
+      withSurcharge.loadDecisions(decisions);
+      withSurcharge.submitDecisions('room-b', 'rich', { strategic: [{ name: 'Costly Move' }], operational: [], financial: [], lawsuits: [] });
+      withSurcharge.submitDecisions('room-b', 'other', { strategic: [], operational: [], financial: [], lawsuits: [] });
+      const surcharged = withSurcharge.resolveTurn('room-b', 1, players());
+
+      const baselineCash = baseline.result.players.find((p) => p.playerId === 'rich')!.variables.cash;
+      const surchargedCash = surcharged.result.players.find((p) => p.playerId === 'rich')!.variables.cash;
+
+      // Same starting cash, same P&L, same decision — the only difference is the 2% of
+      // $1,000,000 (=$20,000) surcharge, which must show up as a real, matching cash gap.
+      expect(baselineCash - surchargedCash).toBeCloseTo(20000, 0);
+    });
+
+    it('the exact same decision costs a poorer player noticeably less in absolute terms', () => {
+      const richLoop = new GameLoop(makeWealthScaleConfig(0.02));
+      richLoop.loadFormulas(DEFAULT_FORMULA_SEEDS);
+      richLoop.loadDecisions([{
+        decision: 'Costly Move', level: 'Strategic', description: 'x', nature: 'Traditional', offensiveAction: false, excludes: [],
+        impacts: { cash: { type: 'absolute', schedule: { 1: -10000, default: 0 } } },
+      }]);
+      const poorLoop = new GameLoop(makeWealthScaleConfig(0.02));
+      poorLoop.loadFormulas(DEFAULT_FORMULA_SEEDS);
+      poorLoop.loadDecisions([{
+        decision: 'Costly Move', level: 'Strategic', description: 'x', nature: 'Traditional', offensiveAction: false, excludes: [],
+        impacts: { cash: { type: 'absolute', schedule: { 1: -10000, default: 0 } } },
+      }]);
+
+      const richPlayers = makePlayers([{ id: 'rich', name: 'Rich', variables: makeVars({ cash: 1000000 }) }, { id: 'other', name: 'Other', variables: makeVars({ cash: 1000000 }) }]);
+      const poorPlayers = makePlayers([{ id: 'poor', name: 'Poor', variables: makeVars({ cash: 30000 }) }, { id: 'other', name: 'Other', variables: makeVars({ cash: 30000 }) }]);
+      richLoop.submitDecisions('room-r', 'rich', { strategic: [{ name: 'Costly Move' }], operational: [], financial: [], lawsuits: [] });
+      richLoop.submitDecisions('room-r', 'other', { strategic: [], operational: [], financial: [], lawsuits: [] });
+      poorLoop.submitDecisions('room-p', 'poor', { strategic: [{ name: 'Costly Move' }], operational: [], financial: [], lawsuits: [] });
+      poorLoop.submitDecisions('room-p', 'other', { strategic: [], operational: [], financial: [], lawsuits: [] });
+
+      const richOutcome = richLoop.resolveTurn('room-r', 1, richPlayers);
+      const poorOutcome = poorLoop.resolveTurn('room-p', 1, poorPlayers);
+      const rich = richOutcome.result.players.find((p) => p.playerId === 'rich')!;
+      const poor = poorOutcome.result.players.find((p) => p.playerId === 'poor')!;
+
+      const richCostThisTurn = 1000000 - rich.variables.cash;
+      const poorCostThisTurn = 30000 - poor.variables.cash;
+      // Both deployed the identical decision — the rich player's total out-of-pocket cost
+      // this turn is meaningfully larger, purely from the wealth-scaled surcharge.
+      expect(richCostThisTurn).toBeGreaterThan(poorCostThisTurn);
+    });
+
+    it('does not scale a decision\'s cost at all when decisionCostWealthScaleRate is 0 (default, backward-compatible)', () => {
+      const loop = new GameLoop(makeWealthScaleConfig(0));
+      loop.loadFormulas(DEFAULT_FORMULA_SEEDS);
+      loop.loadDecisions([{
+        decision: 'Costly Move', level: 'Strategic', description: 'x', nature: 'Traditional', offensiveAction: false, excludes: [],
+        impacts: { cash: { type: 'absolute', schedule: { 1: -10000, default: 0 } } },
+      }]);
+      const players = makePlayers([
+        { id: 'rich', name: 'Rich', variables: makeVars({ cash: 1000000 }) },
+        { id: 'other', name: 'Other' },
+      ]);
+      loop.submitDecisions('room-1', 'rich', { strategic: [{ name: 'Costly Move' }], operational: [], financial: [], lawsuits: [] });
+      loop.submitDecisions('room-1', 'other', { strategic: [], operational: [], financial: [], lawsuits: [] });
+
+      const outcome = loop.resolveTurn('room-1', 1, players);
+      const rich = outcome.result.players.find((p) => p.playerId === 'rich')!;
+      const costThisTurn = 1000000 - rich.variables.cash;
+
+      // Only the flat 10,000 base cost (plus/minus ordinary P&L noise) — no 20,000 surcharge.
+      expect(costThisTurn).toBeLessThan(15000);
+    });
   });
 
   describe('resolveTurn — legal risks (deliberate filing only)', () => {

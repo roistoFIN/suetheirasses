@@ -198,8 +198,50 @@ export function calculateCompetitivenessAndMarketShare(
 }
 
 /**
+ * Step 2b: The room's effective per-turn market pie — how much total tonnage
+ * `theoreticalVolume` has to divide up across every active player this turn.
+ *
+ * effectiveTotalMarketVolume = marketVolumePerPlayer * activePlayerCount * elasticityFactor
+ *
+ * `marketVolumePerPlayer * activePlayerCount` keeps a 2-player and a 4-player game
+ * starting with the SAME per-player headroom over `maxSupply` at round-1 parity, rather
+ * than a flat total that's proportionally twice as generous in a 2-player game (see
+ * `GameSettings.marketVolumePerPlayerTonnesPerYear`'s own doc comment for why this used
+ * to be a flat, far-too-generous constant that made market share never actually bind
+ * volume in realistic play).
+ *
+ * `elasticityFactor` is 1 (no effect) when `marketFixed` is true — the simpler, original
+ * behavior. When false, it's `marketDemandElasticityFactor` (a `Formula`, admin-editable),
+ * evaluated against `avgPrice` — the mean price across every ACTIVE player this turn, not
+ * any one player's own price — modeling real-world demand elasticity: an industry-wide
+ * price rise should shrink how much total volume the whole market absorbs, not just
+ * reshuffle share between players (which the existing `1/price` term in `competitiveness`
+ * already does). `avgPrice` must be computed by the caller (`GameLoop`) across the whole
+ * room BEFORE this is called, same reason `calculateCompetitivenessAndMarketShare` takes
+ * every player's vars at once rather than one at a time.
+ */
+export function calculateEffectiveTotalMarketVolume(
+  marketVolumePerPlayer: number,
+  activePlayerCount: number,
+  avgPrice: number,
+  marketFixed: boolean,
+  admin: AdminVariables,
+  formulas: FormulaSet,
+): number {
+  const base = marketVolumePerPlayer * activePlayerCount;
+  if (marketFixed) return base;
+  const { demandPriceElasticity, referencePrice } = admin.competitiveness;
+  // A misconfigured (zero/negative) referencePrice would divide by zero inside the
+  // formula — fall back to the unscaled base rather than propagate NaN/Infinity through
+  // the rest of the turn.
+  if (referencePrice <= 0) return base;
+  const elasticityFactor = evalNamed(formulas, 'marketDemandElasticityFactor', { avgPrice, referencePrice, demandPriceElasticity });
+  return base * elasticityFactor;
+}
+
+/**
  * Step 3: Calculate volume (supply cap).
- * 
+ *
  * theoreticalVolume_i = marketShare_i * totalMarketVolume
  * maxSupply_i         = installedCapacity_i * capacityUtilization_i
  * volume_i            = MIN(theoreticalVolume_i, maxSupply_i)
@@ -531,12 +573,34 @@ export interface ApplyImpactsResult {
  * so multiple matured instances SUM correctly: base * (1 + m1 + m2 + ...).
  *
  * Returns newly created depreciation entries for genuine asset purchases.
+ *
+ * `costWealthScaleRate` (0 by default) adds a company-size-scaled surcharge on top of a
+ * decision's own ABSOLUTE `cash` cost — a real-world dynamic this engine previously had no
+ * mechanism for at all: `wealthScaledFee` already scales the three instant, out-of-band
+ * fees (`digDeeperCost`/`lawsuitFilingCost`/dig-on-a-case) by the payer's current cash, and
+ * a `relative`-type legal-risk ground already scales its stakes off the defendant's own
+ * equity/revenue — but a decision's own deployment cost (119 of 212 decisions use an
+ * `absolute`, flat-dollar `cash` impact; only 1 uses `relative`, which already scales
+ * itself) stayed the same flat number for a round-1 startup and a $2M-equity late-game
+ * giant. Deliberately COSTS-ONLY, by explicit product decision: only a NEGATIVE `cash`
+ * value (a real cost) gets the surcharge added on top; a positive value (a windfall) is
+ * never scaled down — extending this to shrink windfalls too was considered and explicitly
+ * deferred as a separate, bigger-scope change (it would need auditing all ~119 decisions'
+ * positive-cash cases, not just adding one surcharge line). Scales off the player's own
+ * CURRENT cash (read from the ORIGINAL `vars`, before this decision's own effect is
+ * applied) — same "current cash, not equity/stockValue" basis `wealthScaledFee` already
+ * uses, for consistency. Applies every time this function runs for a `cash`-costing
+ * decision, not just at deployment — a genuinely backloaded cost (e.g. "Manure Futures
+ * Speculation"'s year-2/3 `financeCost`, or any multi-year `cash` schedule) scales off
+ * whatever the player's cash actually is THAT year, not what it was at deployment, which
+ * is the more realistic reading (a bill due in year 3 should scale with year-3 wealth).
  */
 export function applyDecisionImpacts(
   vars: PlayerVariables,
   impacts: Record<string, { type: 'absolute' | 'relative'; schedule: Record<number | string, number> }>,
   elapsedYears: number,
   currentYear?: number,
+  costWealthScaleRate = 0,
 ): ApplyImpactsResult {
   const v = { ...vars };
   // `field` is a runtime string key (from admin-editable decision data), not a known
@@ -606,14 +670,22 @@ export function applyDecisionImpacts(
       // forever, the instant any player anywhere first deployed one. Caught by a random
       // 4-player game simulation, not by hand — see CLAUDE.md's "applyDecisionImpacts'
       // absolute-impact write corrupted an undefined field to NaN" section.
-      vDyn[field] = (vDyn[field] ?? 0) + value;
+      //
+      // Company-size-scaled cost surcharge (see this function's own doc comment) — only
+      // for a NEGATIVE cash value (a real cost), scaled off the player's CURRENT cash
+      // (the original `vars`, not `v`/`vDyn`, which this loop is mutating in place).
+      // Never applied to a positive cash value (a windfall) — costs-only, by design.
+      const effectiveValue = (field === 'cash' && value < 0 && costWealthScaleRate > 0)
+        ? value - costWealthScaleRate * Math.max(0, vars.cash ?? 0)
+        : value;
+      vDyn[field] = (vDyn[field] ?? 0) + effectiveValue;
 
       // Track absolute additions to P&L fields for delta passing
-      if (field === 'revenue') revenueDelta += value;
-      else if (field === 'financeCost') financeCostDelta += value;
-      else if (field === 'taxCost') taxCostDelta += value;
-      else if (field === 'receivables') receivablesDelta += value;
-      else if (field === 'cash') cashDelta += value;
+      if (field === 'revenue') revenueDelta += effectiveValue;
+      else if (field === 'financeCost') financeCostDelta += effectiveValue;
+      else if (field === 'taxCost') taxCostDelta += effectiveValue;
+      else if (field === 'receivables') receivablesDelta += effectiveValue;
+      else if (field === 'cash') cashDelta += effectiveValue;
 
       // Track genuine asset purchases that need depreciation entries.
       // Only create entries on the first year (elapsedYears === 0) when the purchase is

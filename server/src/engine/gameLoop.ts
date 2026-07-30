@@ -48,6 +48,7 @@ import type {
 import {
   applyDepreciation,
   calculateCompetitivenessAndMarketShare,
+  calculateEffectiveTotalMarketVolume,
   calculateVolume,
   calculatePL,
   updateBalanceSheet,
@@ -571,6 +572,7 @@ export class GameLoop {
         preExisting,
         round,
         this.config.gameSettings.statuteOfLimitationsYears,
+        this.config.gameSettings.decisionCostWealthScaleRate ?? 0,
       );
       ctx.vars = result.updatedVars;
       ctx.engineState.activeDecisions = [...result.updatedActiveDecisions, ...justDeployed];
@@ -631,7 +633,7 @@ export class GameLoop {
     }
 
     // ── Step 5 — Volume with supply cap ─────────────────────────
-    const totalVol = this.config.gameSettings.totalMarketVolumeTonnesPerYear;
+    const totalVol = this.computeEffectiveTotalMarketVolume(varsList);
     for (const [, ctx] of ctxs) {
       ctx.vars.volume = calculateVolume(ctx.vars, ctx.vars.marketShare || 0, totalVol, this.formulas);
     }
@@ -1202,7 +1204,7 @@ export class GameLoop {
     }
 
     // Volume with supply cap
-    const totalVol = this.config.gameSettings.totalMarketVolumeTonnesPerYear;
+    const totalVol = this.computeEffectiveTotalMarketVolume(varsList);
     for (const pid of playerIds) {
       const vars = varsByPlayer.get(pid)!;
       vars.volume = calculateVolume(vars, vars.marketShare || 0, totalVol, this.formulas);
@@ -2053,6 +2055,27 @@ export class GameLoop {
     return targetImpacts.size === 0 && targetId === undefined && !!def.legalRisks && def.legalRisks.length > 0;
   }
 
+  /** The room's effective per-turn market pie — see `calcEngine.ts`'s
+   * `calculateEffectiveTotalMarketVolume` for the full reasoning. `avgPrice` is computed
+   * here (the mean `price` across every player in `varsList`, i.e. every ACTIVE player
+   * this turn — both `resolveTurn` and `getInitialSnapshot` only ever build `varsList`
+   * from active players to begin with) since it needs the whole room at once, unlike
+   * every other per-player input `calculateVolume` reads. Shared by both call sites so
+   * they can never drift on how this is computed. */
+  private computeEffectiveTotalMarketVolume(varsList: PlayerVariables[]): number {
+    const avgPrice = varsList.length > 0
+      ? varsList.reduce((sum, v) => sum + (v.price || 0), 0) / varsList.length
+      : 0;
+    return calculateEffectiveTotalMarketVolume(
+      this.config.gameSettings.marketVolumePerPlayerTonnesPerYear,
+      varsList.length,
+      avgPrice,
+      this.config.gameSettings.marketFixed,
+      this.adminVars,
+      this.formulas,
+    );
+  }
+
   private buildIncomingAttacks(pid: string, ctxs: Map<string, PlayerTurnContext>, attackerCtxIds: string[], plMap: Map<string, ReturnType<typeof calculatePL>>): IncomingAttackInfo[] {
     const myInvestigations = ctxs.get(pid)!.engineState.investigations;
     const attacks: IncomingAttackInfo[] = [];
@@ -2192,7 +2215,7 @@ export class GameLoop {
         decisionEvents.push({ playerId: ctx.playerId, bucket, decisionName: name, targetId, outcome: 'deployed' });
         const inst = this.decisionEngine.deploy(ctx.playerId, def, year, targetId);
         ctx.engineState.activeDecisions.push(inst);
-        const result = this.decisionEngine.applyImpactsForYear(ctx.vars, def.impacts, 0, year);
+        const result = this.decisionEngine.applyImpactsForYear(ctx.vars, def.impacts, 0, year, this.config.gameSettings.decisionCostWealthScaleRate ?? 0);
         ctx.vars = result.updatedVars;
         // Merge newly created depreciation entries into the ledger
         for (const entry of result.newDepreciationEntries) {

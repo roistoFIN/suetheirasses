@@ -1498,6 +1498,12 @@
         "schedule": {
           "default": 14
         }
+      },
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "default": -15000
+        }
       }
     },
     "legalRisks": [
@@ -3067,7 +3073,7 @@
       "target.capacityUtilization": {
         "type": "relative",
         "schedule": {
-          "default": -0.2
+          "default": -0.3
         }
       }
     },
@@ -4460,7 +4466,7 @@
       "target.capacityUtilization": {
         "type": "relative",
         "schedule": {
-          "default": -0.18
+          "default": -0.27
         }
       }
     },
@@ -7985,7 +7991,7 @@
       "target.supplySecurity": {
         "type": "relative",
         "schedule": {
-          "default": -0.21
+          "default": -0.315
         }
       },
       "cash": {
@@ -8058,7 +8064,7 @@
       "target.logisticsCostPerTon": {
         "type": "relative",
         "schedule": {
-          "default": 0.07
+          "default": 0.105
         }
       },
       "cash": {
@@ -8641,7 +8647,7 @@
       "target.capacityUtilization": {
         "type": "relative",
         "schedule": {
-          "default": -0.24
+          "default": -0.36
         }
       },
       "cash": {
@@ -8860,7 +8866,7 @@
       "target.supplySecurity": {
         "type": "relative",
         "schedule": {
-          "default": -0.21
+          "default": -0.315
         }
       },
       "target.outrage": {
@@ -9006,7 +9012,7 @@
       "target.supplySecurity": {
         "type": "relative",
         "schedule": {
-          "default": -0.23
+          "default": -0.345
         }
       },
       "supplySecurity": {
@@ -9687,6 +9693,12 @@
         "type": "absolute",
         "schedule": {
           "default": 14
+        }
+      },
+      "cash": {
+        "type": "absolute",
+        "schedule": {
+          "default": -8000
         }
       }
     },
@@ -12670,7 +12682,7 @@
       "target.supplySecurity": {
         "type": "relative",
         "schedule": {
-          "default": -0.19
+          "default": -0.285
         }
       },
       "cash": {
@@ -13078,7 +13090,7 @@
       "target.logisticsCostPerTon": {
         "type": "relative",
         "schedule": {
-          "default": 0.07
+          "default": 0.105
         }
       },
       "cash": {
@@ -13145,7 +13157,7 @@
       "target.capacityUtilization": {
         "type": "relative",
         "schedule": {
-          "default": -0.19
+          "default": -0.285
         }
       },
       "cash": {
@@ -13285,7 +13297,7 @@
       "target.logisticsCostPerTon": {
         "type": "relative",
         "schedule": {
-          "default": 0.07
+          "default": 0.105
         }
       },
       "cash": {
@@ -13352,7 +13364,7 @@
       "target.capacityUtilization": {
         "type": "relative",
         "schedule": {
-          "default": -0.21
+          "default": -0.315
         }
       },
       "cash": {
@@ -13492,7 +13504,7 @@
       "target.supplySecurity": {
         "type": "relative",
         "schedule": {
-          "default": -0.2
+          "default": -0.3
         }
       },
       "cash": {
@@ -13766,7 +13778,7 @@
       "target.capacityUtilization": {
         "type": "relative",
         "schedule": {
-          "default": -0.24
+          "default": -0.36
         }
       },
       "cash": {
@@ -13833,7 +13845,7 @@
       "target.supplySecurity": {
         "type": "relative",
         "schedule": {
-          "default": -0.22
+          "default": -0.33
         }
       },
       "target.scrutiny": {

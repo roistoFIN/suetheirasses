@@ -3,6 +3,7 @@ import {
   applyDepreciation,
   addDepreciationEntry,
   calculateCompetitivenessAndMarketShare,
+  calculateEffectiveTotalMarketVolume,
   calculateVolume,
   calculatePL,
   updateBalanceSheet,
@@ -72,6 +73,8 @@ function makeAdmin(overrides: Partial<AdminVariables> = {}): AdminVariables {
       competitivenessWeight_loss_wl: 0.15,
       competitivenessWeight_demand_wd: 0.1,
       outrageDemandWeight: 0.5,
+      demandPriceElasticity: 1.0,
+      referencePrice: 500, // matches makeVars()'s own default price, so "neutral" tests need no override
     },
     finance: {
       baseFinanceCost: 2000,
@@ -263,6 +266,65 @@ describe('calcEngine', () => {
 
       expect(result.has('alice')).toBe(true);
       expect(result.has('bob')).toBe(true);
+    });
+  });
+
+  // Regression/new-behavior coverage for a real, reported gap: totalMarketVolume used to
+  // be a flat config constant (10,000), so far above any realistic per-player capacity
+  // that market share never actually bound volume/revenue in practice — see CLAUDE.md's
+  // market-share section. Fixed by (a) scaling the pie by the room's own active player
+  // count instead of a flat total, so a 2p and a 4p game start with the same per-player
+  // headroom at parity, and (b) real-world demand elasticity: the pie now also responds
+  // to the AVERAGE price across every active player, not just each player's own relative
+  // share of a fixed total.
+  describe('calculateEffectiveTotalMarketVolume', () => {
+    it('scales the pie by active player count when marketFixed (no elasticity)', () => {
+      const admin = makeAdmin();
+      expect(calculateEffectiveTotalMarketVolume(400, 2, 500, true, admin, DEFAULT_FORMULAS)).toBe(800);
+      expect(calculateEffectiveTotalMarketVolume(400, 4, 500, true, admin, DEFAULT_FORMULAS)).toBe(1600);
+    });
+
+    it('ignores avgPrice entirely when marketFixed is true, even far from referencePrice', () => {
+      const admin = makeAdmin({ competitiveness: { ...makeAdmin().competitiveness, referencePrice: 500 } });
+      const atReference = calculateEffectiveTotalMarketVolume(400, 2, 500, true, admin, DEFAULT_FORMULAS);
+      const farAbove = calculateEffectiveTotalMarketVolume(400, 2, 5000, true, admin, DEFAULT_FORMULAS);
+      expect(farAbove).toBe(atReference);
+    });
+
+    it('applies no elasticity adjustment when avgPrice equals referencePrice', () => {
+      const admin = makeAdmin({ competitiveness: { ...makeAdmin().competitiveness, referencePrice: 500, demandPriceElasticity: 1.0 } });
+      expect(calculateEffectiveTotalMarketVolume(400, 2, 500, false, admin, DEFAULT_FORMULAS)).toBe(800);
+    });
+
+    it('shrinks the pie when the average price rises above referencePrice', () => {
+      const admin = makeAdmin({ competitiveness: { ...makeAdmin().competitiveness, referencePrice: 500, demandPriceElasticity: 1.0 } });
+      // avgPrice 600 is 20% above referencePrice 500 -> factor = 1 - 1.0*0.2 = 0.8
+      const result = calculateEffectiveTotalMarketVolume(400, 2, 600, false, admin, DEFAULT_FORMULAS);
+      expect(result).toBeCloseTo(800 * 0.8, 6);
+    });
+
+    it('grows the pie when the average price falls below referencePrice', () => {
+      const admin = makeAdmin({ competitiveness: { ...makeAdmin().competitiveness, referencePrice: 500, demandPriceElasticity: 1.0 } });
+      // avgPrice 400 is 20% below referencePrice 500 -> factor = 1 + 1.0*0.2 = 1.2
+      const result = calculateEffectiveTotalMarketVolume(400, 2, 400, false, admin, DEFAULT_FORMULAS);
+      expect(result).toBeCloseTo(800 * 1.2, 6);
+    });
+
+    it('clamps the elasticity factor to a 0.3-2.0 band so extreme prices cannot zero out or triple the pie', () => {
+      // demandPriceElasticity 3.0 makes the unclamped factor swing well outside [0.3, 2.0]
+      // for these avgPrice values, so the clamp is actually exercised (not just coincidentally hit).
+      const admin = makeAdmin({ competitiveness: { ...makeAdmin().competitiveness, referencePrice: 500, demandPriceElasticity: 3.0 } });
+      const crashed = calculateEffectiveTotalMarketVolume(400, 2, 5000, false, admin, DEFAULT_FORMULAS); // unclamped factor deeply negative
+      const free = calculateEffectiveTotalMarketVolume(400, 2, 1, false, admin, DEFAULT_FORMULAS); // unclamped factor ~4.0
+      expect(crashed).toBeCloseTo(800 * 0.3, 6);
+      expect(free).toBeCloseTo(800 * 2.0, 6);
+    });
+
+    it('falls back to the unscaled base when referencePrice is misconfigured to zero or negative, rather than dividing by zero', () => {
+      const admin = makeAdmin({ competitiveness: { ...makeAdmin().competitiveness, referencePrice: 0, demandPriceElasticity: 1.0 } });
+      const result = calculateEffectiveTotalMarketVolume(400, 2, 500, false, admin, DEFAULT_FORMULAS);
+      expect(result).toBe(800);
+      expect(Number.isFinite(result)).toBe(true);
     });
   });
 
@@ -856,6 +918,76 @@ describe('calcEngine', () => {
         applyDecisionImpacts(vars, impacts, 0);
 
         expect(sharedOwnership).toEqual({ [SELF_OWNERSHIP_KEY]: 1.0 });
+      });
+    });
+
+    // Company-size-scaled cost surcharge (costWealthScaleRate) — a real-world dynamic this
+    // engine previously had no mechanism for: 119 of 212 decisions use a flat, absolute
+    // `cash` cost regardless of the deploying player's own size, unlike wealthScaledFee's
+    // litigation fees or a relative-type legal-risk ground's stakes, both of which already
+    // scale off the payer/defendant's own current cash/equity. See applyDecisionImpacts'
+    // own doc comment.
+    describe('costWealthScaleRate (company-size-scaled cost surcharge)', () => {
+      it('adds a surcharge on top of a negative absolute cash cost, proportional to the player\'s OWN current cash', () => {
+        const vars = makeVars({ cash: 500000 });
+        const impacts = { cash: { type: 'absolute' as const, schedule: { 1: -50000, default: 0 } } };
+
+        const result = applyDecisionImpacts(vars, impacts, 0, undefined, 0.01);
+
+        // -50,000 base cost, plus 1% of $500,000 current cash = -5,000 surcharge.
+        expect(result.updatedVars.cash).toBe(500000 - 50000 - 5000);
+        expect(result.absDeltas.cashDelta).toBe(-55000);
+      });
+
+      it('charges a poorer player a smaller surcharge for the exact same decision', () => {
+        const richVars = makeVars({ cash: 1000000 });
+        const poorVars = makeVars({ cash: 20000 });
+        const impacts = { cash: { type: 'absolute' as const, schedule: { 1: -10000, default: 0 } } };
+
+        const richResult = applyDecisionImpacts(richVars, impacts, 0, undefined, 0.01);
+        const poorResult = applyDecisionImpacts(poorVars, impacts, 0, undefined, 0.01);
+
+        const richTotalCost = richVars.cash - richResult.updatedVars.cash;
+        const poorTotalCost = poorVars.cash - poorResult.updatedVars.cash;
+        expect(richTotalCost).toBeGreaterThan(poorTotalCost);
+        expect(richTotalCost).toBe(10000 + 10000); // 10,000 base + 1% of 1,000,000
+        expect(poorTotalCost).toBe(10000 + 200); // 10,000 base + 1% of 20,000
+      });
+
+      it('never scales down a POSITIVE cash value (a windfall) — costs-only, by explicit design', () => {
+        const vars = makeVars({ cash: 1000000 });
+        const impacts = { cash: { type: 'absolute' as const, schedule: { 1: 30000, default: 0 } } };
+
+        const result = applyDecisionImpacts(vars, impacts, 0, undefined, 0.01);
+
+        expect(result.updatedVars.cash).toBe(1000000 + 30000);
+      });
+
+      it('does not touch a RELATIVE-type cash impact — it already scales itself off the player\'s own cash', () => {
+        const vars = makeVars({ cash: 500000 });
+        const impacts = { cash: { type: 'relative' as const, schedule: { 1: -0.1, default: 0 } } };
+
+        const result = applyDecisionImpacts(vars, impacts, 0, undefined, 0.01);
+
+        expect(result.updatedVars.cash).toBeCloseTo(500000 * 0.9, 6);
+      });
+
+      it('leaves behavior completely unchanged when the rate is the default (0) — safe, backward-compatible default', () => {
+        const vars = makeVars({ cash: 500000 });
+        const impacts = { cash: { type: 'absolute' as const, schedule: { 1: -50000, default: 0 } } };
+
+        const result = applyDecisionImpacts(vars, impacts, 0);
+
+        expect(result.updatedVars.cash).toBe(450000);
+      });
+
+      it('does not surcharge other absolute-type fields (e.g. operatingExpenses) — scoped to the literal cash field only', () => {
+        const vars = makeVars({ cash: 1000000, operatingExpenses: 5000 });
+        const impacts = { operatingExpenses: { type: 'absolute' as const, schedule: { 1: 10000, default: 0 } } };
+
+        const result = applyDecisionImpacts(vars, impacts, 0, undefined, 0.01);
+
+        expect(result.updatedVars.operatingExpenses).toBe(15000);
       });
     });
   });

@@ -233,7 +233,7 @@ suethemchickens/
 │   │   │   ├── legalEngine.ts       # Deliberate lawsuit filing (see Lawsuits below)
 │   │   │   ├── formulaEngine.ts     # Safe expression parser/evaluator for DB-backed
 │   │   │   │                        # formulas (see Formulas below) — no eval/Function/vm
-│   │   │   └── defaultFormulas.ts   # The 23 seed formula expressions — shared by
+│   │   │   └── defaultFormulas.ts   # The 24 seed formula expressions — shared by
 │   │   │                            # prisma/seed.ts and the engine test fixtures
 │   │   ├── data/                    # Seed-only now — see Decisions & Game Config below
 │   │   │   ├── game_engine.json     # Decision library: impacts, legal risks, exclusions
@@ -936,11 +936,20 @@ issuances, futures plays, and worse), capped independently of strategic/operatio
 by `gameSettings.maxFinancialDecisionsPerTurn` — see *Share Ownership & Takeover* below.
 When the timer expires, `GameLoop` resolves the turn for all players simultaneously:
 
-1. Apply active decisions' impacts (additive relative stacking across matured instances)
+1. Apply active decisions' impacts (additive relative stacking across matured instances) —
+   a decision's own negative `cash` cost also picks up a company-size-scaled surcharge
+   (`gameSettings.decisionCostWealthScaleRate`, 1% of the deploying player's own current
+   cash by default, costs-only — a positive/windfall value is never scaled down), the
+   same "bigger company pays more for the same move" idea `wealthScaledFeeRate` already
+   applies to litigation fees
 1b. Buy/Sell Shares trades execute — see *Share Ownership & Takeover* below
 2. Depreciation ledger (genuine asset purchases only)
 3. Competitiveness & market share (zero-sum across all players)
-4. Volume, capped by installed capacity
+4. Volume, capped by installed capacity — against a pie sized per-player and scaled by the
+   room's active player count (`marketVolumePerPlayerTonnesPerYear`), further adjusted by
+   real-world demand elasticity (the average price across every active player shrinks or
+   grows the whole market, not just each player's own share of it) unless
+   `gameSettings.marketFixed` is set
 5. P&L (revenue, COGS, EBITDA, tax, net profit)
 6. Lawsuits filed this turn resolve (or await trial) — see *Lawsuits* below
 7. Balance sheet & cash flow (one unified formula)
@@ -1649,7 +1658,7 @@ It has two parts:
   builder isn't worth it over textarea + real validation. Unlike the rooms table, these
   are fetched once on login (and again right after a successful save), not polled — so
   an in-progress edit can never be silently overwritten by a background refresh.
-- **Formulas editing** — the 23 pure-math formulas (see
+- **Formulas editing** — the 24 pure-math formulas (see
   *Formulas* below), each shown as its description plus a single-line text input for
   the expression (not a JSON textarea — these are one-line math expressions, not nested
   objects). A parse or unknown-variable error from the server is surfaced inline on the
@@ -1713,7 +1722,7 @@ deployed.
 
 ### Formulas (database-backed)
 
-The 23 pure, scalar, named-input formulas that drive competitiveness and market share,
+The 24 pure, scalar, named-input formulas that drive competitiveness and market share,
 volume, P&L, balance sheet, legal-risk probability, and the risk gauge (`competitiveness`,
 `revenue`, `netProfit`, `riskGauge`, etc.) are rows in Postgres (`Formula`:
 `key`/`expression`/`description`), seeded from `server/src/engine/defaultFormulas.ts` and
@@ -2124,7 +2133,7 @@ docker-compose up -d --build
 | DELETE | `/api/admin/decisions/:name` | Delete a decision; 409 (`reason: 'in_use'`) if it's currently deployed by an active player anywhere, 404 if unknown. Requires `x-admin-token`. |
 | GET | `/api/admin/config` | The `GameConfig` (`gameSettings`/`playerStartingValues`/`adminVariables`), from the DB. Requires `x-admin-token`. |
 | PUT | `/api/admin/config` | Replace the game config. Body validated by `gameConfigSchema`. Requires `x-admin-token`. |
-| GET | `/api/admin/formulas` | All 23 pure-math formulas, from the DB. Requires `x-admin-token`. See *Formulas* above. |
+| GET | `/api/admin/formulas` | All 24 pure-math formulas, from the DB. Requires `x-admin-token`. See *Formulas* above. |
 | PUT | `/api/admin/formulas/:key` | Update one formula's expression/description. Body validated by `formulaUpdateSchema` — real syntax parse plus a per-key variable whitelist; 400 on either failure, 404 if the key is unknown. No create/delete — the key set is fixed. Requires `x-admin-token`. |
 | GET | `/api/admin/feedback` | Every submitted feedback row, newest first. Read-only — nothing here is ever written from the admin side. Requires `x-admin-token`. See *Player Feedback* above. |
 | GET | `/api/admin/events` | Filterable/paginated raw `EventLog` feed. Query params: `eventType`, `severity`, `roomId`, `playerId`, `before` (ISO timestamp cursor), `limit` (default 100, capped at 500). Requires `x-admin-token`. See *Admin Portal → Analytics* above and CLAUDE.md's *"EventLog + the admin Analytics tab"*. |

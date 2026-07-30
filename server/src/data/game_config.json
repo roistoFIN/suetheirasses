@@ -7,8 +7,8 @@
     "maxStrategicDecisionsPerTurn": 1,
     "maxOperationalDecisionsPerTurn": 2,
     "maxFinancialDecisionsPerTurn": 2,
-    "totalMarketVolumeTonnesPerYear": 10000,
-    "marketFixed": true,
+    "marketVolumePerPlayerTonnesPerYear": 400,
+    "marketFixed": false,
     "digDeeperCost": 10000,
     "negotiationPeriodTurns": 2,
     "lawsuitFilingCost": 15000,
@@ -22,7 +22,8 @@
     "lateGameLegalStakesBoost": 1.5,
     "lateGameTakeoverBoost": 1.5,
     "mergerIntegrationCostRate": 0.25,
-    "wealthScaledFeeRate": 0.03
+    "wealthScaledFeeRate": 0.03,
+    "decisionCostWealthScaleRate": 0.01
   },
   "playerStartingValues": {
     "_comment_finance": "Ryhma A - Talous",
@@ -78,6 +79,8 @@
       "competitivenessWeight_loss_wl": 0.2,
       "competitivenessWeight_demand_wd": 0.3,
       "outrageDemandWeight": 0.5,
+      "demandPriceElasticity": 1.0,
+      "referencePrice": 675,
       "_comment": "demand ja outrage ovat pisteskaalalla (~-60..+60), jaetaan 100:lla kaavassa ennen painotusta"
     },
     "legalProcess": {

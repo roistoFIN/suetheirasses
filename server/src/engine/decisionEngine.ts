@@ -340,8 +340,8 @@ export class DecisionEngine {
     };
   }
 
-  applyImpactsForYear(vars: PlayerVariables, impacts: Record<string, { type: 'absolute' | 'relative'; schedule: Record<number | string, number> }>, elapsedYears: number, currentYear?: number): import('./calcEngine.js').ApplyImpactsResult {
-    const result = applyDecisionImpacts(vars, impacts, elapsedYears, currentYear);
+  applyImpactsForYear(vars: PlayerVariables, impacts: Record<string, { type: 'absolute' | 'relative'; schedule: Record<number | string, number> }>, elapsedYears: number, currentYear?: number, costWealthScaleRate = 0): import('./calcEngine.js').ApplyImpactsResult {
+    const result = applyDecisionImpacts(vars, impacts, elapsedYears, currentYear, costWealthScaleRate);
     return result;
   }
 
@@ -414,6 +414,7 @@ export class DecisionEngine {
     activeDecisions: DeployedDecision[],
     currentYear: number,
     statuteOfLimitationsYears = Infinity,
+    costWealthScaleRate = 0,
   ): { updatedVars: PlayerVariables; updatedActiveDecisions: DeployedDecision[]; newDepreciationEntries: import('./calcEngine.js').DepreciationLedgerEntry[]; absDeltas: { revenueDelta: number; financeCostDelta: number; taxCostDelta: number; receivablesDelta: number; cashDelta: number } } {
     let v = { ...vars };
     const decisions = [...activeDecisions];
@@ -453,7 +454,7 @@ export class DecisionEngine {
       if (d.elapsedYears > threshold) continue;
 
       // Apply impacts — relative instances additively across matured instances
-      const result = this.applyInstance(v, d.definition.impacts, d.elapsedYears, d.isMatured, currentYear);
+      const result = this.applyInstance(v, d.definition.impacts, d.elapsedYears, d.isMatured, currentYear, costWealthScaleRate);
       v = result.updatedVars;
       allNewDepEntries.push(...result.newDepreciationEntries);
       allAbsDeltas.push(result.absDeltas);
@@ -473,8 +474,9 @@ export class DecisionEngine {
     elapsedYears: number,
     _isMatured: boolean,
     currentYear: number,
+    costWealthScaleRate = 0,
   ): { updatedVars: PlayerVariables; newDepreciationEntries: import('./calcEngine.js').DepreciationLedgerEntry[]; absDeltas: { revenueDelta: number; financeCostDelta: number; taxCostDelta: number; receivablesDelta: number; cashDelta: number } } {
-    const result = applyDecisionImpacts(vars, impacts, elapsedYears, currentYear);
+    const result = applyDecisionImpacts(vars, impacts, elapsedYears, currentYear, costWealthScaleRate);
     return result;
   }
 }

@@ -1013,6 +1013,201 @@ Regression-tested in both `GamePhase.utils.test.ts` and `GameTimelineView.utils.
 (each file's own duplicated copy of `summarizeEffects`), covering both labels, the
 `isTarget` split, and the "until Yr N" qualifier appearing/disappearing correctly.
 
+### Market share is real economics now — a right-sized, player-count-scaled pie, plus real-world demand elasticity
+
+A user-reported "does market share actually do anything, does revenue drop when share
+drops?" led to an investigation that found: no, in practice, never. `marketShare` only
+ever fed into one formula, `theoreticalVolume = marketShare * totalMarketVolume`, and
+actual `volume = MIN(theoreticalVolume, maxSupply)` — but the old
+`totalMarketVolumeTonnesPerYear` constant (10,000) was so far above any realistic
+per-player `maxSupply` (`installedCapacity * capacityUtilization`, 350 at start) that a
+player would need to fall to ~3.5% market share before it ever became the binding
+constraint. Verified directly against the real formulas: even an extreme, unrealistic
+scenario (one player's price set 30× a rival's — far beyond what any real decision or
+stack of decisions can produce, the single largest seeded price swing being +27%) only
+just barely pushed the disadvantaged player below that threshold. Every decision whose
+*only* effect is on `processingLevel`/`supplySecurity`/`processLoss`/`demand`/`price` —
+roughly a quarter of the whole library — moved the on-screen "Market Share" percentage
+with zero effect on revenue in essentially any real game.
+
+**Fix 1 — the pie now scales with the room's own active player count, not a flat
+constant.** `GameSettings.totalMarketVolumeTonnesPerYear` was renamed to
+`marketVolumePerPlayerTonnesPerYear` (400 by default) and represents ONE player's
+theoretical entitlement at parity, not the whole market — `GameLoop.
+computeEffectiveTotalMarketVolume` (thin wrapper around `calcEngine.ts`'s
+`calculateEffectiveTotalMarketVolume`) multiplies it by `activePlayerCount` before
+`theoreticalVolume` ever sees it. This matters because a flat constant splits very
+differently depending on room size: the same 10,000-ton pie gave a 2-player game roughly
+double the per-player headroom of a 4-player game (the more common case being 2-player,
+since a lone waiting player gets a bot opponent — see *Server-injected AI bot player*
+above) — meaning a flat number either left 2p games too slack to ever matter, or made a
+brand-new/idle 4p player get squeezed at pure parity for no skill-related reason at all.
+With the per-player figure, a 2p and 4p game both start with the identical per-player
+headroom over `maxSupply` at round-1 parity (preserving the existing idle-breakeven
+invariant — see `gameLoop.simulation.test.ts`'s dedicated regression test), and it's only
+once a REAL competitiveness gap opens from actual decisions that the disadvantaged
+player's volume — and therefore revenue — visibly drops.
+
+**Fix 2 — real-world demand elasticity: an industry-wide price move now changes the size
+of the WHOLE pie, not just each player's slice of a fixed one.** Previously `price` only
+ever affected a player's own relative *share* (via `competitiveness`'s `1/price` term) —
+if everyone in the game raised prices together, nothing would happen to total volume sold,
+which isn't how real markets work (higher prices industry-wide should reduce how much
+total demand gets satisfied). New `Formula`, `marketDemandElasticityFactor` — `MAX(0.3,
+MIN(2.0, 1 - demandPriceElasticity * (avgPrice - referencePrice) / referencePrice))` — a
+bounded LINEAR approximation of elasticity (the formula grammar has no exponent operator,
+only `+ - * /` and `MIN`/`MAX` — see `formulaEngine.ts`'s security-motivated whitelist),
+clamped to a 0.3×-2.0× band so a handful of extreme-price decisions can't zero out or
+triple the market. `avgPrice` is the mean price across every ACTIVE player this turn —
+computed once in `GameLoop.computeEffectiveTotalMarketVolume` (needs the whole room at
+once, unlike every other per-player input `calculateVolume` reads) — and
+`demandPriceElasticity`/`referencePrice` are new `AdminVariables.competitiveness` fields
+(1.0 and 675 by default), editable live from `/admin` like every other tuning knob here.
+
+**`GameSettings.marketFixed` — a field that already existed but was never actually wired
+up to anything** (validated and stored by the admin schema, never read anywhere in the
+engine) — repurposed as this whole mechanic's on/off switch rather than adding a new
+field, matching its apparent original intent: `true` keeps the simpler, original
+behavior (flat per-player-scaled pie, no price response); `false` (the new default) turns
+on `marketDemandElasticityFactor`. `calculateEffectiveTotalMarketVolume` also guards
+against a misconfigured `referencePrice <= 0` (falls back to the unscaled base rather than
+dividing by zero).
+
+Verified via the same randomized-simulation methodology as every other balance pass in
+this file (see *Randomized-simulation testing* below): a dedicated diagnostic run isolating
+the pie-resize from the elasticity (holding everything else constant, same seeds) found
+NEITHER changes 2-player average round length at all — a real, separate, PRE-EXISTING
+characteristic of two actively-adversarial random players in this specific harness
+(never previously measured with only 2 players; every earlier balance pass in this file
+happened to only ever simulate 4-player games). The 4-player average round length (the
+apples-to-apples comparison against this file's own documented ~11-18-round history)
+stayed consistent with the pre-change baseline (~12-15 rounds either way, well within the
+engine's own run-to-run variance from non-seeded legal-verdict draws). The actual target
+of this change — decisions that only move `processingLevel`/`supplySecurity`/
+`processLoss`/`demand`/`price` — went from completely inert (0% effect on revenue,
+confirmed directly against the formulas before the fix) to showing a real, measurable
+win-rate spread (roughly 25%-55% depending on the specific decision, across both 2p and 4p
+runs) once genuinely used in full games.
+
+Regression-tested at the formula level (`calcEngine.test.ts`'s dedicated
+`calculateEffectiveTotalMarketVolume` describe block: player-count scaling, elasticity
+direction both ways, the 0.3-2.0 clamp, the `referencePrice <= 0` guard, `marketFixed`
+disabling elasticity entirely) and at the full-turn level
+(`gameLoop.test.ts`'s own describe block, using a dedicated small config rather than this
+file's shared fixture — which deliberately keeps its own pie huge/inert so every OTHER
+test in the file stays unaffected by this change): a competitiveness disadvantage now
+costs real revenue: the 2p/4p pie-scaling parity check; elasticity shrinking volume
+identically for two symmetrically-priced players; a price hike by ONE player shrinking
+volume for a completely uninvolved bystander (proving this is a genuine aggregate/macro
+effect, not just relative redistribution between the two, which the pre-existing `1/price`
+competitiveness term already covered); and `marketFixed: true` provably disabling the new
+mechanic. If you add a new decision or retune any of these fields, `game_engine.json`'s
+own "every decision has a real benefit" scan (see *Every decision must bring a real
+benefit* above) still doesn't check for this specific dynamic — worth remembering that a
+`processingLevel`/`supplySecurity`/`processLoss`/`demand`/`price`-only decision's value
+now genuinely depends on `marketVolumePerPlayerTonnesPerYear` being kept small enough
+relative to typical `maxSupply` for market share to keep mattering as the game
+(and installed capacity) grows.
+
+### Decision costs are now company-size-scaled — a real-world dynamic this engine previously had no mechanism for
+
+A follow-up question ("could company size — stock price, assets, equity — affect the cost
+of a decision, since that happens in real life?") found the codebase already believed in
+this idea for two OTHER subsystems, just never extended it to decision deployment costs
+themselves: `wealthScaledFee` already adds a surcharge (`wealthScaledFeeRate`, 3%) on top
+of the three instant, out-of-band fees (`digDeeperCost`/`lawsuitFilingCost`/dig-on-a-case),
+scaled by the payer's own current cash; a `relative`-type legal-risk ground's stakes
+already scale off the *defendant's* own current `equity`/`revenue` (see *Statute of
+limitations & relative-type legal-risk stakes* above). But a decision's own `cash` cost —
+119 of 212 decisions use a flat, `absolute` dollar amount; only 1 uses `relative`, which
+already scales itself — stayed identical for a round-1 startup and a $2M-equity late-game
+giant.
+
+Fixed by extending the exact `wealthScaledFee` idea to decision deployment costs: a new
+`gameSettings.decisionCostWealthScaleRate` (1% by default — deliberately smaller than
+`wealthScaledFeeRate`'s 3%, since decisions deploy far more often per game than litigation
+fees do, and a comparable rate risked pricing a wealthy late-game player out of deploying
+*anything* — verified via the randomized-simulation methodology, see below) adds that
+fraction of the deploying player's OWN current cash on top of any NEGATIVE absolute `cash`
+schedule value, in `calcEngine.ts`'s `applyDecisionImpacts` — the single function both
+Step 1 (`processNewDecisions`, deployment year) and Step 2 (`advanceAndApply`, every
+subsequent maturing year) already funnel through, so this applies uniformly whether the
+cost lands at deployment or is genuinely backloaded to a later year (scaling off whatever
+the player's cash actually is THAT year, not what it was at deployment — the more
+realistic reading of a bill due years later). Threaded through
+`DecisionEngine.applyImpactsForYear`/`applyInstance`/`advanceAndApply` as a plain optional
+parameter (default 0, same safe-default convention as `BotCogsContext` elsewhere in this
+file) so every existing caller/test is unaffected unless it explicitly opts in.
+
+**Deliberately costs-only, by explicit product decision**: a POSITIVE `cash` value (a
+windfall) is never scaled down. Extending this to also shrink windfalls for large
+companies was considered and explicitly deferred — it's a bigger-scope change (would need
+auditing all ~119 decisions' positive-cash cases for what "shrinks with size" even means
+per decision, not just adding one surcharge line) versus the low-risk, self-contained
+costs-only version shipped here. Also deliberately scoped to the literal `cash` field only
+— not `operatingExpenses`/`staffCost`/`financeCost` (`DOLLAR_FIELDS`) or any other
+dollar-shaped field, since those are PERMANENT baseline shifts (see the "Root historical
+bug" note above), not one-off-ish spends the "big company pays a premium" framing fits.
+
+Verified via the same randomized-simulation methodology as every other rate in this file:
+a batch comparison (rate 0 vs. the shipped 0.01 vs. 0.03, matching `wealthScaledFeeRate`
+for reference) showed a modest, monotonic, non-alarming trend — average round length
+12.98 → 11.78 → 11.03 as the rate increases, clean-single-winner rate staying 95-97%
+throughout — nothing resembling the kind of runaway collapse a too-aggressive rate would
+produce. Regression-tested in `calcEngine.test.ts`'s dedicated `costWealthScaleRate`
+describe block (surcharge scales with the payer's own cash, a poorer player pays
+measurably less for the identical decision, windfalls are never touched, a `relative`-type
+cash impact is left alone since it already self-scales, the rate-0 default is fully
+backward-compatible, other `DOLLAR_FIELDS` are untouched) and at the full-turn level in
+`gameLoop.test.ts` (an A/B same-seed comparison isolating the exact surcharge amount
+through a real `resolveTurn`, plus the poorer-player and rate-0 cases).
+
+### Deck retune following the target-effect-compounding and market-share fixes
+
+A deck audit prompted by the two fixes above (see *The exact same compounding bug existed
+on the target.* side too* and *Market share is real economics now*) found two clusters of
+decisions whose real-world power level had shifted out from under them without their own
+numbers ever being touched:
+
+- **17 decisions** (`Bot Attack`, `Feather Duster Sabotage`, `Hostile Supply Chain Choke`,
+  `Predatory Logistics Squeeze`, `Manufactured Union Strike Wave`, `Supply Extortion
+  Threat`, `Vertical Foreclosure Play`, `Sabotaged Delivery Manifest`, `Tire-Spike Delivery
+  Route`, `Fake Union Organizer Plant`, `Poached Driver Sabotage`, `Malware-Laced Invoice
+  Email`, `Bribed Weighbridge Operator`, `Rigged Union Vote Leaflets`, `Compromised
+  Supplier Contract Leak` — the 15 single-stage decisions from the compounding-fix
+  section above, plus `Aggressive Sale`/`Seasonal Discount Push` from the market-share
+  section) needed a second look once their underlying mechanics started actually working
+  as designed for the first time.
+- The 15 single-stage relative `target.*` decisions had their magnitude increased ~1.5×
+  (e.g. `Bot Attack`'s `target.capacityUtilization`: -20% → -30%; `Predatory Logistics
+  Squeeze`'s `target.logisticsCostPerTon`: +7% → +10.5%) — now that they correctly land
+  once and hold (not compound), their original -18%/-25% single-hit magnitude read as
+  underwhelming for a `Dirty`-nature decision carrying real legal risk, especially next to
+  the 3 two-stage decisions in the same cluster (`Patent Portfolio`/`Raw Material
+  Monopoly`/`Union Agitation`, left untouched — their existing 2-stage schedules already
+  compound to -28% to -40.5% total, the natural target band the 15 single-stage ones were
+  bumped toward for internal consistency within the attack cluster).
+- `Aggressive Sale` (`price`: -9%) and `Seasonal Discount Push` (`price`: -2.4%) — the two
+  MARKET-share-only decisions that cut price — gained a new -$15,000/-$8,000 `cash` cost
+  each. Both previously had NO direct cash cost at all (only legal-risk exposure), which
+  was fine when a price cut only reshuffled a fixed pie between players; now that
+  `marketDemandElasticityFactor` also grows the WHOLE pie a little whenever the average
+  price dips, these two get a genuine second benefit on top of the original one, so a
+  small compensating cost was added. Deliberately NOT applied to the other 2
+  market-share-only decisions (`Small-Batch Artisan Line`/`Shrinkflation Repackaging`,
+  both price INCREASES) — those now face a new elasticity HEADWIND instead (their own
+  price hike shrinks the whole pie a little, on top of already hurting their own
+  competitiveness) — an appropriate emergent check the mechanic already provides for free;
+  adding a second penalty on top would double-count it.
+
+Verified the same way as every other change in this file: a same-seed A/B simulation
+(120 games) comparing the deck before/after found average round length dropped modestly
+(11.45 → 10.96 rounds — attacks now land with real weight, so games resolve a little
+faster) with clean-single-winner rate unchanged (97.5% either way) — no instability. The
+retuned decisions' individual win rates are noisy at this sample size (7-29 uses each) but
+trend upward as intended, and the two newly-costed price-cut decisions stayed clearly
+viable (30-45% win rate) rather than being tanked by the new cost.
+
 ### Risk Gauge — 5 weighted terms, all DB-backed and admin-editable
 
 `calculateRiskGauge` blends 5 terms (`w1..w5`, `RiskGaugeConfig` in `game_config.json`):

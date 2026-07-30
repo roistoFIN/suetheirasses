@@ -1,7 +1,7 @@
 /**
  * The pure, scalar, named-input formulas (competitiveness, market share, P&L,
  * balance sheet, legal-risk probability, risk gauge) — this list IS the source
- * of truth for these 23 expressions (calcEngine.ts calls each by name via
+ * of truth for these 24 expressions (calcEngine.ts calls each by name via
  * evalNamed, never inlines the math itself). Everything procedural/order-
  * dependent (turn execution order, depreciation ledger iteration, the
  * bankruptcy/merger waterfall, FIFO tie-breaking) is deliberately NOT here —
@@ -10,7 +10,7 @@
  * `absOutrage` in riskGauge is `Math.abs(vars.outrage)`, computed in code
  * before evaluation since the expression grammar has no ABS function.
  *
- * Single source of truth for these 23 rows — `prisma/seed.ts` seeds the DB from
+ * Single source of truth for these 24 rows — `prisma/seed.ts` seeds the DB from
  * this list, and `calcEngine.test.ts`/`gameEngine.test.ts` build their test
  * fixtures from the same list, so there's no drift between what ships and what
  * the tests exercise.
@@ -33,9 +33,14 @@ export const DEFAULT_FORMULA_SEEDS: DefaultFormulaSeed[] = [
     description: "How competitive this player is in the market — lower price and higher quality/supply/demand factors increase it, higher process loss decreases it. Combined with every other player's competitiveness to determine market share.",
   },
   {
+    key: 'marketDemandElasticityFactor',
+    expression: 'MAX(0.3, MIN(2.0, 1 - demandPriceElasticity * (avgPrice - referencePrice) / referencePrice))',
+    description: 'Real-world demand elasticity: how much the WHOLE market pie (not any one player\'s share of it) expands or contracts based on the average price across all active players this turn. 1.0 = no change (avgPrice equals referencePrice); above 1.0 when the market is cheaper than reference (more total volume gets sold); below 1.0 when it\'s more expensive. Clamped to [0.3, 2.0] so a few extreme-price decisions can\'t collapse the market to nothing or triple it outright. Only applied when gameSettings.marketFixed is false — see GameLoop.computeEffectiveTotalMarketVolume.',
+  },
+  {
     key: 'theoreticalVolume',
     expression: 'marketShare * totalMarketVolume',
-    description: "The tonnage this player's market share entitles them to, before checking supply capacity.",
+    description: "The tonnage this player's market share entitles them to, before checking supply capacity. `totalMarketVolume` here is the room's EFFECTIVE per-turn pie (marketVolumePerPlayerTonnesPerYear * activePlayerCount, further scaled by marketDemandElasticityFactor unless marketFixed) — see GameLoop.computeEffectiveTotalMarketVolume, not a raw config constant.",
   },
   {
     key: 'maxSupply',

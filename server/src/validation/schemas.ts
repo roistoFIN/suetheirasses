@@ -430,7 +430,7 @@ const gameSettingsSchema = z.object({
   maxStrategicDecisionsPerTurn: z.number(),
   maxOperationalDecisionsPerTurn: z.number(),
   maxFinancialDecisionsPerTurn: z.number(),
-  totalMarketVolumeTonnesPerYear: z.number(),
+  marketVolumePerPlayerTonnesPerYear: z.number(),
   marketFixed: z.boolean(),
   digDeeperCost: z.number(),
   negotiationPeriodTurns: z.number(),
@@ -446,6 +446,7 @@ const gameSettingsSchema = z.object({
   lateGameTakeoverBoost: z.number(),
   mergerIntegrationCostRate: z.number(),
   wealthScaledFeeRate: z.number(),
+  decisionCostWealthScaleRate: z.number(),
 });
 
 const playerStartingValuesSchema = z.object({
@@ -488,6 +489,8 @@ const adminVariablesSchema = z.object({
     competitivenessWeight_loss_wl: z.number(),
     competitivenessWeight_demand_wd: z.number(),
     outrageDemandWeight: z.number(),
+    demandPriceElasticity: z.number(),
+    referencePrice: z.number(),
   }),
   legalProcess: z.object({
     scrutinyLegalRiskMultiplier: z.number(),
@@ -552,6 +555,7 @@ export function validateGameConfig(data: unknown): ValidatedGameConfig {
 export const FORMULA_VARIABLES: Record<string, string[]> = {
   effectiveDemand: ['demand', 'outrageDemandWeight', 'outrage'],
   competitiveness: ['price', 'wq', 'processingLevel', 'ws', 'supplySecurity', 'wl', 'processLoss', 'wd', 'effectiveDemand'],
+  marketDemandElasticityFactor: ['avgPrice', 'referencePrice', 'demandPriceElasticity'],
   theoreticalVolume: ['marketShare', 'totalMarketVolume'],
   maxSupply: ['installedCapacity', 'capacityUtilization'],
   volume: ['theoreticalVolume', 'maxSupply'],

@@ -333,8 +333,8 @@ describe('Validation Schemas', () => {
         maxStrategicDecisionsPerTurn: 1,
         maxOperationalDecisionsPerTurn: 2,
         maxFinancialDecisionsPerTurn: 2,
-        totalMarketVolumeTonnesPerYear: 10000,
-        marketFixed: true,
+        marketVolumePerPlayerTonnesPerYear: 400,
+        marketFixed: false,
         digDeeperCost: 10000,
         negotiationPeriodTurns: 2,
         lawsuitFilingCost: 15000,
@@ -349,6 +349,7 @@ describe('Validation Schemas', () => {
         lateGameTakeoverBoost: 1.5,
         mergerIntegrationCostRate: 0.25,
         wealthScaledFeeRate: 0.03,
+        decisionCostWealthScaleRate: 0.01,
       },
       playerStartingValues: {
         cash: 100000, assets: 50000, intangibleAssets: 10000, debt: 20000, reserves: 30000,
@@ -363,6 +364,7 @@ describe('Validation Schemas', () => {
         competitiveness: {
           competitivenessWeight_quality_wq: 0.3, competitivenessWeight_supply_ws: 0.2,
           competitivenessWeight_loss_wl: 0.15, competitivenessWeight_demand_wd: 0.1, outrageDemandWeight: 0.5,
+          demandPriceElasticity: 1.0, referencePrice: 675,
         },
         legalProcess: {
           scrutinyLegalRiskMultiplier: 0.02,

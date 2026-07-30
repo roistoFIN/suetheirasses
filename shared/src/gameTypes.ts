@@ -58,7 +58,27 @@ export interface GameSettings {
   /** Buy Shares / Sell Shares — a decision-type category of its own (`level: 'Financial'`),
    * capped independently of the strategic/operational per-turn budgets. */
   maxFinancialDecisionsPerTurn: number;
-  totalMarketVolumeTonnesPerYear: number;
+  /** The tonnage ONE player at parity (equal competitiveness) is entitled to at
+   * `theoreticalVolume = marketShare * effectiveTotalMarketVolume` — the actual per-turn
+   * pie is this figure multiplied by the room's active player count
+   * (`GameLoop`'s `computeEffectiveTotalMarketVolume`), so a 2-player and a 4-player game
+   * both start with the SAME per-player headroom over `maxSupply` at round-1 parity,
+   * rather than a flat total that's twice as generous in a 2-player game as a 4-player
+   * one. Deliberately named "per player," not "total" — see CLAUDE.md's market-share
+   * section for the real-world overcapacity/scarcity reasoning this was recalibrated for
+   * (this used to be a flat 10,000-ton constant, so far above any realistic per-player
+   * capacity that market share never actually bound volume in practice). */
+  marketVolumePerPlayerTonnesPerYear: number;
+  /** When `true`, the per-turn market pie is the flat `marketVolumePerPlayerTonnesPerYear
+   * * activePlayerCount` figure, unaffected by price — the original, simpler behavior.
+   * When `false`, `GameLoop.computeEffectiveTotalMarketVolume` additionally scales the pie
+   * by `marketDemandElasticityFactor` (a new `Formula`, admin-editable), which shrinks or
+   * grows the pie based on how the average price across all active players compares to
+   * `admin.competitiveness.referencePrice` — real-world demand elasticity: raise prices
+   * industry-wide and total volume sold should fall, not just each player's share of a
+   * fixed total. This field previously existed but was validated-and-stored only, never
+   * actually read anywhere in the engine — repurposed as this mechanic's on/off switch
+   * rather than adding a new field, matching its original apparent intent. */
   marketFixed: boolean;
   /** Cash cost of one "Dig Deeper" investigation click — deducted instantly, outside turn resolution. */
   digDeeperCost: number;
@@ -158,6 +178,16 @@ export interface GameSettings {
    * round-1 player pays. Another deliberate cash sink: the surcharge portion is never
    * credited to anyone, it just leaves the game. */
   wealthScaledFeeRate: number;
+  /** Fraction of the DEPLOYING player's OWN current cash added on top of a decision's own
+   * NEGATIVE absolute `cash` cost (`calcEngine.ts`'s `applyDecisionImpacts` — see its own
+   * doc comment) — the same `wealthScaledFeeRate` idea (real litigation fees already scale
+   * this way), extended to decision deployment costs themselves, which previously stayed a
+   * flat dollar amount regardless of company size (119 of 212 decisions use an `absolute`
+   * cash cost; only 1 uses `relative`, which already scales itself). Deliberately
+   * costs-only — a positive cash value (a windfall) is never scaled down. A separate rate
+   * from `wealthScaledFeeRate` so litigation-fee scaling and decision-cost scaling can be
+   * tuned independently. */
+  decisionCostWealthScaleRate: number;
 }
 
 export interface PlayerStartingValues {
@@ -208,6 +238,17 @@ export interface CompetitivenessConfig {
   competitivenessWeight_loss_wl: number;
   competitivenessWeight_demand_wd: number;
   outrageDemandWeight: number;
+  /** How strongly the total market pie responds to the average price across all active
+   * players — see `GameSettings.marketFixed` and the `marketDemandElasticityFactor`
+   * Formula. 0 = no response (pie size is constant regardless of price); larger values
+   * shrink the pie more sharply as average price rises above `referencePrice` (and grow
+   * it as price falls below). Only applied when `marketFixed` is `false`. */
+  demandPriceElasticity: number;
+  /** The average per-player price `marketDemandElasticityFactor` treats as "neutral" — no
+   * expansion or contraction of the pie. Deliberately a separate tunable rather than
+   * reading `playerStartingValues.price` directly, so an admin can retune elasticity
+   * without also having to touch what a fresh company starts at. */
+  referencePrice: number;
 }
 
 export interface LegalProcessConfig {
