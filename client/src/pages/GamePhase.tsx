@@ -1042,7 +1042,18 @@ export default function GamePhase() {
         onClose={() => setDecisionDeckModalOpen(false)}
         size="lg"
         centered
-        title={<Text style={{ ...boldStyle, fontSize: '0.9rem' }}>📋 MAKE IMPORTANT DECISIONS</Text>}
+        title={
+          <Stack gap={2}>
+            <Text style={{ ...boldStyle, fontSize: '0.9rem' }}>📋 MAKE IMPORTANT DECISIONS</Text>
+            {/* Live estimate, not a server round trip — recomputes on every checkbox
+                toggle since `pending` is already threaded down here. See
+                estimatePendingCashEffect's own doc comment for what it does and doesn't
+                account for. */}
+            <Text style={{ fontSize: '0.7rem', opacity: 0.7 }}>
+              Cash: {fmt(vars.cash)} · Predicted next turn: {fmt(vars.cash + estimatePendingCashEffect(pending, decisions, vars.cash, gameSettings?.decisionCostWealthScaleRate ?? 0))}
+            </Text>
+          </Stack>
+        }
         styles={{
           content: { display: 'flex', flexDirection: 'column', maxHeight: '85vh' },
           body: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 },
@@ -1931,6 +1942,52 @@ function getDecisionSortValue(def: DecisionDefinition, field: string): number {
   const impact = def.impacts[field];
   if (!impact) return 0;
   return impact.schedule[1] ?? impact.schedule['default'] ?? 0;
+}
+
+/** Client-side estimate of the currently-queued (not yet submitted) decisions' combined
+ * effect on cash — feeds the Decision Deck modal's "Predicted next turn" figure without a
+ * server round trip. Mirrors calcEngine's `applyDecisionImpacts` cash handling closely
+ * enough for a live estimate: year-1 schedule value (`getDecisionSortValue`'s same
+ * convention), a `relative`-type value scaled against current cash (the one such decision
+ * in the library, Excess Dividend — see CLAUDE.md), and the company-size cost surcharge
+ * (`decisionCostWealthScaleRate`) on a negative absolute value. Buy/Sell Shares
+ * (`shareTransactionType`, empty `impacts`) are read off the entry's own chosen `amount`
+ * instead — buy spends it, sell nets it, matching `applyShareTransaction`'s sign
+ * convention (ignores its cap against actual cash/holding value — a rare edge case for an
+ * estimate). Deliberately approximate: no COGS/tax/legal-exposure or any other field's
+ * knock-on P&L effect, unlike the real `predictFutureKpis` prediction shown in the CASH
+ * KPI drill-down graph. */
+function estimatePendingCashEffect(
+  pending: SubmittedDecisions,
+  decisions: DecisionDefinition[],
+  currentCash: number,
+  costWealthScaleRate: number,
+): number {
+  const byName = new Map(decisions.map((d) => [d.decision, d]));
+  let total = 0;
+  for (const bucket of [pending.strategic, pending.operational, pending.financial]) {
+    for (const entry of bucket) {
+      const def = byName.get(entry.name);
+      if (!def) continue;
+      if (def.shareTransactionType === 'buy') {
+        total -= entry.amount ?? 0;
+      } else if (def.shareTransactionType === 'sell') {
+        total += entry.amount ?? 0;
+      } else {
+        const impact = def.impacts.cash;
+        if (!impact) continue;
+        const value = impact.schedule[1] ?? impact.schedule['default'] ?? 0;
+        if (impact.type === 'relative') {
+          total += currentCash * value;
+        } else {
+          total += value < 0 && costWealthScaleRate > 0
+            ? value - costWealthScaleRate * Math.max(0, currentCash)
+            : value;
+        }
+      }
+    }
+  }
+  return total;
 }
 
 /** Max explicit numeric schedule key across all impacts — mirrors calcEngine's

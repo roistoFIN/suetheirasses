@@ -173,6 +173,59 @@ function getDecisionSortValue(def: MinimalDecisionDefForSort, field: string): nu
   return impact.schedule[1] ?? impact.schedule['default'] ?? 0;
 }
 
+// ── Decision Deck modal's "Predicted next turn" cash estimate — client-side, no server
+// round trip; see GamePhase.tsx's estimatePendingCashEffect doc comment for scope/caveats ──
+
+interface MinimalDecisionDefForCashEstimate {
+  decision: string;
+  impacts: Record<string, { type: 'absolute' | 'relative'; schedule: Record<number | string, number> }>;
+  shareTransactionType?: 'buy' | 'sell';
+}
+
+interface MinimalSubmittedDecisionEntry {
+  name: string;
+  amount?: number;
+}
+
+interface MinimalPendingForCashEstimate {
+  strategic: MinimalSubmittedDecisionEntry[];
+  operational: MinimalSubmittedDecisionEntry[];
+  financial: MinimalSubmittedDecisionEntry[];
+}
+
+function estimatePendingCashEffect(
+  pending: MinimalPendingForCashEstimate,
+  decisions: MinimalDecisionDefForCashEstimate[],
+  currentCash: number,
+  costWealthScaleRate: number,
+): number {
+  const byName = new Map(decisions.map((d) => [d.decision, d]));
+  let total = 0;
+  for (const bucket of [pending.strategic, pending.operational, pending.financial]) {
+    for (const entry of bucket) {
+      const def = byName.get(entry.name);
+      if (!def) continue;
+      if (def.shareTransactionType === 'buy') {
+        total -= entry.amount ?? 0;
+      } else if (def.shareTransactionType === 'sell') {
+        total += entry.amount ?? 0;
+      } else {
+        const impact = def.impacts.cash;
+        if (!impact) continue;
+        const value = impact.schedule[1] ?? impact.schedule['default'] ?? 0;
+        if (impact.type === 'relative') {
+          total += currentCash * value;
+        } else {
+          total += value < 0 && costWealthScaleRate > 0
+            ? value - costWealthScaleRate * Math.max(0, currentCash)
+            : value;
+        }
+      }
+    }
+  }
+  return total;
+}
+
 // ── Decision effects summary (DecisionDetails/DecisionCard "EFFECTS" panel) — per-field
 // "when it starts / how long it lasts" timeline, split into "effects on you" vs "effects
 // on target" for a decision deployed against a chosen opponent ──
@@ -1084,6 +1137,61 @@ describe('GamePhase utilities', () => {
     it('should return 0 when neither an explicit year-1 nor a default value exists', () => {
       const def: MinimalDecisionDefForSort = { impacts: { cash: { schedule: { 2: -100 } } } };
       expect(getDecisionSortValue(def, 'cash')).toBe(0);
+    });
+  });
+
+  describe('estimatePendingCashEffect', () => {
+    it('sums the year-1 absolute cash impact of every queued decision across all three buckets', () => {
+      const decisions: MinimalDecisionDefForCashEstimate[] = [
+        { decision: 'New Factory', impacts: { cash: { type: 'absolute', schedule: { 1: -100000, default: 0 } } } },
+        { decision: 'Aggressive Sale', impacts: { cash: { type: 'absolute', schedule: { 1: -15000, default: 0 } } } },
+      ];
+      const pending = {
+        strategic: [{ name: 'New Factory' }],
+        operational: [{ name: 'Aggressive Sale' }],
+        financial: [],
+      };
+      expect(estimatePendingCashEffect(pending, decisions, 500000, 0)).toBe(-115000);
+    });
+
+    it('scales a relative-type cash impact against current cash, matching Excess Dividend\'s real formula', () => {
+      const decisions: MinimalDecisionDefForCashEstimate[] = [
+        { decision: 'Excess Dividend', impacts: { cash: { type: 'relative', schedule: { 1: -0.12, default: 0 } } } },
+      ];
+      const pending = { strategic: [], operational: [{ name: 'Excess Dividend' }], financial: [] };
+      expect(estimatePendingCashEffect(pending, decisions, 200000, 0)).toBe(-24000);
+    });
+
+    it('applies the company-size cost surcharge to a negative absolute value, never to a windfall', () => {
+      const costDecision: MinimalDecisionDefForCashEstimate[] = [
+        { decision: 'New Factory', impacts: { cash: { type: 'absolute', schedule: { 1: -100000, default: 0 } } } },
+      ];
+      const windfallDecision: MinimalDecisionDefForCashEstimate[] = [
+        { decision: 'Aggressive Fundraising', impacts: { cash: { type: 'absolute', schedule: { 1: 50000, default: 0 } } } },
+      ];
+      const costPending = { strategic: [{ name: 'New Factory' }], operational: [], financial: [] };
+      const windfallPending = { strategic: [], operational: [{ name: 'Aggressive Fundraising' }], financial: [] };
+      expect(estimatePendingCashEffect(costPending, costDecision, 300000, 0.01)).toBe(-100000 - 0.01 * 300000);
+      expect(estimatePendingCashEffect(windfallPending, windfallDecision, 300000, 0.01)).toBe(50000);
+    });
+
+    it('reads a Buy Shares entry\'s chosen amount as a cash cost, and Sell Shares\' as a cash gain', () => {
+      const decisions: MinimalDecisionDefForCashEstimate[] = [
+        { decision: 'Buy Shares', shareTransactionType: 'buy', impacts: {} },
+        { decision: 'Sell Shares', shareTransactionType: 'sell', impacts: {} },
+      ];
+      const buyPending = { strategic: [], operational: [], financial: [{ name: 'Buy Shares', amount: 40000 }] };
+      const sellPending = { strategic: [], operational: [], financial: [{ name: 'Sell Shares', amount: 25000 }] };
+      expect(estimatePendingCashEffect(buyPending, decisions, 100000, 0)).toBe(-40000);
+      expect(estimatePendingCashEffect(sellPending, decisions, 100000, 0)).toBe(25000);
+    });
+
+    it('ignores a decision with no impacts.cash field at all and one not found in the library', () => {
+      const decisions: MinimalDecisionDefForCashEstimate[] = [
+        { decision: 'Union Agitation', impacts: { 'target.capacityUtilization': { type: 'relative', schedule: { default: -0.3 } } } },
+      ];
+      const pending = { strategic: [{ name: 'Union Agitation' }, { name: 'Deleted Decision' }], operational: [], financial: [] };
+      expect(estimatePendingCashEffect(pending, decisions, 100000, 0)).toBe(0);
     });
   });
 
