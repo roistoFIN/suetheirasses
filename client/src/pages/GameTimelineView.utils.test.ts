@@ -112,9 +112,12 @@ function formatImpactValueForEffects(field: string, type: 'absolute' | 'relative
 
 // Same distinction as GamePhase.tsx's own `summarizeEffects` (see its doc comment): an
 // own field's 'default' schedule value applies once, at maturity, and is never re-applied
-// (GameLoop.advanceAndApply) — "Permanent" — while a `target.*` field's 'default' value
-// genuinely re-applies to the victim every turn until the statute of limitations —
-// "Every turn until Yr N".
+// (GameLoop.advanceAndApply) — "Permanent" — while an ABSOLUTE `target.*` field's 'default'
+// value genuinely re-applies to the victim every turn until the statute of limitations —
+// "Every turn until Yr N". A RELATIVE `target.*` field is now "Permanent" too —
+// applyTargetImpacts stops re-applying it past its own maturity (compounding a percentage
+// against an already-shrunk value every turn forever was exponential decay, a real,
+// reported bug).
 function summarizeEffects(def: MinimalDecisionDefForEffects, statuteOfLimitationsYears?: number): EffectLine[] {
   const lines: EffectLine[] = [];
   for (const [field, impact] of Object.entries(def.impacts)) {
@@ -128,7 +131,7 @@ function summarizeEffects(def: MinimalDecisionDefForEffects, statuteOfLimitation
     }
     const ongoing = impact.schedule['default'];
     if (ongoing !== undefined && ongoing !== 0) {
-      const label = isTarget
+      const label = isTarget && impact.type === 'absolute'
         ? `Every turn${statuteOfLimitationsYears !== undefined ? ` until Yr ${statuteOfLimitationsYears}` : ''}`
         : 'Permanent';
       parts.push(`${label}: ${formatImpactValueForEffects(field, impact.type, ongoing)}`);
@@ -155,6 +158,25 @@ function rankPlayersAtRound(
       return { playerId: p.playerId, playerName: p.playerName, bankrupt: p.bankrupt, eliminatedRound: p.eliminatedRound, value };
     })
     .sort((a, b) => b.value - a.value);
+}
+
+function computeFinalPlacement(data: GameTimelineResponse, playerId: string): { place: number; total: number } {
+  const ordered = [...data.players].sort((a, b) => {
+    if (a.playerId === data.winnerId) return -1;
+    if (b.playerId === data.winnerId) return 1;
+    return (b.eliminatedRound ?? 0) - (a.eliminatedRound ?? 0);
+  });
+  const place = ordered.findIndex((p) => p.playerId === playerId) + 1;
+  return { place: place || ordered.length, total: ordered.length };
+}
+
+function buildResultShareText(data: GameTimelineResponse, playerId: string): string {
+  if (playerId === data.winnerId) {
+    const rivals = data.players.length - 1;
+    return `🏆 I just won Sue Them Chickens — outlasted ${rivals} rival${rivals === 1 ? '' : 's'} in this free multiplayer chicken-tycoon business sim. Think you can beat me?`;
+  }
+  const { place, total } = computeFinalPlacement(data, playerId);
+  return `🐔⚖️ I placed #${place}/${total} in Sue Them Chickens — a free multiplayer business sim where you sue your rivals into bankruptcy. Think you can do better?`;
 }
 
 function likelihoodLabel(p: number): string {
@@ -417,9 +439,19 @@ describe('summarizeEffects', () => {
     expect(summarizeEffects(def)).toEqual([{ field: 'Installed Capacity', timeline: 'Permanent: +15%', isTarget: false }]);
   });
 
-  it('labels a target field\'s default-only value "Every turn until Yr N" when the statute of limitations is known', () => {
+  it('labels an ABSOLUTE target field\'s default-only value "Every turn until Yr N" when the statute of limitations is known', () => {
     const def: MinimalDecisionDefForEffects = { impacts: { 'target.outrage': { type: 'absolute', schedule: { default: -8 } } } };
     expect(summarizeEffects(def, 10)).toEqual([{ field: "Target's outrage", timeline: 'Every turn until Yr 10: -8', isTarget: true }]);
+  });
+
+  // Regression: a RELATIVE target field used to also say "Every turn until Yr N," matching
+  // the OLD engine behavior where it compounded the same percentage against the victim's
+  // already-shrunk value every turn forever (a real, reported bug — see CLAUDE.md). Now
+  // that applyTargetImpacts stops re-applying a relative field past its own maturity,
+  // "Permanent" is accurate, same as an own field's relative multiplier.
+  it('labels a RELATIVE target field\'s default-only value "Permanent" — it no longer compounds past its own maturity', () => {
+    const def: MinimalDecisionDefForEffects = { impacts: { 'target.capacityUtilization': { type: 'relative', schedule: { default: -0.2 } } } };
+    expect(summarizeEffects(def, 10)).toEqual([{ field: "Target's capacity Utilization", timeline: 'Permanent: -20%', isTarget: true }]);
   });
 
   it('marks isTarget so a caller can split effects on the deploying player from effects on their chosen opponent', () => {
@@ -458,5 +490,70 @@ describe('lawsuitOddsAndStakes', () => {
       const lawsuit = makeLawsuit({ baseProbability, plaintiffFullyInvestigated: true });
       expect(lawsuitOddsAndStakes(lawsuit)).toContain(label);
     }
+  });
+});
+
+describe('computeFinalPlacement', () => {
+  it('places the winner first regardless of eliminatedRound ordering', () => {
+    const data = makeData({
+      winnerId: 'p1',
+      players: [
+        { playerId: 'p1', playerName: 'Alice', bankrupt: false },
+        { playerId: 'p2', playerName: 'Bob', bankrupt: true, eliminatedRound: 5 },
+        { playerId: 'p3', playerName: 'Cara', bankrupt: true, eliminatedRound: 2 },
+      ],
+    });
+
+    expect(computeFinalPlacement(data, 'p1')).toEqual({ place: 1, total: 3 });
+  });
+
+  it('ranks non-winners by how late they were eliminated — survived longer places higher', () => {
+    const data = makeData({
+      winnerId: 'p1',
+      players: [
+        { playerId: 'p1', playerName: 'Alice', bankrupt: false },
+        { playerId: 'p2', playerName: 'Bob', bankrupt: true, eliminatedRound: 5 },
+        { playerId: 'p3', playerName: 'Cara', bankrupt: true, eliminatedRound: 2 },
+      ],
+    });
+
+    // Bob (eliminated round 5) outlasted Cara (eliminated round 2), so Bob places 2nd.
+    expect(computeFinalPlacement(data, 'p2')).toEqual({ place: 2, total: 3 });
+    expect(computeFinalPlacement(data, 'p3')).toEqual({ place: 3, total: 3 });
+  });
+});
+
+describe('buildResultShareText', () => {
+  it('gives the winner a distinct "I just won" hook naming the rival count, not a bare placement number', () => {
+    const data = makeData({
+      winnerId: 'p1',
+      players: [
+        { playerId: 'p1', playerName: 'Alice', bankrupt: false },
+        { playerId: 'p2', playerName: 'Bob', bankrupt: true, eliminatedRound: 5 },
+        { playerId: 'p3', playerName: 'Cara', bankrupt: true, eliminatedRound: 2 },
+      ],
+    });
+
+    const text = buildResultShareText(data, 'p1');
+
+    expect(text).toContain('I just won');
+    expect(text).toContain('outlasted 2 rivals');
+  });
+
+  it('gives a non-winner their placement instead', () => {
+    const data = makeData({
+      winnerId: 'p1',
+      players: [
+        { playerId: 'p1', playerName: 'Alice', bankrupt: false },
+        { playerId: 'p2', playerName: 'Bob', bankrupt: true, eliminatedRound: 5 },
+      ],
+    });
+
+    expect(buildResultShareText(data, 'p2')).toContain('I placed #2/2');
+  });
+
+  it('always includes a call to action for a new player to try the game', () => {
+    const data = makeData({ winnerId: 'p1' });
+    expect(buildResultShareText(data, 'p1')).toMatch(/beat me|do better/);
   });
 });

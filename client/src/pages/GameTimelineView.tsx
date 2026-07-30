@@ -9,6 +9,7 @@ import { useSocketStore } from '../stores/socketStore';
 import ChatWidget from '../components/ChatWidget';
 import FeedbackWidget from '../components/FeedbackWidget';
 import AdSlot from '../components/AdSlot';
+import ShareButton from '../components/ShareButton';
 import {
   ServerEvents, ClientEvents,
   type GameTimelineResponse, type TimelineDecisionEvent, type TimelineLawsuitEvent,
@@ -56,9 +57,13 @@ interface EffectLine {
 
 /** See GamePhase.tsx's own `summarizeEffects` doc comment for why the trailing 'default'
  * schedule value is labeled "Permanent" for an own field (applied once, at maturity, never
- * re-applied — CLAUDE.md's "Root historical bug" section) vs "Every turn until Yr N" for a
- * `target.*` field (genuinely re-applied to the victim every turn until the statute of
- * limitations, or a successful lawsuit voids the instance first). */
+ * re-applied — CLAUDE.md's "Root historical bug" section) vs "Every turn until Yr N" for an
+ * ABSOLUTE `target.*` field (genuinely re-applied to the victim every turn until the
+ * statute of limitations, or a successful lawsuit voids the instance first). A RELATIVE
+ * `target.*` field also reads "Permanent" now — `applyTargetImpacts` was fixed to stop
+ * re-applying a relative field once past its own maturity (compounding a percentage
+ * against an already-shrunk value every turn forever was exponential decay, a real,
+ * reported bug — see CLAUDE.md's target-effect-compounding section). */
 function summarizeEffects(def: DecisionDefinition, statuteOfLimitationsYears?: number): EffectLine[] {
   const lines: EffectLine[] = [];
   for (const [field, impact] of Object.entries(def.impacts)) {
@@ -72,7 +77,7 @@ function summarizeEffects(def: DecisionDefinition, statuteOfLimitationsYears?: n
     }
     const ongoing = impact.schedule['default'];
     if (ongoing !== undefined && ongoing !== 0) {
-      const label = isTarget
+      const label = isTarget && impact.type === 'absolute'
         ? `Every turn${statuteOfLimitationsYears !== undefined ? ` until Yr ${statuteOfLimitationsYears}` : ''}`
         : 'Permanent';
       parts.push(`${label}: ${formatImpactValue(field, impact.type, ongoing)}`);
@@ -338,6 +343,34 @@ export function rankPlayersAtRound(
     .sort((a, b) => b.value - a.value);
 }
 
+/** Final placement (1 = winner) for the share card — the winner sorts first (their
+ * `bankrupt` is false at game end, everyone else's is true by definition of the game
+ * having ended), everyone else ordered by how late they were eliminated (survived longer
+ * = better placement). Not meant as authoritative standings (ties among simultaneously-
+ * eliminated players break arbitrarily by array order) — good enough for a one-line
+ * brag/share message, not a leaderboard. Pure, exported for unit testing. */
+export function computeFinalPlacement(data: GameTimelineResponse, playerId: string): { place: number; total: number } {
+  const ordered = [...data.players].sort((a, b) => {
+    if (a.playerId === data.winnerId) return -1;
+    if (b.playerId === data.winnerId) return 1;
+    return (b.eliminatedRound ?? 0) - (a.eliminatedRound ?? 0);
+  });
+  const place = ordered.findIndex((p) => p.playerId === playerId) + 1;
+  return { place: place || ordered.length, total: ordered.length };
+}
+
+/** Share text for the Game Over screen's brag/invite card — a win gets its own stronger
+ * hook ("I just won") rather than diluting it into "I placed #1/N", the same message a
+ * runner-up would get. Pure, exported for unit testing. */
+export function buildResultShareText(data: GameTimelineResponse, playerId: string): string {
+  if (playerId === data.winnerId) {
+    const rivals = data.players.length - 1;
+    return `🏆 I just won Sue Them Chickens — outlasted ${rivals} rival${rivals === 1 ? '' : 's'} in this free multiplayer chicken-tycoon business sim. Think you can beat me?`;
+  }
+  const { place, total } = computeFinalPlacement(data, playerId);
+  return `🐔⚖️ I placed #${place}/${total} in Sue Them Chickens — a free multiplayer business sim where you sue your rivals into bankruptcy. Think you can do better?`;
+}
+
 interface GameTimelineViewProps {
   mode: 'live' | 'finished';
 }
@@ -489,6 +522,23 @@ export default function GameTimelineView({ mode }: GameTimelineViewProps) {
                 🎉 {winner.playerName} Wins!
               </Badge>
             </Flex>
+            {/* Result-specific brag/invite card — a win and a loss get different copy
+                (see buildResultShareText's own doc comment for why), but both end in the
+                same pitch to a new player. Placed right after the headline result rather
+                than buried below the KPI chart/happenings log, so it's visible without
+                scrolling. */}
+            {player && (
+              <Flex justify="center" mb="lg">
+                <ShareButton
+                  size="md"
+                  title="Sue Them Chickens"
+                  text={buildResultShareText(data, player.id)}
+                  url={window.location.origin}
+                  label="📣 Share Your Result"
+                  style={{ fontFamily: "'Rye', Georgia, serif", letterSpacing: '0.02em', background: 'var(--ink-text)', color: 'var(--ink-parchment)', border: '2px solid var(--ink-gold)' }}
+                />
+              </Flex>
+            )}
           </>
         )}
 

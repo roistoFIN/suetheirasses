@@ -30,6 +30,7 @@ import { useChatStore } from '../stores/chatStore';
 import { useConsentStore } from '../stores/consentStore';
 import FeedbackForm from '../components/FeedbackForm';
 import AdSlot from '../components/AdSlot';
+import ShareButton from '../components/ShareButton';
 import { ClientEvents, ServerEvents, type RoomInfo } from '@suethemchickens/shared';
 
 /** localStorage key for remembering the player's name across visits — see `Matchmaking`'s name-entry section. */
@@ -325,24 +326,43 @@ const Matchmaking: React.FC = () => {
             </Group>
           </Stack>
           <Divider my="md" color="#cbb888" />
+          {/* Visible to every player in the lobby, not just the host — anyone waiting for
+              the room to fill has a reason to invite a friend, and gating this to the
+              host alone would cut the invite loop down to one player per room instead of
+              up to four. Web Share API opens the OS-native share sheet on mobile
+              (WhatsApp/SMS/Discord/etc. in one tap); desktop falls back to a plain
+              clipboard copy — see ShareButton.tsx. */}
+          <Stack gap="xs" mb="md">
+            <Text fw={700} style={{ color: 'var(--ink-text)' }}>Invite Friends:</Text>
+            <ShareButton
+              fullWidth
+              size="md"
+              label="🔗 Invite Friends to Join"
+              title="Sue Them Chickens"
+              text="Come run a chicken empire with me in Sue Them Chickens — a free multiplayer business sim where you sue your rivals into bankruptcy 🐔⚖️"
+              url={window.location.origin + `?room=${room.id}`}
+              style={mmStyles.primaryBtn}
+            />
+            <Group justify="space-between" gap="xs">
+              <Text size="xs" style={{ color: 'var(--ink-text-soft)' }}>Or copy the raw link:</Text>
+              <CopyButton value={window.location.origin + `?room=${room.id}`}>
+                {({ copied, copy }) => (
+                  <ActionIcon
+                    color={copied ? 'teal' : 'blue'}
+                    variant="filled"
+                    size="md"
+                    onClick={copy}
+                    title={copied ? 'Link copied!' : 'Copy invite link'}
+                  >
+                    {copied ? <IconCheck size={16} /> : <IconCopy size={16} />}
+                  </ActionIcon>
+                )}
+              </CopyButton>
+            </Group>
+          </Stack>
+          <Divider my="md" color="#cbb888" />
           {isHost && (
             <Stack gap="sm">
-              <Group justify="space-between">
-                <Text fw={700} style={{ color: 'var(--ink-text)' }}>Room Invite Link:</Text>
-                <CopyButton value={window.location.origin + `?room=${room.id}`}>
-                  {({ copied, copy }) => (
-                    <ActionIcon
-                      color={copied ? 'teal' : 'blue'}
-                      variant="filled"
-                      size="md"
-                      onClick={copy}
-                      title={copied ? 'Link copied!' : 'Copy invite link'}
-                    >
-                      {copied ? <IconCheck size={16} /> : <IconCopy size={16} />}
-                    </ActionIcon>
-                  )}
-                </CopyButton>
-              </Group>
               <Group justify="space-between">
                 <Text fw={700} style={{ color: 'var(--ink-text)' }}>Room Visibility:</Text>
                 <Button

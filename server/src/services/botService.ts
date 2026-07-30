@@ -193,6 +193,93 @@ const FIELD_DIRECTION: Record<string, 1 | -1> = {
  * 0.2 `price` swing as if they were the same kind of number). */
 const DOLLAR_FIELDS = new Set(['operatingExpenses', 'staffCost', 'otherIncome', 'financeCost']);
 
+/** `materialCostPerTon`/`logisticsCostPerTon` — the two fields `calcEngine.ts`'s real
+ * `cogs = (materialCostPerTon + logisticsCostPerTon) * volume` formula reads. Handled
+ * separately from `DOLLAR_FIELDS`: in the real seeded library both are always `relative`
+ * type (a fractional multiplier, e.g. `+0.1` = +10%), so converting to a real dollar cost
+ * needs the bot's OWN current $/ton value AND its current `volume` — neither of which is
+ * on the `DecisionDefinition` itself, unlike a `DOLLAR_FIELDS` impact's raw schedule value
+ * (already a dollar amount). See `BotCogsContext`/`cogsEffectAtYear`. */
+const COGS_PER_TON_FIELDS = ['materialCostPerTon', 'logisticsCostPerTon'] as const;
+
+/** Live state needed to convert a `materialCostPerTon`/`logisticsCostPerTon` schedule
+ * delta into a real per-turn dollar cost — the bot's own current $/ton rates and sold
+ * volume (`calcEngine.ts`'s `volume = MIN(theoreticalVolume, maxSupply)`), all read
+ * straight off `PlayerVariables`.
+ *
+ * **Root cause this exists to fix**: a real, reported bug — the bot would reliably go
+ * bankrupt against a fully idle human (no adversarial pressure at all) because NONE of its
+ * self-preservation checks (`isStructurallyUnprofitable`, `worstCaseCashEffect`,
+ * `realCashEffectAtYear`) accounted for COGS, even though `cogs = (materialCostPerTon +
+ * logisticsCostPerTon) * volume` is very often the SINGLE LARGEST cost in this game's real
+ * P&L — in a live-play investigation, a traced game's real (COGS-inclusive) profit was
+ * negative from round 3 onward (-$40k to -$120k/turn) while `isStructurallyUnprofitable`
+ * reported "not unprofitable" the entire time, because its formula (`revenue -
+ * operatingExpenses - staffCost + otherIncome - financeCost`) simply never referenced
+ * `materialCostPerTon`/`logisticsCostPerTon`/`volume` at all. Across 100 simulated games,
+ * 59-76% showed a negative real per-turn P&L at any given checkpoint round, and the bot
+ * bankrupted itself in ~39% of 40-round games — matching a user report that an idle human
+ * "almost always" wins. Root-caused to the bot accumulating dozens of active decisions
+ * (one traced game had 51 by round 32) that boost price/capacity/demand for a good
+ * `scoreDecision` score while ALSO permanently raising `materialCostPerTon`/
+ * `logisticsCostPerTon` as their real trade-off — a cost none of the bot's own heuristics
+ * could see, that also compounds with `volume` growth from those same capacity/demand
+ * boosts. Fixed by threading this context through every cash-aware bot function
+ * (`realCashEffectAtYear`/`worstCaseCashEffect`/`scoreDecision`/`pickBotDecisions`/
+ * `isStructurallyUnprofitable`), same shape as `interestRate` already being threaded
+ * through for the analogous `debt`-to-`financeCost` conversion.
+ */
+export interface BotCogsContext {
+  volume: number;
+  materialCostPerTon: number;
+  logisticsCostPerTon: number;
+}
+
+/** Safe default for a caller that doesn't have live COGS state on hand (e.g. an existing
+ * unit test not focused on this) — zero volume means every COGS-aware function below
+ * computes a zero COGS effect, same as if this parameter didn't exist at all. */
+const ZERO_COGS_CONTEXT: BotCogsContext = { volume: 0, materialCostPerTon: 0, logisticsCostPerTon: 0 };
+
+/** The real per-turn dollar COGS effect of ONE decision's `materialCostPerTon`/
+ * `logisticsCostPerTon` impacts at a specific `elapsedYears` — the RELATIVE-schedule
+ * equivalent of `DOLLAR_FIELDS`' direct `FIELD_DIRECTION[field] * raw` treatment. A
+ * relative delta changes the field by `currentValue * raw`, and that $/ton change
+ * multiplies against `volume` to become a real recurring dollar cost (both factors read
+ * from `cogs`, the caller's live `BotCogsContext` — see its own doc comment). */
+function cogsEffectAtYear(def: DecisionDefinition, elapsedYears: number, cogs: BotCogsContext): number {
+  let total = 0;
+  for (const field of COGS_PER_TON_FIELDS) {
+    const impact = def.impacts[field];
+    if (!impact) continue;
+    const raw = getScheduleValue(impact.schedule, elapsedYears);
+    if (raw === 0) continue;
+    const currentValue = field === 'materialCostPerTon' ? cogs.materialCostPerTon : cogs.logisticsCostPerTon;
+    const dollarPerTonDelta = impact.type === 'relative' ? currentValue * raw : raw;
+    total -= dollarPerTonDelta * cogs.volume; // a positive $/ton delta is a cost, hence subtracted
+  }
+  return total;
+}
+
+/** The pessimistic (worst-year-across-the-whole-schedule) counterpart to
+ * `cogsEffectAtYear` — same "worst realistic value, not whatever's true at year 1" spirit
+ * as `worstScheduleValue`/`worstCaseCashEffect`. Uses the bot's CURRENT $/ton rate and
+ * volume as the conversion snapshot for every candidate year (a deliberate approximation,
+ * same tradeoff every other worst-case blend in this file already makes — see
+ * `worstCaseCashEffect`'s own doc comment). */
+function worstCaseCogsEffect(def: DecisionDefinition, cogs: BotCogsContext): number {
+  let total = 0;
+  for (const field of COGS_PER_TON_FIELDS) {
+    const impact = def.impacts[field];
+    if (!impact) continue;
+    const worstRaw = worstScheduleValue(impact.schedule, -1); // both are cost fields, direction -1
+    if (worstRaw === 0) continue;
+    const currentValue = field === 'materialCostPerTon' ? cogs.materialCostPerTon : cogs.logisticsCostPerTon;
+    const dollarPerTonDelta = impact.type === 'relative' ? currentValue * worstRaw : worstRaw;
+    total -= dollarPerTonDelta * cogs.volume;
+  }
+  return total;
+}
+
 /** The bot never picks a share-transaction decision (Buy Shares/Sell Shares) through the
  * generic `pickBotDecisions` path — both have `variableAmount: true` and empty `impacts`,
  * so "affordable"/"cost-effective" isn't a simple schedule lookup the way every other
@@ -206,10 +293,12 @@ function isEligibleForBot(def: DecisionDefinition): boolean {
  * whatever `advanceAndApply` will actually evaluate) — the real dollar cash effect a
  * decision's own fields produce at a specific `elapsedYears`, not just its `cash` field:
  * every `DOLLAR_FIELDS` field it also carries (`operatingExpenses`/`staffCost`/
- * `otherIncome`/`financeCost`), plus `debt`'s financeCost-equivalent (see
- * `debtAsFinanceCost`) — all of which flow straight through the same turn's P&L into an
- * equally real cash movement, even though they're different `PlayerVariables` fields. */
-function realCashEffectAtYear(def: DecisionDefinition, elapsedYears: number, interestRate: number): number {
+ * `otherIncome`/`financeCost`), `debt`'s financeCost-equivalent (see `debtAsFinanceCost`),
+ * and `materialCostPerTon`/`logisticsCostPerTon`'s real COGS effect (see
+ * `cogsEffectAtYear`/`BotCogsContext`) — all of which flow straight through the same
+ * turn's P&L into an equally real cash movement, even though they're different
+ * `PlayerVariables` fields. */
+function realCashEffectAtYear(def: DecisionDefinition, elapsedYears: number, interestRate: number, cogs: BotCogsContext): number {
   const cashImpact = def.impacts.cash;
   let total = cashImpact ? getScheduleValue(cashImpact.schedule, elapsedYears) : 0;
   for (const field of DOLLAR_FIELDS) {
@@ -227,6 +316,7 @@ function realCashEffectAtYear(def: DecisionDefinition, elapsedYears: number, int
     const rawDebt = getScheduleValue(debtImpact.schedule, elapsedYears);
     if (rawDebt !== 0) total -= debtAsFinanceCost(rawDebt, interestRate);
   }
+  total += cogsEffectAtYear(def, elapsedYears, cogs);
   return total;
 }
 
@@ -246,8 +336,8 @@ function realCashEffectAtYear(def: DecisionDefinition, elapsedYears: number, int
  * deep negative. See also `projectedNextTurnOwnCashEffect` for the other half of this bug
  * — a decision's cost can also be backloaded to a LATER year, invisible to this function.
  */
-export function estimatedFirstYearCashEffect(def: DecisionDefinition, interestRate: number = DEFAULT_INTEREST_RATE): number {
-  return realCashEffectAtYear(def, 0, interestRate);
+export function estimatedFirstYearCashEffect(def: DecisionDefinition, interestRate: number = DEFAULT_INTEREST_RATE, cogs: BotCogsContext = ZERO_COGS_CONTEXT): number {
+  return realCashEffectAtYear(def, 0, interestRate, cogs);
 }
 
 /**
@@ -276,6 +366,7 @@ export function projectedNextTurnOwnCashEffect(
   activeDecisions: Array<{ decisionName: string; elapsedYears: number; maturityYears: number; voidedByLawsuit: boolean }>,
   deck: DecisionDefinition[],
   interestRate: number = DEFAULT_INTEREST_RATE,
+  cogs: BotCogsContext = ZERO_COGS_CONTEXT,
 ): number {
   let total = 0;
   for (const instance of activeDecisions) {
@@ -284,27 +375,40 @@ export function projectedNextTurnOwnCashEffect(
     if (nextElapsedYears > instance.maturityYears) continue;
     const def = deck.find((d) => d.decision === instance.decisionName);
     if (!def) continue;
-    total += realCashEffectAtYear(def, nextElapsedYears, interestRate);
+    total += realCashEffectAtYear(def, nextElapsedYears, interestRate, cogs);
   }
   return total;
 }
 
 /**
- * Whether the bot's own current cost structure — `operatingExpenses`/`staffCost`/
- * `financeCost`, net of `otherIncome` — already exceeds its own revenue, i.e. it's losing
- * money on ordinary operations every turn regardless of anything new it picks. A real,
- * reported failure mode distinct from anything `isCashTrendDeclining`/
- * `projectedNextTurnOwnCashEffect` catch: a company can coast on a large cash cushion for
- * MANY turns while its underlying P&L is already deeply negative every single turn (many
- * stacked decisions each permanently raising `operatingExpenses`/`staffCost`/`financeCost`
- * — see CLAUDE.md's "Root historical bug"/margin-stacking notes for why these persist
- * forever once raised, even though the schedule that raised them stops re-applying) —
- * right up until the cushion runs out, at which point cash craters in what looks like one
- * sudden turn but was actually structural for a long time before that. Deliberately
- * approximate (ignores COGS/depreciation/tax — a bot heuristic, not the real P&L, see
- * `calcEngine.ts`'s `calculatePL`), but the omitted terms only ever make a genuinely
- * healthy company look slightly worse on paper, never make a genuinely sick one look
- * healthy — good enough for "should the bot stop digging," not a balance calculation.
+ * Whether the bot's own current cost structure — COGS (`materialCostPerTon +
+ * logisticsCostPerTon`, times `volume`), `operatingExpenses`/`staffCost`/`financeCost`,
+ * net of `otherIncome` — already exceeds its own revenue, i.e. it's losing money on
+ * ordinary operations every turn regardless of anything new it picks. A real, reported
+ * failure mode distinct from anything `isCashTrendDeclining`/`projectedNextTurnOwnCashEffect`
+ * catch: a company can coast on a large cash cushion for MANY turns while its underlying
+ * P&L is already deeply negative every single turn (many stacked decisions each
+ * permanently raising `operatingExpenses`/`staffCost`/`financeCost`/`materialCostPerTon`/
+ * `logisticsCostPerTon` — see CLAUDE.md's "Root historical bug"/margin-stacking notes for
+ * why these persist forever once raised, even though the schedule that raised them stops
+ * re-applying) — right up until the cushion runs out, at which point cash craters in what
+ * looks like one sudden turn but was actually structural for a long time before that.
+ *
+ * **COGS used to be entirely omitted here — a real, reported bug**, not a deliberate
+ * approximation: this function's own previous doc comment claimed the omitted terms
+ * (COGS/depreciation/tax) "only ever make a genuinely healthy company look slightly worse
+ * on paper, never make a genuinely sick one look healthy." That's true for depreciation/
+ * tax, but false for COGS — `calcEngine.ts`'s real formula, `cogs = (materialCostPerTon +
+ * logisticsCostPerTon) * volume`, is very often the SINGLE LARGEST cost in this game's
+ * real P&L, and it SCALES WITH `volume` — exactly the field the bot's own capacity/demand-
+ * boosting picks keep growing. A live-play investigation found a traced game's real
+ * (COGS-inclusive) profit was negative from round 3 onward (-$40k to -$120k/turn) while
+ * this function reported `false` (not unprofitable) the entire time; across 100 simulated
+ * games, 59-76% showed negative real per-turn P&L at any checkpoint round once COGS was
+ * counted, and the bot bankrupted itself in ~39% of 40-round games — matching a user
+ * report that an idle human opponent "almost always" wins. Depreciation/tax are still
+ * deliberately omitted (a bot heuristic, not the real P&L) — those two genuinely only ever
+ * make a healthy company look slightly worse, never a sick one look healthy.
  */
 export function isStructurallyUnprofitable(
   operatingExpenses: number,
@@ -312,8 +416,12 @@ export function isStructurallyUnprofitable(
   otherIncome: number,
   financeCost: number,
   revenue: number,
+  materialCostPerTon = 0,
+  logisticsCostPerTon = 0,
+  volume = 0,
 ): boolean {
-  const approxEbit = revenue - operatingExpenses - staffCost + otherIncome;
+  const cogs = (materialCostPerTon + logisticsCostPerTon) * volume;
+  const approxEbit = revenue - cogs - operatingExpenses - staffCost + otherIncome;
   return approxEbit - financeCost < 0;
 }
 
@@ -332,22 +440,26 @@ function worstScheduleValue(schedule: Record<number | string, number>, direction
 /**
  * The pessimistic counterpart to `realCashEffectAtYear` — instead of one specific
  * `elapsedYears`, looks at every year (and `'default'`) a decision's cash-affecting fields
- * (`cash`/`DOLLAR_FIELDS`/`debt`) could ever produce and takes the single worst value per
- * field (`worstScheduleValue`), rather than whatever happens to be true at year 1. A real,
- * reported bug: `scoreDecision`/`estimatedFirstYearCashEffect` only ever read a decision's
- * YEAR-1 value, so a decision with a genuinely BACKLOADED cost (e.g. "Manure Futures
- * Speculation"'s `financeCost`: `{"1":0,"2":12000,"3":12000}`) scored and budgeted as
- * completely free at the exact moment the bot had to decide whether to pick it at all —
- * before `projectedNextTurnOwnCashEffect` (which only reasons about decisions ALREADY
- * active) could ever see it coming. Worse: since the bug made these decisions look
- * artificially FREE rather than merely underestimated, `scoreDecision` was actively
- * biased TOWARD picking exactly the decisions most likely to cause this — its own scoring
- * mechanism was the thing recommending the trap. Used for scoring and affordability
- * BEFORE a pick is made (`scoreDecision`/`pickBotDecisions`) — deliberately not used for
+ * (`cash`/`DOLLAR_FIELDS`/`debt`/`materialCostPerTon`/`logisticsCostPerTon`) could ever
+ * produce and takes the single worst value per field (`worstScheduleValue`), rather than
+ * whatever happens to be true at year 1. A real, reported bug: `scoreDecision`/
+ * `estimatedFirstYearCashEffect` only ever read a decision's YEAR-1 value, so a decision
+ * with a genuinely BACKLOADED cost (e.g. "Manure Futures Speculation"'s `financeCost`:
+ * `{"1":0,"2":12000,"3":12000}`) scored and budgeted as completely free at the exact
+ * moment the bot had to decide whether to pick it at all — before
+ * `projectedNextTurnOwnCashEffect` (which only reasons about decisions ALREADY active)
+ * could ever see it coming. Worse: since the bug made these decisions look artificially
+ * FREE rather than merely underestimated, `scoreDecision` was actively biased TOWARD
+ * picking exactly the decisions most likely to cause this — its own scoring mechanism was
+ * the thing recommending the trap. `materialCostPerTon`/`logisticsCostPerTon` (via
+ * `worstCaseCogsEffect`/`BotCogsContext`) were added later for the same reason, after a
+ * separate bug where COGS was invisible to every cash-aware function in this file — see
+ * `BotCogsContext`'s own doc comment. Used for scoring and affordability BEFORE a pick is
+ * made (`scoreDecision`/`pickBotDecisions`) — deliberately not used for
  * `projectedNextTurnOwnCashEffect`, which needs the real year for an instance already
  * committed to, not a worst-case blend across its whole remaining lifetime.
  */
-function worstCaseCashEffect(def: DecisionDefinition, interestRate: number): number {
+function worstCaseCashEffect(def: DecisionDefinition, interestRate: number, cogs: BotCogsContext): number {
   const cashImpact = def.impacts.cash;
   let total = cashImpact ? worstScheduleValue(cashImpact.schedule, 1) : 0;
   for (const field of DOLLAR_FIELDS) {
@@ -360,6 +472,7 @@ function worstCaseCashEffect(def: DecisionDefinition, interestRate: number): num
     const worstDebt = worstScheduleValue(debtImpact.schedule, -1);
     total -= debtAsFinanceCost(worstDebt, interestRate);
   }
+  total += worstCaseCogsEffect(def, cogs);
   return total;
 }
 
@@ -392,18 +505,29 @@ function shuffle<T>(items: T[]): T[] {
  * (magnitude comparisons across differently-scaled fields are approximate, not
  * game-balance-grade) — the goal is "meaningfully better than uniform random," not optimal
  * play, and this never touches `game_engine.json`/the real engine math itself.
+ *
+ * `cogs` (a `BotCogsContext`) must be passed by the caller — without it, this silently
+ * scores every `materialCostPerTon`/`logisticsCostPerTon` impact as zero cost (see
+ * `ZERO_COGS_CONTEXT`'s doc comment on why that default exists, but should only ever be
+ * used by a caller that genuinely doesn't have live state on hand, e.g. an isolated test).
  */
-export function scoreDecision(def: DecisionDefinition, riskGauge: number, interestRate: number = DEFAULT_INTEREST_RATE): number {
-  // cash/DOLLAR_FIELDS/debt are all scored together via worstCaseCashEffect — pessimistic
-  // across the WHOLE schedule (not just year 1), so a backloaded cost can't score as free
-  // just because it hasn't landed yet (see worstCaseCashEffect's own doc comment for the
-  // real, reported bug this fixes: the bot's own scoring used to actively prefer exactly
-  // the decisions most likely to bankrupt it, since their downside was invisible at
-  // pick time).
-  let score = worstCaseCashEffect(def, interestRate) / CASH_SCORE_DIVISOR;
+export function scoreDecision(def: DecisionDefinition, riskGauge: number, interestRate: number = DEFAULT_INTEREST_RATE, cogs: BotCogsContext = ZERO_COGS_CONTEXT): number {
+  // cash/DOLLAR_FIELDS/debt/COGS are all scored together via worstCaseCashEffect —
+  // pessimistic across the WHOLE schedule (not just year 1), so a backloaded cost can't
+  // score as free just because it hasn't landed yet (see worstCaseCashEffect's own doc
+  // comment for the real, reported bug this fixes: the bot's own scoring used to actively
+  // prefer exactly the decisions most likely to bankrupt it, since their downside was
+  // invisible at pick time).
+  let score = worstCaseCashEffect(def, interestRate, cogs) / CASH_SCORE_DIVISOR;
 
   for (const [field, impact] of Object.entries(def.impacts)) {
-    if (field === 'cash' || field === 'debt' || field === 'sharesAmount' || DOLLAR_FIELDS.has(field) || field.startsWith('target.') || field.startsWith('competitor')) continue;
+    // materialCostPerTon/logisticsCostPerTon are excluded here for the same reason
+    // DOLLAR_FIELDS already is — they're now scored via the dollar-scaled
+    // worstCaseCashEffect path above (worstCaseCogsEffect), not compared raw against an
+    // unrelated 0-1-scale field like price/capacityUtilization. Scoring them BOTH ways
+    // would double-count the same cost.
+    if (field === 'cash' || field === 'debt' || field === 'sharesAmount' || DOLLAR_FIELDS.has(field) ||
+      (COGS_PER_TON_FIELDS as readonly string[]).includes(field) || field.startsWith('target.') || field.startsWith('competitor')) continue;
     const direction = FIELD_DIRECTION[field];
     if (direction === undefined) continue;
     const raw = getScheduleValue(impact.schedule, 0);
@@ -449,6 +573,7 @@ export function pickBotDecisions(
   structurallyUnprofitable = false,
   activeDecisions: Array<{ decisionName: string; elapsedYears: number; isMatured: boolean; voidedByLawsuit: boolean }> = [],
   permanentEffectCooldownYears = Infinity,
+  cogs: BotCogsContext = ZERO_COGS_CONTEXT,
 ): SubmittedDecisionEntry[] {
   const cautious = riskGauge >= BOT_RISK_CAUTION_THRESHOLD;
   const eligible = deck.filter((def) =>
@@ -458,7 +583,7 @@ export function pickBotDecisions(
     // isStructurallyUnprofitable's doc comment) — stop digging: only decisions that don't
     // make the worst case any worse are even considered, same hard-veto shape as the
     // Dirty exclusion above, just keyed off real P&L health instead of legal risk.
-    (!structurallyUnprofitable || worstCaseCashEffect(def, interestRate) >= 0) &&
+    (!structurallyUnprofitable || worstCaseCashEffect(def, interestRate, cogs) >= 0) &&
     // A real, reported bug: the bot doesn't validate against DecisionEngine.canDeploy at
     // all (see this file's own header) — an ineligible pick is silently dropped by
     // GameLoop.processNewDecisions, same as a real player's rejected submission, which is
@@ -490,7 +615,7 @@ export function pickBotDecisions(
   if (eligible.length === 0) return [];
 
   const scored = eligible
-    .map((def) => ({ def, score: scoreDecision(def, riskGauge, interestRate) }))
+    .map((def) => ({ def, score: scoreDecision(def, riskGauge, interestRate, cogs) }))
     .sort((a, b) => b.score - a.score);
   const half = Math.max(1, Math.ceil(scored.length / 2));
   const orderedPool = [...shuffle(scored.slice(0, half)), ...shuffle(scored.slice(half))];
@@ -504,9 +629,9 @@ export function pickBotDecisions(
     // Budgets pessimistically (worstCaseCashEffect, not just this year's value) — a
     // decision whose worst realistic year would breach the reserve isn't picked, even if
     // its year-1 number looks comfortably affordable.
-    const cost = worstCaseCashEffect(def, interestRate);
+    const cost = worstCaseCashEffect(def, interestRate, cogs);
     if (remainingCash + cost < reserve) continue;
-    picks.push({ name: def.decision, targetId: def.requiresTarget ? humanPlayerId : undefined });
+    picks.push({ name: def.decision, targetId: needsTarget(def) ? humanPlayerId : undefined });
     remainingCash += cost;
   }
 

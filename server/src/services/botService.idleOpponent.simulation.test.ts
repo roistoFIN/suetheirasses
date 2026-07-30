@@ -50,6 +50,7 @@ import {
   projectedNextTurnOwnCashEffect,
   isStructurallyUnprofitable,
   BOT_CASH_TREND_WINDOW,
+  type BotCogsContext,
 } from './botService.js';
 import type {
   DecisionDefinition,
@@ -107,11 +108,19 @@ function simulateIdleOpponentGame(roomId: string, maxRounds: number): { bankrupt
     let cash = state[botId].cash;
     const { digDeeperCost, lawsuitFilingCost } = config.gameSettings;
     const interestRate = config.adminVariables.finance.interestRate;
+    // Live COGS state — mirrors GameEngine.runBotTurn's own botCogs construction exactly
+    // (see BotCogsContext's doc comment for the bug this fixes: none of the bot's
+    // self-preservation checks used to account for COGS at all).
+    const botCogs: BotCogsContext = {
+      volume: state[botId].variables.volume ?? 0,
+      materialCostPerTon: state[botId].variables.materialCostPerTon ?? 0,
+      logisticsCostPerTon: state[botId].variables.logisticsCostPerTon ?? 0,
+    };
 
     // Mirrors GameEngine.runBotTurn's own effective-reserve computation exactly.
     cashHistory.push(cash);
     if (cashHistory.length > BOT_CASH_TREND_WINDOW) cashHistory.shift();
-    const projectedNextTurn = projectedNextTurnOwnCashEffect(state[botId].activeDecisions, decisions, interestRate);
+    const projectedNextTurn = projectedNextTurnOwnCashEffect(state[botId].activeDecisions, decisions, interestRate, botCogs);
     let effectiveReserve = computeEffectiveReserve(cashHistory, projectedNextTurn);
     const structurallyUnprofitable = isStructurallyUnprofitable(
       state[botId].variables.operatingExpenses ?? 0,
@@ -119,6 +128,9 @@ function simulateIdleOpponentGame(roomId: string, maxRounds: number): { bankrupt
       state[botId].variables.otherIncome ?? 0,
       state[botId].derived.financeCost ?? 0,
       state[botId].derived.revenue ?? 0,
+      botCogs.materialCostPerTon,
+      botCogs.logisticsCostPerTon,
+      botCogs.volume,
     );
     if (structurallyUnprofitable) effectiveReserve = Math.max(effectiveReserve, cash);
 
@@ -160,13 +172,14 @@ function simulateIdleOpponentGame(roomId: string, maxRounds: number): { bankrupt
       structurallyUnprofitable,
       state[botId].activeDecisions,
       config.gameSettings.permanentEffectCooldownYears,
+      botCogs,
     );
     const decisionsSub: SubmittedDecisions = { strategic: [], operational: [], financial: [], lawsuits };
     for (const entry of picks) {
       const def = decisions.find((d) => d.decision === entry.name);
       const bucket: 'strategic' | 'operational' | 'financial' = def?.level === 'Strategic' ? 'strategic' : def?.level === 'Financial' ? 'financial' : 'operational';
       decisionsSub[bucket].push(entry);
-      if (def) cash += estimatedFirstYearCashEffect(def, interestRate);
+      if (def) cash += estimatedFirstYearCashEffect(def, interestRate, botCogs);
     }
 
     let maxUsefulSpend = Infinity;
@@ -230,10 +243,15 @@ describe('botService — bot vs. a fully idle human opponent', () => {
       const { bankruptRound } = simulateIdleOpponentGame(`idle-realistic-${i}`, 20);
       if (bankruptRound !== undefined) bankruptWithin20++;
     }
-    // Before the fixes this guards, the observed rate was routinely 80%+ even over a full
-    // 60-round game (most of it landing well before round 20). A generous 50% ceiling
-    // still catches a real regression while tolerating this bot's inherent randomness and
-    // deliberately non-optimal play.
-    expect(bankruptWithin20 / trials).toBeLessThan(0.5);
+    // Before the original self-preservation fixes this guards, the observed rate was
+    // routinely 80%+ even over a full 60-round game. A second, later bug (COGS —
+    // materialCostPerTon+logisticsCostPerTon*volume — never accounted for in ANY of the
+    // bot's cash-aware checks, see BotCogsContext's own doc comment) kept the rate at
+    // ~39% over a 40-round horizon, matching a user report that an idle human "almost
+    // always" wins. With COGS now wired through, a 100-game/40-round measurement dropped
+    // to ~3%, and 0/40 within this test's own 20-round window — a 20% ceiling still gives
+    // real slack for this bot's inherent randomness while catching either bug class
+    // regressing (down from the old 50%, which no longer meaningfully guards anything).
+    expect(bankruptWithin20 / trials).toBeLessThan(0.2);
   });
 });

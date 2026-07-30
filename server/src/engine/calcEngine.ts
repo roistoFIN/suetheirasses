@@ -655,9 +655,48 @@ export function extractTargetImpacts(
   return targets;
 }
 
+/** Max explicit numeric schedule key for a SINGLE field's own schedule — the per-field
+ * equivalent of `calculateMaturityYears` (which maxes across a whole impacts map at once).
+ * Used by `applyTargetImpacts` to gate a single RELATIVE target field's own maturity,
+ * since two fields on the same decision (e.g. Bot Attack's `target.outrage` alongside
+ * `target.capacityUtilization`) can carry differently-shaped schedules. */
+function singleFieldMaturityYears(schedule: Record<number | string, number>): number {
+  let maxYear = 0;
+  for (const key of Object.keys(schedule)) {
+    if (key === 'default') continue;
+    const numKey = parseInt(key, 10);
+    if (!isNaN(numKey) && numKey > maxYear) maxYear = numKey;
+  }
+  return maxYear;
+}
+
 /**
  * Apply extracted target impacts to a player's variables at a given elapsed year.
  * This is the same logic as applyDecisionImpacts but only for the target fields.
+ *
+ * A RELATIVE field stops being re-applied once `elapsedYears` passes ITS OWN schedule's
+ * maturity point (`singleFieldMaturityYears`) — mirroring `advanceAndApply`'s own-effect
+ * semantics (apply through explicit years, plus once more when 'default' is first
+ * reached, then hold forever after). An ABSOLUTE field has no such gate and keeps adding
+ * every call, unchanged — see this function's own regression tests for why the two need
+ * different treatment: `collectTargetImpacts`/this function are called every turn for as
+ * long as an attacking instance is active (deliberate — see CLAUDE.md's "target effects
+ * keep re-applying every turn" note), which is fine for an ABSOLUTE field (bounded,
+ * linear accumulation, e.g. `target.outrage` climbing +25/turn) but was a real, reported
+ * bug for a RELATIVE one: `currentVal * (1 + multiplier)` against the field's own
+ * already-shrunk value, called every turn indefinitely, is exponential decay (or
+ * unbounded growth for a cost field like `target.logisticsCostPerTon`) — a single
+ * Union Agitation deployment (`target.capacityUtilization`, relative, -15%/turn) crushed
+ * an idle victim's capacity from 1.0 to 0.26 in six turns and bankrupted them by round 12
+ * in a real test game, found via live play once the bot-targeting bug (see CLAUDE.md's
+ * own section on it) started actually landing these attacks. This is the exact same
+ * compounding-relative-multiplier failure mode `advanceAndApply`'s own doc comment
+ * already fixed for a decision's OWN fields (the New Factory 350→2635 bug) — that fix
+ * explicitly carved target effects out as intentionally different, but that carve-out
+ * was written with ABSOLUTE fields' recurring-harm shape in mind, not modeled through for
+ * the RELATIVE case, where "keep re-applying" and "keep compounding toward zero/infinity"
+ * are the same thing. The fix mirrors own-effect maturity exactly, just gated per-field
+ * (not per-decision) since one decision can mix an absolute and a relative target field.
  */
 export function applyTargetImpacts(
   vars: PlayerVariables,
@@ -668,9 +707,13 @@ export function applyTargetImpacts(
   // See applyDecisionImpacts' own vDyn comment above — same dynamic-key situation.
   const vDyn = v as unknown as Record<string, number | undefined>;
 
+  const relativeFieldMatured = (impact: { type: 'absolute' | 'relative'; schedule: Record<number | string, number> }) =>
+    impact.type === 'relative' && elapsedYears > singleFieldMaturityYears(impact.schedule);
+
   // Phase 1 — accumulate per-field relative multipliers additively
   const fieldMultipliers = new Map<string, number>();
   for (const [field, impact] of targetImpacts) {
+    if (relativeFieldMatured(impact)) continue;
     const value = getScheduleValue(impact.schedule, elapsedYears);
     if (value === 0) continue;
     if (impact.type === 'relative') {
@@ -680,6 +723,7 @@ export function applyTargetImpacts(
 
   // Phase 2 — apply accumulated relative multipliers and absolute additions
   for (const [field, impact] of targetImpacts) {
+    if (relativeFieldMatured(impact)) continue;
     const value = getScheduleValue(impact.schedule, elapsedYears);
     if (value === 0) continue;
     if (impact.type === 'absolute') {

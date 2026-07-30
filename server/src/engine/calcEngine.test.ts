@@ -867,7 +867,10 @@ describe('calcEngine', () => {
         ['processingLevel', { type: 'relative' as const, schedule: { default: -2 } }],
       ]);
 
-      const result = applyTargetImpacts(targetVars, targetImpacts, 3);
+      // A schedule with only 'default' has maturity 0, so this only ever applies at
+      // elapsedYears 0 — see the compounding-prevention tests below for why elapsedYears
+      // 3 no longer applies anything at all post-fix.
+      const result = applyTargetImpacts(targetVars, targetImpacts, 0);
 
       expect(result.processingLevel).toBe(0);
     });
@@ -893,6 +896,86 @@ describe('calcEngine', () => {
       const result = applyTargetImpacts(targetVars, targetImpacts, 0);
 
       expect(result.financeCost).toBe(9000);
+    });
+
+    // Regression for a real, reported bug found via live play: `collectTargetImpacts`
+    // calls this function every turn for as long as an attacking instance is active
+    // (deliberate — target effects are meant to keep re-applying, see CLAUDE.md). For an
+    // ABSOLUTE field that's fine (bounded, linear). For a RELATIVE field, reapplying the
+    // same percentage against the field's own already-shrunk value every turn is
+    // exponential decay — a single Union Agitation-shaped attack
+    // (`target.capacityUtilization`, relative, `{1: -0.3, default: -0.15}`) crushed an
+    // idle victim from 1.0 to 0.26 in six turns and bankrupted them by round 12 in a real
+    // test game. Fixed by making a RELATIVE field stop re-applying once elapsedYears
+    // passes its own schedule's maturity (mirrors `advanceAndApply`'s own-effect
+    // semantics: apply through explicit years + once when 'default' is first reached,
+    // then hold forever).
+    describe('relative field compounding prevention (regression)', () => {
+      it('applies a relative field with only a default value exactly once, at elapsedYears 0, then holds', () => {
+        const targetImpacts = new Map([
+          ['capacityUtilization', { type: 'relative' as const, schedule: { default: -0.2 } }],
+        ]);
+
+        let vars = makeVars({ capacityUtilization: 1.0 });
+        vars = applyTargetImpacts(vars, targetImpacts, 0); // deployment turn
+        expect(vars.capacityUtilization).toBeCloseTo(0.8, 6);
+
+        vars = applyTargetImpacts(vars, targetImpacts, 1); // next turn — must NOT compound further
+        expect(vars.capacityUtilization).toBeCloseTo(0.8, 6);
+
+        vars = applyTargetImpacts(vars, targetImpacts, 5); // many turns later — still held
+        expect(vars.capacityUtilization).toBeCloseTo(0.8, 6);
+      });
+
+      it('applies a two-stage relative schedule (Union Agitation shape) through its own explicit year, then holds — never compounds beyond that', () => {
+        const targetImpacts = new Map([
+          ['capacityUtilization', { type: 'relative' as const, schedule: { 1: -0.3, default: -0.15 } }],
+        ]);
+
+        let vars = makeVars({ capacityUtilization: 1.0 });
+        vars = applyTargetImpacts(vars, targetImpacts, 0); // year 1 value: -30%
+        expect(vars.capacityUtilization).toBeCloseTo(0.7, 6);
+
+        vars = applyTargetImpacts(vars, targetImpacts, 1); // maturity turn — 'default' (-15%) applies once
+        expect(vars.capacityUtilization).toBeCloseTo(0.595, 6);
+
+        const afterMaturity = vars.capacityUtilization;
+        vars = applyTargetImpacts(vars, targetImpacts, 2); // must hold — this used to keep multiplying by 0.85 forever
+        expect(vars.capacityUtilization).toBeCloseTo(afterMaturity, 6);
+
+        vars = applyTargetImpacts(vars, targetImpacts, 8);
+        expect(vars.capacityUtilization).toBeCloseTo(afterMaturity, 6);
+      });
+
+      it('keeps re-applying an ABSOLUTE target field every turn, unaffected by the relative-only fix', () => {
+        const targetImpacts = new Map([
+          ['outrage', { type: 'absolute' as const, schedule: { default: 25 } }],
+        ]);
+
+        let vars = makeVars({ outrage: 0 });
+        for (let elapsedYears = 0; elapsedYears < 5; elapsedYears++) {
+          vars = applyTargetImpacts(vars, targetImpacts, elapsedYears);
+        }
+        // Five applications of +25, same as before this fix — absolute fields are untouched.
+        expect(vars.outrage).toBe(125);
+      });
+
+      it('gates a relative field and keeps applying an absolute field on the SAME decision independently (Bot Attack shape)', () => {
+        const targetImpacts = new Map([
+          ['outrage', { type: 'absolute' as const, schedule: { default: 20 } }],
+          ['capacityUtilization', { type: 'relative' as const, schedule: { default: -0.2 } }],
+        ]);
+
+        let vars = makeVars({ outrage: 0, capacityUtilization: 1.0 });
+        for (let elapsedYears = 0; elapsedYears < 4; elapsedYears++) {
+          vars = applyTargetImpacts(vars, targetImpacts, elapsedYears);
+        }
+
+        // outrage keeps accumulating every turn (absolute, unaffected)...
+        expect(vars.outrage).toBe(80);
+        // ...while capacityUtilization only ever took the one deployment-turn hit.
+        expect(vars.capacityUtilization).toBeCloseTo(0.8, 6);
+      });
     });
   });
 

@@ -218,7 +218,10 @@ function summarizeEffects(def: MinimalDecisionDefForEffects, statuteOfLimitation
     }
     const ongoing = impact.schedule['default'];
     if (ongoing !== undefined && ongoing !== 0) {
-      const label = isTarget
+      // Only an ABSOLUTE target field genuinely keeps re-applying every turn now — a
+      // RELATIVE one stops compounding past its own maturity (see the "should NOT keep
+      // compounding" tests below) and reads "Permanent" too, same as an own field.
+      const label = isTarget && impact.type === 'absolute'
         ? `Every turn${statuteOfLimitationsYears !== undefined ? ` until Yr ${statuteOfLimitationsYears}` : ''}`
         : 'Permanent';
       parts.push(`${label}: ${formatImpactValue(field, impact.type, ongoing)}`);
@@ -1110,10 +1113,23 @@ describe('GamePhase utilities', () => {
       expect(lines[0].timeline).toBe('Yr 1: -$20,000 → Yr 2: -$20,000 → Permanent: -$5,000');
     });
 
-    it('labels a target field\'s default-only value "Every turn", not "Permanent" — collectTargetImpacts genuinely re-applies it to the victim every turn', () => {
+    it('labels an ABSOLUTE target field\'s default-only value "Every turn", not "Permanent" — collectTargetImpacts genuinely re-applies it to the victim every turn', () => {
       const def: MinimalDecisionDefForEffects = { impacts: { 'target.outrage': { type: 'absolute', schedule: { default: -8 } } } };
       const lines = summarizeEffects(def);
       expect(lines).toEqual([{ field: "Target's outrage", timeline: 'Every turn: -8', isTarget: true }]);
+    });
+
+    // Regression: a RELATIVE target field used to also say "Every turn until Yr N," which
+    // matched the OLD engine behavior (compounding the same percentage against the
+    // victim's already-shrunk value every turn, forever) — a real, reported bug (one
+    // Union Agitation-shaped attack crushed an idle victim's capacity from 1.0 to 0.26 in
+    // six turns and bankrupted them by round 12). Now that applyTargetImpacts stops
+    // re-applying a relative field past its own maturity, "Permanent" is the accurate
+    // label — same as an own field's relative multiplier.
+    it('labels a RELATIVE target field\'s default-only value "Permanent" — it no longer compounds past its own maturity', () => {
+      const def: MinimalDecisionDefForEffects = { impacts: { 'target.capacityUtilization': { type: 'relative', schedule: { default: -0.2 } } } };
+      const lines = summarizeEffects(def);
+      expect(lines).toEqual([{ field: "Target's capacity Utilization", timeline: 'Permanent: -20%', isTarget: true }]);
     });
 
     it('appends "until Yr N" to a target field\'s recurring label when statuteOfLimitationsYears is supplied', () => {

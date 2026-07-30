@@ -314,6 +314,16 @@ export class GameEngine {
     let cash = botResult.variables.cash ?? 0;
     const { digDeeperCost, lawsuitFilingCost } = this.gameConfig.gameSettings;
     const { interestRate } = this.gameConfig.adminVariables.finance;
+    // Live COGS state (calcEngine.ts: cogs = (materialCostPerTon + logisticsCostPerTon) *
+    // volume) — threaded through every cash-aware botService.ts function below. See
+    // BotCogsContext's own doc comment for the real, reported bug this fixes: none of the
+    // bot's self-preservation checks used to account for COGS at all, even though it's
+    // very often the single largest cost in this game's real P&L.
+    const botCogs: import('../services/botService.js').BotCogsContext = {
+      volume: botResult.variables.volume ?? 0,
+      materialCostPerTon: botResult.variables.materialCostPerTon ?? 0,
+      logisticsCostPerTon: botResult.variables.logisticsCostPerTon ?? 0,
+    };
 
     // Record this turn's real cash reading and derive this turn's effective reserve from
     // it — see botService.ts's isCashTrendDeclining/computeEffectiveReserve doc comments:
@@ -332,7 +342,7 @@ export class GameEngine {
     // anything picked this turn — folded into the reserve so a known upcoming bill (a
     // backloaded financeCost schedule, say) isn't invisible to this turn's spending
     // decisions. See botService.ts's projectedNextTurnOwnCashEffect doc comment.
-    const projectedNextTurn = projectedNextTurnOwnCashEffect(botResult.activeDecisions, deck, interestRate);
+    const projectedNextTurn = projectedNextTurnOwnCashEffect(botResult.activeDecisions, deck, interestRate, botCogs);
     let effectiveReserve = computeEffectiveReserve(cashHistory, projectedNextTurn);
     // Already losing money every turn on its own cost structure, regardless of any single
     // turn's new picks (see isStructurallyUnprofitable's doc comment) — a company can
@@ -347,6 +357,9 @@ export class GameEngine {
       botResult.variables.otherIncome ?? 0,
       botResult.derived.financeCost,
       botResult.derived.revenue,
+      botCogs.materialCostPerTon,
+      botCogs.logisticsCostPerTon,
+      botCogs.volume,
     );
     if (structurallyUnprofitable) effectiveReserve = Math.max(effectiveReserve, cash);
 
@@ -430,6 +443,7 @@ export class GameEngine {
           structurallyUnprofitable,
           botResult.activeDecisions,
           this.gameConfig.gameSettings.permanentEffectCooldownYears,
+          botCogs,
         )
       : [];
 
@@ -443,7 +457,7 @@ export class GameEngine {
       // doesn't independently think the same spare cash is still available. Uses the same
       // full cash-effect estimate pickBotDecisions itself budgets against (not just the
       // `cash` field alone — see estimatedFirstYearCashEffect's own doc comment).
-      if (def) cash += estimatedFirstYearCashEffect(def, interestRate);
+      if (def) cash += estimatedFirstYearCashEffect(def, interestRate, botCogs);
     }
 
     // Hostile-takeover threat: a genuine (if unsophisticated) Buy Shares strategy, on top

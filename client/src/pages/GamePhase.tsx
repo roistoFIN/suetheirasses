@@ -1954,7 +1954,7 @@ interface EffectLine {
 /**
  * Per-field "when it starts / how long it lasts" timeline, e.g.
  * "Yr 1: -$100,000 → Permanent: -$50,000" (own field) or
- * "Every turn until Yr 10: -8" (target field).
+ * "Every turn until Yr 10: -8" (an ABSOLUTE target field).
  *
  * The trailing 'default' schedule value reads very differently depending on which kind of
  * field it's attached to, and the old flat "Ongoing: X" label for both was genuinely
@@ -1963,13 +1963,22 @@ interface EffectLine {
  * ONCE, at the turn maturity is first reached — after that GameLoop's `advanceAndApply`
  * deliberately never re-applies it (see CLAUDE.md's "Root historical bug" section on the
  * runaway-compounding fix), so the field permanently holds that new value rather than
- * ticking up/down every turn — "Permanent" says that correctly. A `target.*` field is the
- * opposite: `collectTargetImpacts` genuinely re-applies it to the victim EVERY turn, capped
- * only by `gameSettings.statuteOfLimitationsYears` (or a successful lawsuit voiding the
- * instance first) — "Every turn until Yr N" says that correctly instead. `statuteOfLimitationsYears`
- * is optional (the Decision Deck's browse-before-deploying view has it on hand via
- * `gameSettings`; omitting it just drops the "until Yr N" qualifier, still correctly
- * labeled "Every turn").
+ * ticking up/down every turn — "Permanent" says that correctly.
+ *
+ * A `target.*` field used to always be labeled the opposite way ("Every turn until Yr N"),
+ * since `collectTargetImpacts` genuinely re-applies it to the victim every turn. That's
+ * still true for an ABSOLUTE target field (e.g. `target.outrage` climbing +25/turn is
+ * bounded/linear). It's now WRONG for a RELATIVE target field: `applyTargetImpacts` was
+ * fixed to stop re-applying a relative field once past its own maturity (same fix as the
+ * own-field case above — reapplying a percentage against an already-shrunk value every
+ * turn forever was exponential decay, a real, reported bug: one Union Agitation-shaped
+ * attack crushed an idle victim's capacity from 1.0 to 0.26 in six turns and bankrupted
+ * them by round 12 in a real test game). So the label now also checks `impact.type` —
+ * only `isTarget && type === 'absolute'` gets "Every turn until Yr N"; a relative target
+ * field now correctly reads "Permanent," same as an own field, matching its new hold-
+ * after-maturity behavior. `statuteOfLimitationsYears` is optional (the Decision Deck's
+ * browse-before-deploying view has it on hand via `gameSettings`; omitting it just drops
+ * the "until Yr N" qualifier, still correctly labeled "Every turn").
  */
 function summarizeEffects(def: DecisionDefinition, statuteOfLimitationsYears?: number): EffectLine[] {
   const lines: EffectLine[] = [];
@@ -1984,7 +1993,10 @@ function summarizeEffects(def: DecisionDefinition, statuteOfLimitationsYears?: n
     }
     const ongoing = impact.schedule['default'];
     if (ongoing !== undefined && ongoing !== 0) {
-      const label = isTarget
+      // Only an ABSOLUTE target field genuinely keeps re-applying every turn — see this
+      // function's own doc comment for why a RELATIVE target field now reads "Permanent"
+      // too, same as an own field.
+      const label = isTarget && impact.type === 'absolute'
         ? `Every turn${statuteOfLimitationsYears !== undefined ? ` until Yr ${statuteOfLimitationsYears}` : ''}`
         : 'Permanent';
       parts.push(`${label}: ${formatImpactValue(field, impact.type, ongoing)}`);

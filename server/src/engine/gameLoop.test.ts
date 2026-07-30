@@ -676,6 +676,52 @@ describe('GameLoop', () => {
       expect((alice.variables as any)['target.capacityUtilization']).toBeUndefined();
     });
 
+    it('should NOT keep compounding a RELATIVE target.* effect turn after turn, while an ABSOLUTE one keeps accumulating (regression)', () => {
+      // A real, reported bug found via live play: Bot Attack's own instance stays active
+      // (and keeps being fed into collectTargetImpacts) turn after turn with no
+      // resubmission needed — that's deliberate ("target effects keep re-applying every
+      // turn," see CLAUDE.md). But for the RELATIVE `target.capacityUtilization` field,
+      // reapplying the same -20% against the already-shrunk value every turn used to
+      // compound exponentially (0.8 → 0.64 → 0.512 → 0.4096 → ...) — a single attack left
+      // un-countered would crush a victim's capacity toward zero and, in a real test
+      // game, bankrupted an idle player by round 12. The ABSOLUTE `target.outrage` field
+      // has no such bug (bounded, linear +20/turn) and must keep accumulating unchanged.
+      gameLoop.submitDecisions('room-1', 'player-1', {
+        strategic: [],
+        operational: [{ name: 'Bot Attack', targetId: 'player-2' }], financial: [],
+        lawsuits: [],
+      });
+      const outcome1 = gameLoop.resolveTurn('room-1', 1, twoPlayers());
+      const bob1 = outcome1.result.players.find((p) => p.playerId === 'player-2')!;
+      expect(bob1.variables.capacityUtilization).toBeCloseTo(0.64, 5); // 0.8 * (1 - 0.2)
+      expect(bob1.variables.outrage).toBe(30); // 10 + 20
+
+      // No new submission for round 2 — the attack's own instance stays active and keeps
+      // contributing to collectTargetImpacts on its own, matching real gameplay.
+      const alice1 = outcome1.companyUpdates.find((u) => u.playerId === 'player-1')!;
+      const bobUpdate1 = outcome1.companyUpdates.find((u) => u.playerId === 'player-2')!;
+      const players2 = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: alice1.variables, engineState: alice1.engineState },
+        { id: 'player-2', name: 'Bob', variables: bobUpdate1.variables, engineState: bobUpdate1.engineState },
+      ]);
+      const outcome2 = gameLoop.resolveTurn('room-1', 2, players2);
+      const bob2 = outcome2.result.players.find((p) => p.playerId === 'player-2')!;
+      // Must HOLD at the deployment-turn value, not compound to 0.64 * 0.8 = 0.512.
+      expect(bob2.variables.capacityUtilization).toBeCloseTo(0.64, 5);
+      expect(bob2.variables.outrage).toBe(50); // keeps accumulating: 30 + 20
+
+      const alice2 = outcome2.companyUpdates.find((u) => u.playerId === 'player-1')!;
+      const bobUpdate2 = outcome2.companyUpdates.find((u) => u.playerId === 'player-2')!;
+      const players3 = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: alice2.variables, engineState: alice2.engineState },
+        { id: 'player-2', name: 'Bob', variables: bobUpdate2.variables, engineState: bobUpdate2.engineState },
+      ]);
+      const outcome3 = gameLoop.resolveTurn('room-1', 3, players3);
+      const bob3 = outcome3.result.players.find((p) => p.playerId === 'player-2')!;
+      expect(bob3.variables.capacityUtilization).toBeCloseTo(0.64, 5);
+      expect(bob3.variables.outrage).toBe(70); // 50 + 20
+    });
+
     it('should surface an incomingAttacks entry for the victim, un-investigated by default', () => {
       // Three active players (not the usual twoPlayers() fixture) specifically to stay
       // OUT of the heads-up shortcut below — see effectiveInvestigationLevel's doc

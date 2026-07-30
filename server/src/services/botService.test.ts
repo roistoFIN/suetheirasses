@@ -18,6 +18,7 @@ import {
   BOT_CASH_TREND_WINDOW,
   BOT_CASH_TREND_RESERVE_MULTIPLIER,
   DEFAULT_INTEREST_RATE,
+  type BotCogsContext,
 } from './botService';
 import type { DecisionDefinition, IncomingAttackInfo, LegalCaseData } from '@suethemchickens/shared';
 
@@ -100,6 +101,29 @@ describe('pickBotDecisions', () => {
     const plain = makeDecisionDef({ decision: 'Plain Decision', impacts: {} });
     const picks = pickBotDecisions([plain], 500_000, 'human-42');
     expect(picks).toEqual([{ name: 'Plain Decision', targetId: undefined }]);
+  });
+
+  // Regression: a real, reported bug where the bot's attacks never actually landed. Almost
+  // every real attacking decision in the seeded library (Bot Attack, Fox Release, Patent
+  // Trolling, Talent Poaching, Union Agitation, etc. — 53 of them) carries a `target.*`
+  // impact field but does NOT set `requiresTarget: true` in the actual data (only Buy/Sell
+  // Shares do — see GamePhase.tsx's `decisionNeedsTarget` and this file's own `needsTarget`
+  // helper, both of which already treat "has a target.* impact" as target-needing). This
+  // line used to check `def.requiresTarget` directly instead of calling the already-defined
+  // `needsTarget` helper (used one line above for the scoring bonus, but not reused here),
+  // so `targetId` silently stayed `undefined` for every one of these — and
+  // `DecisionEngine.collectTargetImpacts` skips any active decision with no `targetId`
+  // entirely, meaning the attack was deployed but its harmful effect on the human never
+  // applied. Only Buy Shares (real `requiresTarget: true`) was ever visibly landing,
+  // matching the exact symptom reported: "the bot bought my shares and I noticed an effect,
+  // but other decisions didn't affect my cash flow."
+  it('attaches the human player as targetId for a decision with a target.* impact but no requiresTarget flag (matches the real seeded library)', () => {
+    const attack = makeDecisionDef({
+      decision: 'Bot Attack',
+      impacts: { 'target.outrage': { type: 'absolute', schedule: { default: -8 } } },
+    });
+    const picks = pickBotDecisions([attack], 500_000, 'human-42');
+    expect(picks).toEqual([{ name: 'Bot Attack', targetId: 'human-42' }]);
   });
 
   it('never picks more than 2 decisions even with a large affordable deck', () => {
@@ -255,6 +279,33 @@ describe('pickBotDecisions', () => {
     expect(picks.some((p) => p.name === 'New Pick')).toBe(false);
     expect(picks.some((p) => p.name === 'Unrelated Pick')).toBe(true);
   });
+
+  // Regression for a real, reported bug: the bot would reliably bankrupt itself against a
+  // fully idle human because the affordability check never accounted for COGS
+  // (materialCostPerTon+logisticsCostPerTon)*volume, even though it's very often the
+  // single largest real cost — see BotCogsContext's own doc comment. A decision with no
+  // `cash`/DOLLAR_FIELDS impact at all used to look completely free regardless of how
+  // much it permanently raised per-ton costs.
+  it('rejects a decision whose real COGS cost would breach the reserve, once a live BotCogsContext is supplied', () => {
+    const costly = makeDecisionDef({
+      decision: 'Costly COGS Pick',
+      impacts: { materialCostPerTon: { type: 'relative', schedule: { default: 0.5 } } }, // permanent +50%
+    });
+    const cogs: BotCogsContext = { volume: 350, materialCostPerTon: 500, logisticsCostPerTon: 50 };
+    // Real cost: +50% of $500/ton = $250/ton more, times 350 tons = $87,500 — nowhere near
+    // affordable against a $100k cash pile and the standard reserve.
+    const picks = pickBotDecisions([costly], 100_000, 'human-1', 0, BOT_CASH_RESERVE, DEFAULT_INTEREST_RATE, false, [], Infinity, cogs);
+    expect(picks).toEqual([]);
+  });
+
+  it('picks that same decision when no BotCogsContext is supplied — illustrates why GameEngine.runBotTurn must always pass live COGS state', () => {
+    const costly = makeDecisionDef({
+      decision: 'Costly COGS Pick',
+      impacts: { materialCostPerTon: { type: 'relative', schedule: { default: 0.5 } } },
+    });
+    const picks = pickBotDecisions([costly], 100_000, 'human-1');
+    expect(picks.map((p) => p.name)).toEqual(['Costly COGS Pick']);
+  });
 });
 
 describe('estimatedFirstYearCashEffect', () => {
@@ -283,6 +334,23 @@ describe('estimatedFirstYearCashEffect', () => {
   it('otherIncome contributes positively, not as a cost', () => {
     const def = makeDecisionDef({ impacts: { otherIncome: { type: 'absolute', schedule: { 1: 12_000, default: 0 } } } });
     expect(estimatedFirstYearCashEffect(def)).toBe(12_000);
+  });
+
+  // Regression for a real, reported bug: the bot would reliably bankrupt itself against a
+  // fully idle human because NONE of its cash-aware functions accounted for COGS
+  // (materialCostPerTon+logisticsCostPerTon)*volume — see BotCogsContext's own doc
+  // comment. materialCostPerTon/logisticsCostPerTon are always RELATIVE in the real
+  // library, so converting to a dollar cost needs the bot's own current $/ton rate.
+  it('converts a RELATIVE materialCostPerTon impact into a real dollar COGS cost when a BotCogsContext is supplied', () => {
+    const def = makeDecisionDef({ impacts: { materialCostPerTon: { type: 'relative', schedule: { 1: 0.1, default: 0 } } } });
+    const cogs: BotCogsContext = { volume: 350, materialCostPerTon: 500, logisticsCostPerTon: 50 };
+    // +10% of $500/ton = $50/ton more, times 350 tons sold = $17,500 real recurring cost.
+    expect(estimatedFirstYearCashEffect(def, DEFAULT_INTEREST_RATE, cogs)).toBe(-17_500);
+  });
+
+  it('treats a COGS-affecting decision as free when no BotCogsContext is supplied (safe default for a caller with no live state)', () => {
+    const def = makeDecisionDef({ impacts: { materialCostPerTon: { type: 'relative', schedule: { 1: 0.5, default: 0 } } } });
+    expect(estimatedFirstYearCashEffect(def)).toBe(0);
   });
 });
 
@@ -366,6 +434,22 @@ describe('isStructurallyUnprofitable', () => {
   it('is false exactly at breakeven', () => {
     expect(isStructurallyUnprofitable(30_000, 10_000, 0, 10_000, 50_000)).toBe(false);
   });
+
+  // Regression for a real, reported bug: this function used to omit COGS entirely, even
+  // though `cogs = (materialCostPerTon + logisticsCostPerTon) * volume` (calcEngine.ts) is
+  // very often the SINGLE LARGEST real cost — a live-play investigation found a traced
+  // game reporting `false` here for 10+ straight rounds while the real (COGS-inclusive)
+  // profit was -$40k to -$120k every turn, directly causing the bot's self-bankruptcy
+  // against a fully idle human. Same "healthy" pre-COGS numbers as the false case above
+  // (opex 20k, staff 10k, other 0, finance 5k, revenue 100k -> approxEbit without COGS is
+  // +$65k) but $550/ton * 350 tons = $192,500 of COGS revenue can't possibly cover.
+  it('is true once COGS is folded in, even though the pre-COGS numbers alone look healthy', () => {
+    expect(isStructurallyUnprofitable(20_000, 10_000, 0, 5_000, 100_000, 500, 50, 350)).toBe(true);
+  });
+
+  it('still treats COGS as zero when materialCostPerTon/logisticsCostPerTon/volume are omitted (backward-compatible default)', () => {
+    expect(isStructurallyUnprofitable(20_000, 10_000, 0, 5_000, 100_000)).toBe(false);
+  });
 });
 
 describe('scoreDecision', () => {
@@ -438,6 +522,33 @@ describe('scoreDecision', () => {
     const backloaded = makeDecisionDef({ impacts: { financeCost: { type: 'absolute', schedule: { 1: 0, 2: 50_000, default: 0 } } } });
     const free = makeDecisionDef({ impacts: {} });
     expect(scoreDecision(backloaded, 0)).toBeLessThan(scoreDecision(free, 0));
+  });
+
+  // Regression for a real, reported bug: the bot's self-bankruptcy against a fully idle
+  // human traced back to materialCostPerTon/logisticsCostPerTon never being scored as a
+  // real dollar cost — they were scored via the generic per-field loop (a raw fractional
+  // delta compared directly against unrelated 0-1-scale fields like price), never
+  // multiplied by volume into an actual dollar figure. Now routed through the same
+  // dollar-scaled worstCaseCashEffect path as DOLLAR_FIELDS/debt (see BotCogsContext's own
+  // doc comment) — the real cost grows with volume, exactly the field the bot's OWN
+  // capacity/demand-boosting picks keep growing.
+  it('scores a materialCostPerTon-raising decision worse as the bot\'s own volume grows, via the dollar-scaled COGS path', () => {
+    const def = makeDecisionDef({ impacts: { materialCostPerTon: { type: 'relative', schedule: { 1: 0.2, default: 0 } } } });
+    const noCogsContext = scoreDecision(def, 0); // no BotCogsContext supplied -> zero dollar effect
+    const smallVolume = scoreDecision(def, 0, DEFAULT_INTEREST_RATE, { volume: 100, materialCostPerTon: 500, logisticsCostPerTon: 0 });
+    const largeVolume = scoreDecision(def, 0, DEFAULT_INTEREST_RATE, { volume: 1000, materialCostPerTon: 500, logisticsCostPerTon: 0 });
+    expect(smallVolume).toBeLessThan(noCogsContext);
+    expect(largeVolume).toBeLessThan(smallVolume);
+  });
+
+  it('does not double-count materialCostPerTon/logisticsCostPerTon between the dollar-scaled COGS path and the generic per-field loop', () => {
+    // A decision that ONLY carries a materialCostPerTon impact, with no live COGS context
+    // (volume 0), must score identically to a completely free decision — if the generic
+    // per-field loop were still also scoring this field (the pre-fix behavior), it would
+    // score strictly lower even at zero volume.
+    const def = makeDecisionDef({ impacts: { materialCostPerTon: { type: 'relative', schedule: { 1: 0.2, default: 0 } } } });
+    const free = makeDecisionDef({ impacts: {} });
+    expect(scoreDecision(def, 0)).toBe(scoreDecision(free, 0));
   });
 });
 

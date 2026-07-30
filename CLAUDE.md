@@ -366,10 +366,56 @@ top of itself every turn — this was the real root cause of runaway exponential
 "certain doom" death spirals in random-play testing (single `New Factory`'s
 `installedCapacity` went 350→2635 over 7 turns from one instance alone). Fixed by applying
 a decision's own (non-`target.*`) impacts only through its maturity threshold, then
-skipping it — `target.*` effects on the *victim* deliberately keep re-applying every turn
-until the statute, unchanged (that's attack/defense balance, not the same bug). If you
-touch `advanceAndApply`/`collectTargetImpacts`, this invariant — a matured decision's own
-effect is applied once, not compounded — is the one most likely to silently regress.
+skipping it — `target.*` effects on the *victim* were left deliberately re-applying every
+turn until the statute, unchanged, on the reasoning that this was attack/defense balance,
+not the same bug (see below for why that reasoning had a gap). If you touch
+`advanceAndApply`/`collectTargetImpacts`, this invariant — a matured decision's own effect
+is applied once, not compounded — is the one most likely to silently regress.
+
+**The exact same compounding bug existed on the `target.*` side too — the "attack/defense
+balance" carve-out above didn't account for RELATIVE fields.** Found via live play: an
+idle player (never submitted a decision) went bankrupt by round 12 against a bot that
+deployed exactly one `Union Agitation` (`target.capacityUtilization`, relative,
+`{1: -0.3, default: -0.15}`) against them in round 5 and nothing else. `collectTargetImpacts`
+genuinely does keep re-feeding an active attacking instance's `target.*` impacts into
+`applyTargetImpacts` every turn — that part is correct, deliberate design (see above). The
+bug was `applyTargetImpacts` itself: for a `relative` field it multiplied `currentVal * (1
++ multiplier)` — the field's own **already-shrunk** value — every single call, with no
+memory of "already applied this instance's effect." Reapplying the same percentage against
+an ever-shrinking base every turn, forever (until `statuteOfLimitationsYears`, or a lawsuit
+voids the instance), is exponential decay: the victim's `capacityUtilization` went
+1.0→0.7→0.595→0.506→0.430→0.365→0.311→0.264 over six turns — an ABSOLUTE field
+(`target.outrage`, `+25`/turn observed in the same game) has no such problem, since it's
+bounded, linear accumulation, not compounding. A scan of the seeded library found **18 of
+~53 targeting decisions** carry a relative target field with a non-zero `default`
+(`target.capacityUtilization`/`target.supplySecurity`/`target.processingLevel` decaying
+toward 0, `target.logisticsCostPerTon` inflating toward infinity, no ceiling) — a
+third of the whole attacking library was exposed to this. It went unnoticed for so long
+because the bot never correctly attached `targetId` to any of these decisions until the
+`botService.ts` targeting fix earlier in this file's own history — before that fix, none
+of these 18 decisions' `target.*` effects had ever actually landed via bot play, live or
+in casual testing.
+
+Fixed the same way as the own-effect case above: `applyTargetImpacts`
+(`calcEngine.ts`) now gates a RELATIVE field's own re-application on
+`elapsedYears <= singleFieldMaturityYears(schedule)` (a new per-field helper, since one
+decision can mix an absolute and a relative target field on different schedules — e.g. Bot
+Attack's `target.outrage` alongside `target.capacityUtilization`) — apply through the
+field's own explicit years, plus once more when `'default'` is first reached, then hold
+forever after, exactly mirroring `advanceAndApply`'s own-effect semantics. An ABSOLUTE
+target field is completely unaffected — no gate, keeps accumulating every turn exactly as
+before; changing that behavior was never the ask (see above's "attack/defense balance").
+Client-side, `summarizeEffects`'s "Every turn until Yr N" vs. "Permanent" label (see the
+EFFECTS panel section below) now also checks `impact.type`, not just `isTarget` — a
+RELATIVE target field reads "Permanent" too, matching its new hold-after-maturity
+behavior; an ABSOLUTE target field keeps its original "Every turn until Yr N" label.
+Regression-tested at both layers: `calcEngine.test.ts`'s `applyTargetImpacts` describe
+block (a default-only relative field applies once and holds across three more calls; a
+two-stage schedule like Union Agitation's applies through its own explicit year then
+holds; an absolute field on the same decision keeps accumulating independently),
+`gameLoop.test.ts`'s full `resolveTurn`-across-three-turns regression reproducing the
+exact Bot Attack scenario, and both `GamePhase.utils.test.ts`/`GameTimelineView.utils.test.ts`
+asserting the new "Permanent" label for a relative target field.
 
 ### Statute of limitations & relative-type legal-risk stakes
 
@@ -938,13 +984,18 @@ kind of field it was attached to, and the label didn't distinguish them:
   *"Root historical bug, worth remembering the shape of"* above. The field's new value
   simply stays that way going forward; nothing ticks every turn. `Ongoing` implied
   recurrence that never actually happens — the accurate word is `Permanent`.
-- A `target.*` field's trailing `'default'` value is the opposite: `collectTargetImpacts`
-  genuinely re-applies it to the targeted opponent EVERY turn, until
+- An ABSOLUTE `target.*` field's trailing `'default'` value is the opposite:
+  `collectTargetImpacts` genuinely re-applies it to the targeted opponent EVERY turn, until
   `gameSettings.statuteOfLimitationsYears` (or a successful lawsuit voids the instance
   first) — this really is recurring, and `Ongoing` never said how long. Relabeled
   `Every turn until Yr N` (or just `Every turn` where the caller doesn't have
   `statuteOfLimitationsYears` on hand, e.g. the Decision Deck before `gameSettings` has
-  loaded — the "until Yr N" qualifier is dropped, never shown wrong).
+  loaded — the "until Yr N" qualifier is dropped, never shown wrong). A RELATIVE `target.*`
+  field used to get this same label too, but that was later found to be actively
+  misleading — see *"The exact same compounding bug existed on the target.* side too"*
+  above: a relative target field no longer keeps re-applying past its own maturity (that
+  was a real, separate bug, not a labeling issue), so it's labeled `Permanent` instead,
+  same as an own field.
 
 Fixed in `summarizeEffects` (`GamePhase.tsx`, duplicated in `GameTimelineView.tsx` per the
 usual convention below), which now takes an optional `statuteOfLimitationsYears` param and
@@ -1058,6 +1109,43 @@ poll every 5s, since those are genuinely live, read-only data.
 explicit `useEffect` reset keyed on `room`/`room?.id`, not reliance on unmount — this bit
 `isCreating`/`isSearching` (a stuck spinner after Leave Room) and lobby `chatMessages`
 (leaking into the next room) before being fixed this way.
+
+### `ShareButton` — the free-distribution growth loop (invite link + result brag card)
+
+`client/src/components/ShareButton.tsx` is a single reusable component behind two
+distribution surfaces, both zero-cost/organic (no ad spend, no backend involvement — pure
+client-side use of the Web Share API): the room lobby's invite link and the Game Over
+screen's result card. On a device that implements `navigator.share` (effectively all
+mobile browsers, few desktop ones), clicking it opens the OS-native share sheet — every
+messaging/social app already installed (WhatsApp, SMS, Discord, X, email, etc.) in one
+tap, with zero per-platform integration work. Where `navigator.share` doesn't exist
+(desktop), it falls back to a plain `navigator.clipboard.writeText` of `` `${text}\n${url}` ``
+(`formatShareMessage`, the one pure/exported/unit-tested piece — see `ShareButton.test.ts`;
+the two branches themselves aren't unit-tested, matching this workspace's established
+"no jsdom, extract the pure logic instead" convention, see `AdSlot.test.ts`/
+`googleConsent.test.ts`) and flips its own label to "Copied to clipboard!" for 1.5s, same
+UX shape as `Matchmaking.tsx`'s existing icon-only `CopyButton`. Both failure paths (user
+dismisses the native share sheet — a rejected promise, not an error; clipboard API
+unavailable) are swallowed silently — same "must degrade invisibly" convention as
+`llmService`/`eventLogService`.
+
+**Room lobby invite**: shown to *every* player in the room, not just the host — gating it
+to the host alone would cut the invite loop down to one person per room instead of up to
+`maxPlayers`, and any player waiting for the room to fill has the same reason to invite a
+friend. The plain copy-icon `CopyButton` next to it is kept as a secondary/manual option
+(host-adjacent players who'd rather paste into a specific chat).
+
+**Game Over result card**: shown once, right after the win/loss headline (not buried below
+the KPI chart/happenings log), with distinct copy for a win vs. anything else —
+`buildResultShareText` (`GameTimelineView.tsx`) gives a winner a stronger "I just won,
+outlasted N rivals" hook rather than diluting it into "I placed #1/N," the same message a
+runner-up gets. `computeFinalPlacement` derives a non-winner's placement from
+`TimelinePlayerInfo`: the winner sorts first (their `bankrupt` is `false` at game end),
+everyone else ordered by `eliminatedRound` descending
+(survived longer = better placement) — not meant as authoritative tie-broken standings,
+good enough for a one-line brag message only. Both functions are duplicated into
+`GameTimelineView.utils.test.ts` rather than imported, same convention as every other
+pure helper in that file (see *Client-side duplicated pure logic* below).
 
 ### Everything per-round is client-full-replacement, not incremental
 
@@ -1406,6 +1494,23 @@ methodology above. What changed is purely heuristic:
   `pickBotDecisions`' own picks would spend (`estimatedFirstYearCashEffect`, now exported)
   before calling this, so the two never independently double-commit the same spare cash.
 
+**The bot's attacking decisions used to never actually land, silently.** A user-reported
+"the bot made all kinds of decisions but only Buy Shares had any visible effect on my
+cash" traced to `pickBotDecisions` assigning `targetId` off `def.requiresTarget` directly
+instead of the already-defined `needsTarget(def)` helper one line above it (used correctly
+for the scoring bonus, but never reused for the actual pick). In the real seeded library,
+`requiresTarget: true` is set on exactly Buy Shares/Sell Shares — every one of the 53
+genuine `target.*`-bearing attack decisions (Bot Attack, Fox Release, Patent Trolling,
+Talent Poaching, Union Agitation, Reporting Rivals, etc.) relies purely on carrying a
+`target.*` impact field, exactly the case `GamePhase.tsx`'s own `decisionNeedsTarget`
+already treats as target-needing (see its doc comment). With `targetId` silently staying
+`undefined`, `DecisionEngine.collectTargetImpacts` (`if (!d.targetId) continue`) dropped
+the attack's entire cross-player effect every time — the decision still deployed and cost
+the bot its own cash, it just never actually hurt anyone. Fixed by calling `needsTarget(def)`
+at the pick site instead of reading the flag directly; regression-tested in
+`botService.test.ts` with a decision that has a `target.*` impact but no `requiresTarget`
+flag (matching the real library's shape), asserting `targetId` is set.
+
 **Settlement negotiation, previously entirely passive.** The bot used to never actively
 respond to an offer at all — any offer a human made just sat there until Step 8b's
 turn-boundary timeout auto-accepted it, however small, a real reported gap ("bot accepts
@@ -1506,17 +1611,54 @@ ever" opponent) to several independent gaps, each fixed in `botService.ts`:
   company in one move. `pickBotShareBuy` now takes an optional `maxUsefulSpend` (computed
   by the caller as `(1 - currentBotOwnershipFraction) * totalSharesOutstanding *
   stockValue`, mirroring `applyShareTransaction`'s own math) and clamps its spend to it.
+- **A second, later self-bankruptcy bug, found the same way and much bigger in practice:
+  NONE of the checks above ever accounted for COGS.** `calcEngine.ts`'s real formula,
+  `cogs = (materialCostPerTon + logisticsCostPerTon) * volume`, is very often the SINGLE
+  LARGEST cost in this game's real P&L — but `isStructurallyUnprofitable`'s own previous
+  doc comment claimed omitting it was safe ("only ever makes a healthy company look
+  slightly worse, never a sick one look healthy"), which is true for depreciation/tax but
+  false for COGS, since it SCALES WITH `volume` — exactly the field the bot's own
+  capacity/demand-boosting picks keep growing. A live-play investigation (prompted by a
+  user report that an idle human opponent "almost always" wins) traced a real game where
+  `isStructurallyUnprofitable` reported "not unprofitable" for 10+ straight rounds while
+  the real (COGS-inclusive) profit was -$40k to -$120k every single turn from round 3
+  onward; across 100 simulated games, 59-76% showed negative real per-turn P&L at any
+  checkpoint round, and the bot bankrupted itself in ~39% of 40-round games. Root cause:
+  the bot never stops deploying new decisions (one traced game had 51 active by round 32),
+  and many of the ones it favors for a good `scoreDecision` score (boosting price/capacity/
+  demand) also permanently raise `materialCostPerTon`/`logisticsCostPerTon` as their real
+  trade-off — a cost invisible to every self-preservation check, compounding with the
+  `volume` growth those same picks cause. `materialCostPerTon`/`logisticsCostPerTon` are
+  always `relative`-type in the real library, so converting to a real dollar cost needs
+  the bot's own CURRENT $/ton rate and `volume` — neither of which lives on a
+  `DecisionDefinition` the way a `DOLLAR_FIELDS` value does — hence `BotCogsContext`, a new
+  small bundle (`{ volume, materialCostPerTon, logisticsCostPerTon }`) threaded through
+  every cash-aware function (`realCashEffectAtYear`/`worstCaseCashEffect`/`scoreDecision`/
+  `pickBotDecisions`/`estimatedFirstYearCashEffect`/`projectedNextTurnOwnCashEffect`) and
+  `isStructurallyUnprofitable` (which now takes `materialCostPerTon`/`logisticsCostPerTon`/
+  `volume` directly and subtracts COGS from its approximate EBIT). `GameEngine.runBotTurn`
+  builds one `botCogs` object per turn straight off the bot's own `PlayerVariables` and
+  passes it to all of them, mirroring how `interestRate` was already threaded through for
+  the analogous `debt`-to-`financeCost` conversion. `scoreDecision`'s generic per-field
+  loop now excludes `materialCostPerTon`/`logisticsCostPerTon` (they're scored via the
+  dollar-scaled `worstCaseCogsEffect` path instead, same reason `DOLLAR_FIELDS` is already
+  excluded there — comparing a raw per-ton fraction directly against an unrelated 0-1-scale
+  field like `price`, with no volume scaling, undercounted the real cost by orders of
+  magnitude). Measured effect: bankruptcy rate on the same 100-game/40-round harness
+  dropped from ~39% to ~3%.
 
 Regression-tested with the same randomized-simulation methodology described above, adapted
 to this specific scenario: `botService.idleOpponent.simulation.test.ts` plays many
-independent full games of the real bot (via the real `botService.ts` functions) against a
+independent full games of the real bot (via the real `botService.ts` functions, now
+including a `botCogs` context built the same way `GameEngine.runBotTurn` does) against a
 human who submits nothing, ever, and asserts the bankruptcy rate within a realistic game
 length (20 rounds — comfortably inside CLAUDE.md's documented ~11-18-round typical range)
-stays well below the ~80%+ observed before these fixes. Individual mechanisms are also
-unit-tested directly in `botService.test.ts` (`estimatedFirstYearCashEffect`,
+stays below 20% (tightened from an original 50% ceiling — see the test's own doc comment
+for the two bug generations that ceiling had to stay loose enough to tolerate). Individual
+mechanisms are also unit-tested directly in `botService.test.ts` (`estimatedFirstYearCashEffect`,
 `isCashTrendDeclining`/`computeEffectiveReserve`, `projectedNextTurnOwnCashEffect`,
-`isStructurallyUnprofitable`, the new `pickBotDecisions`/`scoreDecision`/`pickBotShareBuy`
-veto/clamp behaviors).
+`isStructurallyUnprofitable`, the `pickBotDecisions`/`scoreDecision`/`pickBotShareBuy`
+veto/clamp behaviors, and the newer `BotCogsContext`-aware cases for all of the above).
 
 ### Test layers, and which one to reach for
 
