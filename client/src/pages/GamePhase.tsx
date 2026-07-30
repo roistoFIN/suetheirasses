@@ -1125,10 +1125,16 @@ export default function GamePhase() {
               const c = currentEvent.case;
               const iAmPlaintiff = c.plaintiffId === player?.id;
               const opponentName = playerNames.get(iAmPlaintiff ? c.defendantId : c.plaintiffId) ?? 'Unknown';
+              // A 'won' verdict's real payout is capped to whatever non-negative cash the
+              // defendant actually had (GameLoop.resolveTurn's Step 9) — actualAmountPaid
+              // is only set when that cap bit, i.e. when it's less than the nominal
+              // stakes. Same "prefer the real paid amount, fall back to stakes" pattern
+              // the waterfallPayout event below already uses for the analogous case.
+              const wonAmount = c.actualAmountPaid ?? c.stakes;
               let outcomeLine: string;
-              if (iAmPlaintiff && c.verdict === 'won') outcomeLine = `You received ${fmt(c.stakes)} from ${opponentName}`;
+              if (iAmPlaintiff && c.verdict === 'won') outcomeLine = `You received ${fmt(wonAmount)} from ${opponentName}`;
               else if (iAmPlaintiff && c.verdict === 'lost') outcomeLine = `You got nothing — the court sided with ${opponentName}`;
-              else if (!iAmPlaintiff && c.verdict === 'won') outcomeLine = `You paid ${fmt(c.stakes)} to ${opponentName}`;
+              else if (!iAmPlaintiff && c.verdict === 'won') outcomeLine = `You paid ${fmt(wonAmount)} to ${opponentName}`;
               else outcomeLine = `The case against you was dismissed — you paid nothing`;
               return (
                 <Box style={{ borderLeft: `3px solid var(--mantine-color-${currentEvent.outcome === 'won' ? 'green' : 'red'}-6)`, paddingLeft: 8 }}>

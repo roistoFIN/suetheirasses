@@ -1714,7 +1714,110 @@ describe('GameLoop', () => {
       const wpInstance3 = alice3.activeDecisions.find((d) => d.decisionName === 'Water Pumping')!;
       expect(wpInstance3.voidedByLawsuit).toBe(false);
     });
+  });
 
+  describe("resolveTurn — a WON trial verdict is capped to the defendant's actual available cash (regression)", () => {
+    it('pays the full stakes when the defendant has enough cash — no change to the common case', () => {
+      const case_ = makeCase({ status: 'awaiting_trial', stakes: 20000, baseProbability: 1 });
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0); // Math.random() < adjProb → plaintiff wins
+      const outcome = gameLoop.resolveTurn('room-1', 1, playersWithCase(case_, { 'player-1': 500000 }));
+      randomSpy.mockRestore();
+
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+      expect(alice.legalCases[0].verdict).toBe('won');
+      expect(alice.legalCases[0].actualAmountPaid).toBeUndefined();
+    });
+
+    it("caps the payout to the defendant's actual available cash when stakes exceed it, and drains cash to exactly zero rather than negative", () => {
+      const case_ = makeCase({ status: 'awaiting_trial', stakes: 10000000, baseProbability: 1 });
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+      const outcome = gameLoop.resolveTurn('room-1', 1, playersWithCase(case_, { 'player-1': 5000 }));
+      randomSpy.mockRestore();
+
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+      const bob = outcome.result.players.find((p) => p.playerId === 'player-2')!;
+
+      expect(alice.legalCases[0].verdict).toBe('won');
+      expect(alice.legalCases[0].actualAmountPaid).toBeDefined();
+      expect(alice.legalCases[0].actualAmountPaid!).toBeLessThan(10000000);
+      expect(alice.legalCases[0].actualAmountPaid!).toBeGreaterThanOrEqual(0);
+      // Fully drained by this payment, but never pushed negative purely by it.
+      expect(alice.variables.cash).toBeCloseTo(0, 0);
+      // Both parties' copies of the case must agree on the real amount that changed hands.
+      expect(bob.legalCases[0].actualAmountPaid).toBe(alice.legalCases[0].actualAmountPaid);
+    });
+
+    it("shares the defendant's available cash across multiple simultaneous WON verdicts, oldest filed case first (FIFO)", () => {
+      const caseA = makeCase({
+        id: 'case-a',
+        plaintiffId: 'player-2',
+        defendantId: 'player-1',
+        stakes: 10000000,
+        status: 'awaiting_trial',
+        baseProbability: 1,
+        createdAt: new Date('2024-01-01T00:00:00Z'),
+      });
+      const caseB = makeCase({
+        id: 'case-b',
+        plaintiffId: 'player-3',
+        defendantId: 'player-1',
+        stakes: 10000000,
+        status: 'awaiting_trial',
+        baseProbability: 1,
+        createdAt: new Date('2024-01-02T00:00:00Z'), // filed later than caseA
+      });
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+
+      const players = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: makeVars({ cash: 8000 }), engineState: { legalCases: [caseA, caseB] } },
+        { id: 'player-2', name: 'Bob', engineState: { legalCases: [caseA] } },
+        { id: 'player-3', name: 'Carol', engineState: { legalCases: [caseB] } },
+      ]);
+      const outcome = gameLoop.resolveTurn('room-1', 1, players);
+      randomSpy.mockRestore();
+
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+      const caseAResult = alice.legalCases.find((c) => c.id === 'case-a')!;
+      const caseBResult = alice.legalCases.find((c) => c.id === 'case-b')!;
+
+      expect(caseAResult.verdict).toBe('won');
+      expect(caseBResult.verdict).toBe('won');
+      // The older case (filed first) gets whatever cash was actually available...
+      expect(caseAResult.actualAmountPaid!).toBeGreaterThan(0);
+      // ...leaving nothing left over for the later-filed case.
+      expect(caseBResult.actualAmountPaid).toBe(0);
+      expect(alice.variables.cash).toBeCloseTo(0, 0);
+    });
+
+    it("pays nothing to the plaintiff when the defendant's cash is already negative before this payment — only positive cash is ever shared", () => {
+      // Alice's cash is so deeply negative (and her production zeroed out, so this turn's
+      // ordinary P&L can't rescue her) that she also goes bankrupt this same turn — Step 9's
+      // payout still has to run (and cap to $0) before Step 10's bankruptcy check does, so
+      // Alice herself is excluded from outcome.result.players (see BankruptedPlayer's own
+      // doc comment); read the payout back off Bob's copy of the same case instead, kept in
+      // sync between both parties' engineState.legalCases by design.
+      const case_ = makeCase({ status: 'awaiting_trial', stakes: 20000, baseProbability: 1 });
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+      const players = makePlayers([
+        {
+          id: 'player-1',
+          name: 'Alice',
+          variables: makeVars({ cash: -50000, installedCapacity: 0, capacityUtilization: 0 }),
+          engineState: { legalCases: [case_] },
+        },
+        { id: 'player-2', name: 'Bob', engineState: { legalCases: [case_] } },
+      ]);
+      const outcome = gameLoop.resolveTurn('room-1', 1, players);
+      randomSpy.mockRestore();
+
+      expect(outcome.bankruptedPlayers.map((b) => b.playerId)).toContain('player-1');
+      const bob = outcome.result.players.find((p) => p.playerId === 'player-2')!;
+      expect(bob.legalCases[0].verdict).toBe('won');
+      expect(bob.legalCases[0].actualAmountPaid).toBe(0);
+    });
+  });
+
+  describe('resolveTurn — settlement/void-instance behavior (existing coverage, unrelated to the payout cap above)', () => {
     it('should void the sued instance when an unanswered offer auto-settles at a turn boundary (Step 8b)', () => {
       gameLoop.submitDecisions('room-1', 'player-1', {
         strategic: [], operational: [{ name: 'Water Pumping' }], financial: [], lawsuits: [],

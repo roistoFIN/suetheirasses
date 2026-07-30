@@ -515,6 +515,51 @@ UNPAID tail still gets `'cancelled'` with no payout amount; client-side,
 `GamePhase.utils.test.ts`/`GameTimelineView.utils.test.ts` each assert `'waterfall_payout'`
 is excluded from the real-settlement detector/label and produces its own distinct one.
 
+### A normal trial WIN is also capped to the defendant's actual cash — not just the waterfall
+
+A user-reported bug, distinct from (but adjacent to) the waterfall/`'settled'` mislabeling
+above: if a player went bankrupt the SAME turn a court case against them resolved 'won' by
+trial, the plaintiff could receive the full nominal `stakes` even though the defendant's
+own cash couldn't cover it — effectively being paid money that didn't exist. Root cause:
+Step 9 (`GameLoop.resolveTurn`, "process resolved cases & apply cash settlements") used to
+do an unconditional `defCtx.vars.cash -= trial.stakes; pltCtx.vars.cash += trial.stakes;`
+for every case that resolved 'won' via a normal probability-draw trial *this turn* — with
+no cap of any kind. This is exactly the problem `distributeCaseWaterfall` (Step 10b,
+above) already solves for a case still *open* when its defendant is eliminated — but a
+case that resolves via a normal trial verdict THIS turn is marked `status: 'resolved'`
+before Step 9 even runs, so the waterfall (which only touches `status !== 'resolved'`
+cases) never sees it and never caps it — a gap between the two mechanisms, not overlap.
+
+Fixed by capping each 'won' verdict's payment to `Math.max(0, defendant's current cash)`
+at the moment Step 9 processes it — "only positive cash of the bankrupted player is
+shared," per the report. Cases resolving 'won' against the SAME defendant in the same turn
+share that defendant's available cash in filing order (oldest `createdAt` first, the same
+FIFO tie-break convention `distributeCaseWaterfall` already uses), rather than each one
+independently driving cash further negative as if the others didn't exist.
+`LegalCaseData.actualAmountPaid` (new, optional — deliberately distinct from
+`waterfallPayoutAmount`, since these are two different code paths with two different
+triggers) is set only when the cap actually bit; left `undefined` for the ordinary
+full-payment case, so nothing downstream has to distinguish "capped to the full amount" from
+"never capped." `GameEngine.resolvedCaseAmount` and `GamePhase.tsx`'s News item both read
+`actualAmountPaid ?? stakes` for a 'won' verdict now, matching how they already read
+`waterfallPayoutAmount ?? stakes` for `'waterfall_payout'` and `offers[...] ?? stakes` for
+`'settled'` — the same "the nominal `stakes` is only an estimate, read the real paid-amount
+field when one exists" pattern used everywhere else a case's dollar figure is displayed.
+`LegalCaseHistory.resolvedAmount`'s own doc comment (`prisma/schema.prisma`) was updated to
+describe this too, alongside the pre-existing 'waterfall_payout'/'settled' cases it already
+documented.
+
+Regression-tested in `gameLoop.test.ts` ("a WON trial verdict is capped to the defendant's
+actual available cash"): the ordinary full-payment case is unaffected
+(`actualAmountPaid` stays `undefined`); a single case with insufficient defendant cash caps
+the payment and drains the defendant to exactly zero (never negative from the payment
+alone); two simultaneous 'won' verdicts against the same defendant pay the older-filed case
+first and leave nothing for the newer one; and a defendant whose cash is already negative
+before this payment (and who also goes bankrupt the same turn, from an unrelated cash
+problem — read back off the *plaintiff's* copy of the case, since a bankrupted defendant is
+excluded from `outcome.result.players` per `BankruptedPlayer`'s own doc comment) pays out
+exactly $0, never a negative "payment" the other direction.
+
 ### A case's probability is earned separately by each side, and displayed as a 5-band verbal likelihood
 
 `CaseCard`'s probability chip only renders once `knowsOdds` is true: for the *plaintiff*,

@@ -910,27 +910,45 @@ export class GameLoop {
     }
 
     // ── Step 9 — Process resolved cases & apply cash settlements ───────────────────
-    // Apply verdict cash flows: loser pays stakes to winner. `legalReceivedThisTurn`
-    // (declared up at Step 8b, which can also write into it) tracks amounts actually
-    // RECEIVED this turn per player.
+    // Apply verdict cash flows: loser pays stakes to winner, CAPPED to the defendant's
+    // own actually-available (non-negative) cash — a real, reported bug: this used to be
+    // an unconditional `cash -= stakes`, so a plaintiff could "receive" the full nominal
+    // stakes even when the defendant's cash couldn't cover it, effectively paying out
+    // money that didn't exist. This is the same problem `distributeCaseWaterfall`
+    // (Step 10b) already solves for a case still open when its defendant is eliminated —
+    // this closes the gap for a case that resolves via a NORMAL trial verdict THIS turn
+    // instead, before bankruptcy is even checked. When multiple cases resolve 'won'
+    // against the SAME defendant this turn, they share that defendant's available cash in
+    // filing order (oldest `createdAt` first) — same FIFO tie-break convention as the
+    // waterfall — rather than each independently driving cash further negative.
+    // `legalReceivedThisTurn` (declared up at Step 8b, which can also write into it)
+    // tracks amounts actually RECEIVED this turn per player, using the real (possibly
+    // capped) payment, never the nominal `stakes`.
+    const wonCasesByDefendant = new Map<string, LegalCaseData[]>();
     for (const trial of casesResolvedThisTurn) {
-      if (!trial.verdict) continue;
-      const defCtx = ctxs.get(trial.defendantId);
-      const pltCtx = ctxs.get(trial.plaintiffId);
-      if (!defCtx || !pltCtx) continue;
-
-      if (trial.verdict === 'won') {
-        // Plaintiff won: defendant pays stakes to plaintiff
-        defCtx.vars.cash -= trial.stakes;
-        pltCtx.vars.cash += trial.stakes;
+      if (trial.verdict !== 'won') continue;
+      if (!ctxs.has(trial.defendantId) || !ctxs.has(trial.plaintiffId)) continue;
+      if (!wonCasesByDefendant.has(trial.defendantId)) wonCasesByDefendant.set(trial.defendantId, []);
+      wonCasesByDefendant.get(trial.defendantId)!.push(trial);
+    }
+    for (const [defendantId, wonCases] of wonCasesByDefendant) {
+      const defCtx = ctxs.get(defendantId)!;
+      wonCases.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+      let available = Math.max(0, defCtx.vars.cash);
+      for (const trial of wonCases) {
+        const pltCtx = ctxs.get(trial.plaintiffId)!;
+        const payment = Math.min(trial.stakes, available);
+        defCtx.vars.cash -= payment;
+        pltCtx.vars.cash += payment;
+        available -= payment;
+        if (payment < trial.stakes) trial.actualAmountPaid = payment;
         legalReceivedThisTurn.set(
           trial.plaintiffId,
-          (legalReceivedThisTurn.get(trial.plaintiffId) ?? 0) + trial.stakes,
+          (legalReceivedThisTurn.get(trial.plaintiffId) ?? 0) + payment,
         );
-      } else {
-        // Defendant won: no payment
       }
     }
+    // Defendant-won ('lost') verdicts need no payment — nothing further to do for them.
 
     // ── Step 10 — Check for bankruptcies & mergers ───────────────────────────
     const playersStillActive: string[] = [];

@@ -478,6 +478,21 @@ export interface LegalCaseData {
    * the bankruptcy/merger waterfall pool, which can be less than `stakes` if the pool ran
    * out before fully covering this case. See `verdict`'s own doc comment. */
   waterfallPayoutAmount?: number;
+  /** Set only when `verdict === 'won'` and the defendant's own cash couldn't fully cover
+   * `stakes` at the moment of payout — the actual dollar amount paid, capped to whatever
+   * non-negative cash the defendant genuinely had (see `GameLoop.resolveTurn`'s Step 9).
+   * A real, reported bug: a WON verdict used to pay out the full nominal `stakes`
+   * unconditionally, letting a plaintiff "receive" money that didn't exist whenever the
+   * defendant couldn't actually cover it — the exact same problem `waterfallPayoutAmount`
+   * already solves for a case still open when its defendant is eliminated, just for a case
+   * that resolves via a NORMAL trial verdict instead. Deliberately a separate field from
+   * `waterfallPayoutAmount`, not a reuse of it — this case genuinely went to trial and was
+   * won (a real, litigated outcome), unlike a `waterfall_payout` case, which never resolved
+   * on its own at all and was simply swept into an elimination payout queue. When multiple
+   * cases resolve `'won'` against the same defendant in the same turn, they share that
+   * defendant's available cash in filing order (oldest `createdAt` first), same tie-break
+   * convention as the waterfall. */
+  actualAmountPaid?: number;
   /** Filing time — used to order bankruptcy/merger waterfall payouts oldest-first. */
   createdAt: Date;
   resolvedAt?: Date;
