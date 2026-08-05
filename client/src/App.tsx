@@ -7,6 +7,13 @@ import GamePhase from './pages/GamePhase';
 import GameOver from './pages/GameOver';
 import GameTimelineView from './pages/GameTimelineView';
 import AdminPortal from './pages/AdminPortal';
+import Home from './pages/Home';
+import WhatsNew from './pages/WhatsNew';
+import HowToPlay from './pages/HowToPlay';
+import Rules from './pages/Rules';
+import StrategyGuide from './pages/StrategyGuide';
+import Glossary from './pages/Glossary';
+import Devlog from './pages/Devlog';
 import ConsentBanner from './components/ConsentBanner';
 import { useConsentStore } from './stores/consentStore';
 
@@ -160,14 +167,39 @@ const NotificationBanner: React.FC = () => {
  * independent URLs — they're server-authoritative `currentPhase` values with no
  * deep-link value (no room id in the path, nothing bookmarkable), so this renders
  * directly off that state instead of syncing it into a path only to read it back out.
- * `/admin` is the one genuine URL in this app (see AdminPortal.tsx) and is checked
- * first, ahead of any game-phase state.
+ * `/admin` (`AdminPortal.tsx`) and five static content pages — `/whats-new`,
+ * `/how-to-play`, `/rules`, `/strategy`, `/glossary`, `/devlog` — are the genuine URLs in
+ * this app, none with any relationship to game state, all checked first, ahead of any
+ * game-phase state, the same way `/admin` always was.
+ *
+ * `/` is `Home.tsx`, a real content hub (pitch + links to every guide + "Play Now") —
+ * replacing what used to be a direct render of `Matchmaking.tsx` at root. The actual game
+ * now lives at `/play`. This split exists because of a real AdSense "low-value content"
+ * rejection — see CLAUDE.md's *AdSense "low-value content" rejection* section — root
+ * needed to be a page with substantial, always-visible content, and `/play` needed to
+ * stay lean/conversion-focused rather than competing for the same screen.
+ *
+ * One back-compat wrinkle: invite links generated before this split point at
+ * `/?room=<id>`, not `/play?room=<id>`. Rather than 404 or silently drop an old link,
+ * `isGameRoute` treats root-with-a-room-param the same as `/play` — Matchmaking still
+ * renders, just at the old URL. New invite links (`Matchmaking.tsx`'s `ShareButton`) are
+ * generated pointing at `/play` directly, so this shim only matters for links already
+ * shared before this change shipped.
  */
 const App: React.FC = () => {
   const { connect, disconnect, returnToLanding } = useSocketStore();
   const { currentPhase, isRejoining, selfElimination, hasAcknowledgedElimination, acknowledgeElimination, bankruptcyEvents, dismissBankruptcyEvent } = useGameStore();
   const { hasDecided: hasDecidedConsent, settingsOpen: consentSettingsOpen } = useConsentStore();
-  const isAdminRoute = window.location.pathname.startsWith('/admin');
+  const { pathname, search } = window.location;
+  const isAdminRoute = pathname.startsWith('/admin');
+  const isWhatsNewRoute = pathname.startsWith('/whats-new');
+  const isHowToPlayRoute = pathname.startsWith('/how-to-play');
+  const isRulesRoute = pathname.startsWith('/rules');
+  const isStrategyRoute = pathname.startsWith('/strategy');
+  const isGlossaryRoute = pathname.startsWith('/glossary');
+  const isDevlogRoute = pathname.startsWith('/devlog');
+  const hasRoomParam = new URLSearchParams(search).has('room');
+  const isHomeRoute = pathname === '/' && !hasRoomParam;
 
   useEffect(() => {
     connect();
@@ -177,6 +209,37 @@ const App: React.FC = () => {
   if (isAdminRoute) {
     return <AdminPortal />;
   }
+
+  if (isWhatsNewRoute) {
+    return <WhatsNew />;
+  }
+
+  if (isHowToPlayRoute) {
+    return <HowToPlay />;
+  }
+
+  if (isRulesRoute) {
+    return <Rules />;
+  }
+
+  if (isStrategyRoute) {
+    return <StrategyGuide />;
+  }
+
+  if (isGlossaryRoute) {
+    return <Glossary />;
+  }
+
+  if (isDevlogRoute) {
+    return <Devlog />;
+  }
+
+  if (isHomeRoute) {
+    return <Home />;
+  }
+
+  // Everything else — `/play`, or the legacy `/?room=<id>` back-compat shim — falls
+  // through to the phase-driven switch below, same as this app has always worked.
 
   // Checked ahead of the phase switch below — see LostOverlay's doc comment for why.
   // No NotificationBanner here: if this same elimination also ended the game, the

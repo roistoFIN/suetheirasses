@@ -42,7 +42,7 @@ async function joinAsSecondPlayer(browser: Browser, inviteLink: string, name: st
 
 test.describe('Game Phase', () => {
   test('should take players straight into the game room with real starting numbers when the game starts', async ({ page, browser }) => {
-    await page.goto('/');
+    await page.goto('/play');
     await page.getByLabel('Your Name').fill('GamePhasePlayer');
     await page.getByRole('button', { name: /Create New Room/i }).click();
 
@@ -86,7 +86,7 @@ test.describe('Game Phase', () => {
     const pageErrors: string[] = [];
     page.on('pageerror', (err) => pageErrors.push(String(err)));
 
-    await page.goto('/');
+    await page.goto('/play');
     await page.getByLabel('Your Name').fill('NoErrorPlayer');
     await page.getByRole('button', { name: /Create New Room/i }).click();
     await expect(page.getByText('Room Lobby')).toBeVisible();

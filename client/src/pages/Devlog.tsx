@@ -1,0 +1,149 @@
+import React from 'react';
+import { Container, Paper, Title, Text, Stack, Group, Button, Divider, Badge } from '@mantine/core';
+import { IconArrowLeft } from '@tabler/icons-react';
+
+// "Courtroom Ink" tokens — see CLAUDE.md's *Client-side duplicated pure logic* section
+// for why every page defines its own local copy instead of importing a shared one.
+const devlogStyles = {
+  paper: {
+    background: 'var(--ink-parchment)',
+    backgroundImage: 'var(--paper-texture)',
+    border: '1px solid #cbb888',
+    borderRadius: 4,
+    boxShadow: '6px 8px 0 rgba(0,0,0,0.45)',
+  } as React.CSSProperties,
+  title: {
+    fontFamily: "'Rye', Georgia, serif",
+    fontWeight: 400,
+    color: 'var(--ink-text)',
+  } as React.CSSProperties,
+};
+
+export interface DevlogEntry {
+  date: string;
+  title: string;
+  tag: string;
+  paragraphs: string[];
+}
+
+/**
+ * Real engineering postmortems, newest first, adapted from actual commit history into
+ * plain-language stories — distinct from `/whats-new` (short, player-facing patch notes)
+ * in both length and audience: this is "here's a bug we found and how we found it,"
+ * written for anyone curious how the game actually works under the hood. Every story here
+ * corresponds to a real fix documented in more technical detail in this repo's own
+ * CLAUDE.md, cross-referenced against the actual commit that shipped it for accurate dates.
+ */
+export const DEVLOG_ENTRIES: DevlogEntry[] = [
+  {
+    date: 'August 5, 2026',
+    title: "We got rejected by Google AdSense — and it was our own fault",
+    tag: 'Site & Growth',
+    paragraphs: [
+      'Google turned down our AdSense application with a terse "ads on screens without publisher content / low-value content." Annoying, but fair once we actually looked at what a reviewer would have seen: our entire landing page was a hero image, a handful of buttons, and a name field. The one paragraph of real explanatory text we had — an "About" section — only rendered once someone clicked a button to open a modal. To an automated reviewer (and honestly, to a real first-time visitor too), the page next to our ad slot had almost nothing on it.',
+      "The fix wasn't complicated, just overdue: move the real content out from behind the click. We rebuilt the front of the site around an actual hub page with real, always-visible text, and split the rest into proper reference pages — the one you're reading now among them. It's a good reminder that a rejection framed as a policy problem is sometimes just a content problem wearing a policy hat.",
+    ],
+  },
+  {
+    date: 'July 30, 2026',
+    title: 'Market share used to be purely decorative',
+    tag: 'Engine',
+    paragraphs: [
+      "A player asked a simple, slightly embarrassing question: \"does market share actually do anything? Does revenue drop when share drops?\" We went and checked the actual formula, and the honest answer was: almost never. Market share fed into how much you could theoretically sell, but the ceiling on how much you could actually produce was so much lower than the theoretical market size that you'd have to fall to single-digit market share before it ever became the real bottleneck. In practice, a whole cluster of decisions that only moved price or market share were quietly doing nothing to your bottom line.",
+      "We fixed two things. First, the total market now scales with how many players are actually in your game, so a 2-player and a 4-player match both start on fair footing instead of one side getting an artificially generous pie. Second, prices now behave like a real market: if everyone raises prices at once, total demand actually shrinks a little, and if everyone cuts prices, it grows — not just a zero-sum tug-of-war between players. We verified the fix with the same randomized-simulation approach we use for every balance change: run a hundred-plus games before and after, and check that the decisions in question actually started winning games instead of sitting inert.",
+    ],
+  },
+  {
+    date: 'July 30, 2026',
+    title: 'The AI opponent had been throwing punches that never landed',
+    tag: 'Bot AI',
+    paragraphs: [
+      "This one stung a little. Our server-controlled bot opponent had access to roughly 53 different attacking decisions — sabotage, smear campaigns, supply-chain attacks, all the good dirty stuff. It had been picking them, paying for them, and deploying them in every game since the bot first shipped. And for months, none of them were actually hurting anyone.",
+      "The bug was a one-line mix-up: the code that decided who an attack should target was checking the wrong flag. It looked at a field that's only ever set on the two Buy/Sell Shares decisions, instead of the field that actually marks a decision as having a real effect on a rival. Every other attacking decision the bot deployed had no target attached at all, so the game engine — correctly, by its own rules — just silently dropped the harmful part of the effect. The bot spent real money cosplaying as a villain without ever actually landing a blow.",
+      'Fixing it was a single function-call swap. Verifying it mattered more: once bot attacks started actually working, we immediately found a second, much scarier bug hiding behind the first one — which is the next story.',
+    ],
+  },
+  {
+    date: 'July 30, 2026',
+    title: 'One decision, six turns, and a bankrupt idle player',
+    tag: 'Engine',
+    paragraphs: [
+      "Right after fixing the bot-targeting bug above, a live test game produced an alarming result: a player who never submitted a single decision the entire game went bankrupt by round 12, entirely because of one attack the bot deployed back in round 5 and never touched again. One decision. Seven rounds of silence. Total collapse.",
+      "The cause was a compounding bug in how we applied percentage-based effects. When an attack reduces a target's capacity utilization by, say, 30%, our code was re-applying that same 30% cut every single turn — against the value from the turn before, not the original value. That's not a one-time 30% hit, that's exponential decay: 100% turn one, 70% turn two, 49% turn three, and so on, forever, for as long as the attack stayed on the books (up to ten years of in-game time). A single successful attack was a death sentence with no way to recover from it short of suing your way out.",
+      "The fix mirrors how we already handled a similar bug on the decision's own side (not the target's): apply the effect through its own defined schedule, then hold — stop compounding it every subsequent turn. We added a dedicated regression test that replays this exact scenario turn by turn, specifically so this class of bug can never quietly come back.",
+    ],
+  },
+  {
+    date: 'July 29, 2026',
+    title: 'Our own AI kept bankrupting itself against a player who did nothing',
+    tag: 'Bot AI',
+    paragraphs: [
+      "A separate, equally embarrassing discovery: our bot could reliably go bankrupt in a game where its only opponent submitted zero decisions the entire match. No attacks, no lawsuits, nothing adversarial at all — the bot was doing this entirely to itself.",
+      "We found five separate, compounding gaps. The bot's cost estimates only ever looked at a decision's first-year cash effect, missing costs that landed in later years. It had no sense of its own cash trend — it could be losing money every single turn and never notice. Worst of all, it never checked whether a decision was actually legal to deploy (cooldowns, exclusions, still-maturing prior decisions), so it kept mentally crediting itself windfalls from picks that got silently rejected, then overspending elsewhere based on money it never actually had.",
+      'The biggest single fix, once we found it: the bot\'s profitability check never accounted for the cost of raw materials and logistics scaling with production volume — often the single largest line item in this game\'s numbers. A bot chasing bigger capacity was making its own largest hidden cost grow right along with it, invisibly. Across a hundred-game test harness, fixing all of this dropped the bot\'s self-inflicted bankruptcy rate from roughly 39% down to about 3%.',
+    ],
+  },
+  {
+    date: 'July 29, 2026',
+    title: '"Settled" didn\'t mean what we thought it meant',
+    tag: 'Legal System',
+    paragraphs: [
+      "A sharp-eyed player reported something that shouldn't have been possible: a case they'd deliberately sent to trial — explicitly declining to negotiate, forcing a real verdict — showed up afterward labeled \"Settled.\" No offer had ever been made or accepted. We went digging and found a real, if subtle, inconsistency baked into the game from early on.",
+      "When a defendant goes bankrupt or gets acquired mid-game, any lawsuits still open against them get paid out from whatever's left in a final settlement pool — a completely different mechanism from an actual negotiated agreement. Our code was stamping every one of those payouts with the exact same \"settled\" label a real negotiated deal gets, even though nothing had actually been negotiated.",
+      'The fix was to give that payout its own distinct outcome label, so a "Settled" case now always means exactly one thing: someone made a real offer, and the other side genuinely agreed to it. A bankruptcy-triggered payout gets its own honest label and its own distinct on-screen notice instead.',
+    ],
+  },
+];
+
+/**
+ * `/devlog` — longer-form engineering postmortems, one page (not per-post routes) per
+ * this codebase's existing convention of plain pathname-checked static pages rather than
+ * slug-based routing — see App.tsx's own doc comment. `DEVLOG_ENTRIES` is exported and
+ * covered by Devlog.test.ts's shape/sort checks.
+ */
+const Devlog: React.FC = () => {
+  return (
+    <Container size="sm" py="xl">
+      <Paper p="xl" style={devlogStyles.paper}>
+        <Title order={1} style={devlogStyles.title} mb="xs">🛠️ Devlog</Title>
+        <Text size="sm" mb="xl" style={{ color: 'var(--ink-text-soft)' }}>
+          Real bugs we found, how we found them, and what we changed — newest first.
+        </Text>
+
+        <Stack gap="xl">
+          {DEVLOG_ENTRIES.map((entry, i) => (
+            <React.Fragment key={`${entry.date}-${entry.title}`}>
+              {i > 0 && <Divider color="#cbb888" />}
+              <Stack gap="xs">
+                <Group gap="sm" align="center">
+                  <Badge color="dark" variant="light" size="sm">{entry.tag}</Badge>
+                  <Text size="sm" style={{ color: 'var(--ink-text-soft)' }}>{entry.date}</Text>
+                </Group>
+                <Title order={3} style={devlogStyles.title}>{entry.title}</Title>
+                <Stack gap="sm">
+                  {entry.paragraphs.map((p, pi) => (
+                    <Text key={pi} size="sm">{p}</Text>
+                  ))}
+                </Stack>
+              </Stack>
+            </React.Fragment>
+          ))}
+        </Stack>
+
+        <Group justify="center" mt="xl">
+          <Button
+            component="a"
+            href="/"
+            variant="outline"
+            color="dark"
+            leftSection={<IconArrowLeft size={16} />}
+          >
+            Back to the hub
+          </Button>
+        </Group>
+      </Paper>
+    </Container>
+  );
+};
+
+export default Devlog;

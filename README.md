@@ -71,10 +71,11 @@ The room list is dynamically updated via the `rooms:list` server event, showing:
   return visits so it never needs re-typing. A **Change Name** button sits next to the
   field, enabled only once a name exists (freshly typed or remembered) — clicking it
   unlocks the field for editing again.
-- **About modal** — the landing page's title/subtitle text was replaced with a single
-  **About** button; clicking it opens a closeable modal with a plain-language rules
-  summary (round flow, decisions, lawsuits, win condition), for players who land on the
-  page without prior context.
+- **`Matchmaking.tsx` lives at `/play`, not `/`** — the site's actual homepage is
+  `Home.tsx`, a content hub with a "Play Now" button plus links to every static page
+  below. See `App.tsx`'s doc comment for the routing split and the AdSense "low-value
+  content" rejection that prompted it, and *Static Content Pages* further down for what
+  each page covers.
 - **Room Lobby chat** — a simple text chat, shown here as an always-visible inline box
   (`chat:message`, client → server payload `{ message }`, broadcast back to the room as
   `{ playerId, playerName, message, timestamp }`). No longer WAITING-only — the same
@@ -119,6 +120,28 @@ The room list is dynamically updated via the `rooms:list` server event, showing:
   room. Quick Play treats that rejection like any other unusable candidate room (full,
   gone, whatever) — it skips to the next one, or creates a fresh room if none work, rather
   than surfacing a hard error and stranding the player on the landing page.
+
+### Static Content Pages
+
+Real, crawlable, independently-loadable URLs — each checked in `App.tsx` ahead of the
+game-phase switch (see CLAUDE.md for the full routing story and the AdSense rejection
+that prompted building most of these):
+
+| Path | Component | What it is |
+| --- | --- | --- |
+| `/` | `Home.tsx` | The actual homepage — pitch, "Play Now" button, links to everything below. |
+| `/play` | `Matchmaking.tsx` | The game itself: create/join/quick-play, invite links, lobby. |
+| `/how-to-play` | `HowToPlay.tsx` | A screenshot-illustrated walkthrough of a full game, lobby to Game Over. |
+| `/rules` | `Rules.tsx` | The precise reference — decision-category caps, elimination conditions, real default numbers. |
+| `/strategy` | `StrategyGuide.tsx` | Deeper strategic advice grounded in documented engine behavior. |
+| `/glossary` | `Glossary.tsx` | Plain-language definitions for the game's legal and business jargon. |
+| `/devlog` | `Devlog.tsx` | Real engineering postmortems, written as plain-language stories. |
+| `/whats-new` | `WhatsNew.tsx` | A blog-style changelog of player-facing patch notes, by version. |
+| `/admin` | `AdminPortal.tsx` | Token-gated room monitoring + config/decisions/formulas/feedback/analytics. |
+
+An invite link generated before `/play` existed still works — a `/?room=<id>` URL falls
+through to the game exactly like `/play?room=<id>` does, rather than stranding an
+already-shared link on the new homepage.
 
 ---
 
@@ -196,20 +219,29 @@ suethemchickens/
 │   │   │   ├── ChatWidget.tsx       # Floating in-game/game-over chat button + popup
 │   │   │   ├── FeedbackForm.tsx     # Shared 1-5 mood-face rating + text feedback form
 │   │   │   ├── FeedbackWidget.tsx   # Floating game-over feedback button + popup (wraps FeedbackForm)
+│   │   │   ├── PrivacyPolicyModal.tsx # Shared GDPR privacy policy modal (Home.tsx + Matchmaking.tsx)
 │   │   │   └── ...
 │   │   ├── pages/                   # Page components
-│   │   │   ├── Matchmaking.tsx      # Lobby: create/join/quick-play, invite links, inline chat
+│   │   │   ├── Home.tsx             # / — the real homepage: pitch, Play Now, links to everything
+│   │   │   ├── Matchmaking.tsx      # /play — create/join/quick-play, invite links, inline chat
 │   │   │   ├── GamePhase.tsx        # The GAME_PHASE loop UI (KPIs, decisions, lawsuits)
 │   │   │   ├── GameOver.tsx         # AFTERMATH: winner + final standings
 │   │   │   ├── GameTimelineView.tsx # Civilization-style replay/live spectator view
-│   │   │   └── AdminPortal.tsx      # /admin — token-gated room monitoring + config/decisions/
-│   │   │                            # formulas/feedback/analytics view
+│   │   │   ├── AdminPortal.tsx      # /admin — token-gated room monitoring + config/decisions/
+│   │   │   │                        # formulas/feedback/analytics view
+│   │   │   ├── HowToPlay.tsx        # /how-to-play — screenshot-illustrated rules walkthrough
+│   │   │   ├── Rules.tsx            # /rules — precise reference: caps, elimination, real numbers
+│   │   │   ├── StrategyGuide.tsx    # /strategy — deeper strategic advice
+│   │   │   ├── Glossary.tsx         # /glossary — legal + business jargon definitions
+│   │   │   ├── Devlog.tsx           # /devlog — engineering postmortems as plain-language stories
+│   │   │   └── WhatsNew.tsx         # /whats-new — blog-style changelog, player-facing patch notes
 │   │   ├── stores/                  # Zustand state stores
 │   │   │   ├── gameStore.ts         # Game state (room, phase, timer, turn results)
 │   │   │   ├── socketStore.ts       # Socket.IO connection & events
 │   │   │   └── chatStore.ts         # Room chat history, continuous across phases
-│   │   ├── App.tsx                  # Root component — renders phase/`/admin` directly,
-│   │   │                            # no path-based routing for game phases (see CLAUDE.md);
+│   │   ├── App.tsx                  # Root component — renders phase/`/admin`/the static
+│   │   │                            # content pages directly, no path-based routing for
+│   │   │                            # game phases (see CLAUDE.md);
 │   │   │                            # also owns the global NotificationBanner and the
 │   │   │                            # "lost" takeover (bankrupt/forfeit)
 │   │   └── main.tsx                 # Entry point
@@ -1536,9 +1568,10 @@ taken out of flow via `position: fixed`).
 
 A themed popup form — a 1-5 Likert scale rendered as mood-face icons (😢🙁😐🙂😄, via
 `@tabler/icons-react`'s `IconMoodCry`/`IconMoodSad`/`IconMoodNeutral`/`IconMoodSmile`/
-`IconMoodHappy`) plus an optional free-text box — reachable from two places: an inline
-**Feedback** button on the landing page (next to About/Privacy Policy, opening a Modal),
-and a floating button in the bottom-left corner of the game-over/replay screen
+`IconMoodHappy`) plus an optional free-text box — reachable from three places: an inline
+**Feedback** button on both `Home.tsx` (`/`) and `Matchmaking.tsx` (`/play`, next to
+Privacy Policy/Cookie Settings, opening a Modal), and a floating button in the bottom-left
+corner of the game-over/replay screen
 (`GameTimelineView` in `mode="finished"` — the mirror image of the floating **Chat**
 button's bottom-right corner; see *In-Game & Game-Over Chat* above). Both embed the same
 `client/src/components/FeedbackForm.tsx`; only the surrounding shell (Modal vs. floating

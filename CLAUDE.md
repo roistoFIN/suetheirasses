@@ -1317,16 +1317,98 @@ gameTypes.ts` — engine types (`DecisionDefinition`, `PlayerVariables`, `LegalC
 `TurnResolutionResult`, `GameConfig`). Both workspaces resolve `@suethemchickens/shared`
 straight to source via path alias — no build step needed to see changes during dev.
 
-### Client: no path-based routing for game phases — `/admin` is the one real URL
+### Client: no path-based routing for game phases — `/` is a content hub, the game is `/play`
 
 `App.tsx` renders WAITING/GAME_PHASE/AFTERMATH directly off server-authoritative
 `currentPhase` in a plain `switch`, no `<Routes>`, no URL change — these have no deep-link
 value (no room id in the path, nothing bookmarkable). Don't reintroduce phase-driven
-`navigate()` calls; react to phase changes with a plain `useEffect` instead. `/admin`
-(`AdminPortal.tsx`) is the one genuine URL, checked first via `window.location.pathname`,
-ahead of the phase switch entirely, since it has no relationship to game state.
-`BrowserRouter` still wraps the app purely for `Matchmaking.tsx`'s `useSearchParams`
-(`?room=` invite links).
+`navigate()` calls; react to phase changes with a plain `useEffect` instead.
+
+Seven real, static URLs exist alongside that phase switch, each checked via
+`window.location.pathname` ahead of it, since none has any relationship to game state:
+`/admin` (`AdminPortal.tsx`), `/` (`Home.tsx`), `/whats-new` (`WhatsNew.tsx`),
+`/how-to-play` (`HowToPlay.tsx`), `/rules` (`Rules.tsx`), `/strategy`
+(`StrategyGuide.tsx`), `/glossary` (`Glossary.tsx`), and `/devlog` (`Devlog.tsx`). None of
+these uses `<Routes>`/`<Link>` — just a plain pathname check and ordinary `<a href>`/
+`Button component="a"` navigation (a real full-page load, not a client-side transition —
+deliberate, since it keeps each one a genuinely separate, independently-crawlable
+request). `BrowserRouter` still wraps the app purely for `Matchmaking.tsx`'s
+`useSearchParams` (`?room=` invite links).
+
+**`/` is `Home.tsx`, not the game.** The actual game (`Matchmaking.tsx`, then the phase
+switch) lives at `/play`. `Home.tsx` is a real content hub: a pitch, a "Play Now" button,
+and a grid of links to every static page above. This split — and the whole cluster of
+static pages it fans out to — exists because of a real AdSense rejection; see the next
+section. One deliberate back-compat wrinkle: `App.tsx`'s `isHomeRoute` is `pathname ===
+'/' && !hasRoomParam` — a `/?room=<id>` link (the format `Matchmaking.tsx` generated
+before this split existed) still falls through to the phase switch and opens the join
+flow exactly as before, rather than stranding an already-shared old invite link on the
+hub. New invite links (`ShareButton`'s `url` prop) are generated pointing at
+`/play?room=<id>` directly; the root-level form only matters for links shared before this
+change shipped. Regression-tested in `tests/e2e/matchmaking.spec.ts`'s "Root URL routing"
+block: a bare `/` shows the hub (not the name-entry form), and `/?room=<id>` still opens
+"Join a Room" with the code pre-filled.
+
+### AdSense "low-value content" rejection — real, crawlable content pages, not just a modal
+
+AdSense rejected the site with "Google-supplied ads on screens without publisher-content /
+low-value content." Root cause: the landing page's only real explanatory text (an "About"
+section) lived inside a Mantine `Modal` that never rendered unless a visitor clicked a
+button — to Google's reviewer, the page where `AdSlot`'s landing placement lived
+(`Matchmaking.tsx`, at the time still mounted at `/`) was just a hero image, four buttons,
+and a name field, with essentially zero visible publisher content anywhere near the ad.
+
+Fixed in two rounds. **First round** (content, same URL): the About text moved out of the
+modal into a real, always-visible "How to Play" section on the page itself, and two new
+pages — `/whats-new` (a changelog) and `/how-to-play` (a screenshot walkthrough) — gave
+the site real content beyond the thin landing shell.
+
+**Second round** (structure): a follow-up request for a proper rules reference, strategy
+guide, legal-jargon glossary, and devlog — plus "one page that leads to all of them and to
+the game" — prompted a bigger split rather than piling more content onto `Matchmaking.tsx`
+directly. `/` became `Home.tsx`, a genuine directory/hub page (see the routing section
+above), and `Matchmaking.tsx` moved to `/play`, shedding the inline How to Play section
+and its `AdSlot` — both moved to `Home.tsx`, which is now the page with real, substantial,
+always-visible content (a pitch plus six real guide descriptions) sitting next to the ad,
+while `/play` stays lean and conversion-focused with nothing competing for a returning
+player's attention right next to the Join/Create buttons. Four new pages exist purely as
+content in their own right, not just as an ad-adjacency trick:
+- **`/rules`** (`Rules.tsx`) — the precise structured reference: category caps, the real
+  default numbers (`server/src/data/game_config.json`), elimination conditions. Distinct
+  in tone from `/how-to-play`'s narrative screenshots and `/strategy`'s advice.
+- **`/strategy`** (`StrategyGuide.tsx`) — deeper strategic advice grounded in real,
+  documented engine behavior (cash discipline given decision-cost wealth-scaling, the
+  late-game lawsuit/takeover escalation, Buy Shares vs. litigation tradeoffs) rather than
+  generic strategy-game platitudes.
+- **`/glossary`** (`Glossary.tsx`) — plain-language definitions for the legal jargon a
+  case's UI actually uses (Grounds, Stakes, Settled, Statute of Limitations, etc.) and the
+  business/game terms alongside it (Dilution, Risk Gauge, Market Share, etc.), exported as
+  `LEGAL_TERMS`/`BUSINESS_TERMS` and alphabetized within each group — `Glossary.test.ts`
+  asserts the sort and checks for duplicates.
+- **`/devlog`** (`Devlog.tsx`) — six real engineering postmortems (the target-effect
+  compounding bug, the bot's attacks never actually landing, the bot's own COGS-blind-spot
+  self-bankruptcy saga, the `'settled'` mislabeling bug, the market-share fix, and this
+  very AdSense rejection) adapted from this file's own bug writeups into plain-language
+  stories for a general audience — distinct from `/whats-new` in both length and intent:
+  that page is short player-facing patch notes, this one is "here's a bug and how we found
+  it." `DEVLOG_ENTRIES` is exported and dated from the real commits that shipped each fix;
+  `Devlog.test.ts` checks the entries are well-formed and sorted newest-first.
+
+**The GDPR privacy policy text is a shared component now, not duplicated prose.**
+`PrivacyPolicyModal.tsx` was extracted out of `Matchmaking.tsx` specifically because
+`Home.tsx` needed the exact same legal text — unlike the small pure UI-logic functions
+this codebase deliberately hand-duplicates per file (trend arrows, offer brackets, etc.,
+see *Client-side duplicated pure logic* below), a legal document is exactly the kind of
+content where two copies drifting apart would be a real problem, so this one is a genuine
+shared component instead of the usual per-file copy.
+
+`/how-to-play`'s "Read the Signs" section is also a genuine gameplay tip, not just SEO
+padding: an incoming-attack hint card already quotes a line from the attacker's own
+LLM-generated annual report (see *Local LLM annual-report blurbs* above) — often a
+legible tell for what they actually deployed — so a player can frequently form a strong
+guess for free by cross-referencing that against Competitor Intel's visible KPI swings,
+rather than assuming Dig Deeper is a prerequisite for filing at all. `/strategy` repeats
+this same tip in condensed form as its second strategic principle.
 
 ### Admin portal — env-var token, REST-only
 
