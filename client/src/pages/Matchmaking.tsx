@@ -586,9 +586,17 @@ const Matchmaking: React.FC = () => {
           itself lean/conversion-focused again now that the informational job lives
           elsewhere; a visitor who lands here directly via an old bookmark or invite link
           still gets one clear way back to everything else. */}
-      <Text size="sm" ta="center" mt="xl" style={{ color: 'var(--ink-text-soft)' }}>
-        New here? <a href="/how-to-play" style={{ color: 'var(--ink-text)' }}>Learn how to play</a>,
-        or see <a href="/" style={{ color: 'var(--ink-text)' }}>everything else the site has</a>.
+      {/* This sits directly on the page's dark `--ink-bg`, not inside the parchment
+          Paper above — a real, reported bug: it originally used `--ink-text`/
+          `--ink-text-soft` (the dark, near-black tokens meant for text ON parchment),
+          which read as almost invisible dark-on-dark against the page background.
+          `--ink-text-on-dark-soft` is this theme's actual token for exactly this case —
+          see GamePhase.tsx's `loadingOverlay` style for the same pairing — and the links
+          use `--ink-gold` (the site's accent/CTA color) plus an underline so they read as
+          clickable, not just differently-colored body text. */}
+      <Text size="sm" ta="center" mt="xl" style={{ color: 'var(--ink-text-on-dark-soft)' }}>
+        New here? <a href="/how-to-play" style={{ color: 'var(--ink-gold)', textDecoration: 'underline' }}>Learn how to play</a>,
+        or see <a href="/" style={{ color: 'var(--ink-gold)', textDecoration: 'underline' }}>everything else the site has</a>.
       </Text>
 
       <PrivacyPolicyModal
