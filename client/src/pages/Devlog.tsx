@@ -1,6 +1,7 @@
 import React from 'react';
-import { Container, Paper, Title, Text, Stack, Group, Button, Divider, Badge } from '@mantine/core';
+import { Container, Paper, Title, Text, Stack, Group, Button, Divider, Badge, Box } from '@mantine/core';
 import { IconArrowLeft } from '@tabler/icons-react';
+import AdSlot from '../components/AdSlot';
 
 // "Courtroom Ink" tokens — see CLAUDE.md's *Client-side duplicated pure logic* section
 // for why every page defines its own local copy instead of importing a shared one.
@@ -36,12 +37,13 @@ export interface DevlogEntry {
  */
 export const DEVLOG_ENTRIES: DevlogEntry[] = [
   {
-    date: 'August 5, 2026',
-    title: "We got rejected by Google AdSense — and it was our own fault",
+    date: 'August 6, 2026',
+    title: 'Rebuilding the site around real content: a homepage, four new guides, and a quieter cookie banner',
     tag: 'Site & Growth',
     paragraphs: [
-      'Google turned down our AdSense application with a terse "ads on screens without publisher content / low-value content." Annoying, but fair once we actually looked at what a reviewer would have seen: our entire landing page was a hero image, a handful of buttons, and a name field. The one paragraph of real explanatory text we had — an "About" section — only rendered once someone clicked a button to open a modal. To an automated reviewer (and honestly, to a real first-time visitor too), the page next to our ad slot had almost nothing on it.',
-      "The fix wasn't complicated, just overdue: move the real content out from behind the click. We rebuilt the front of the site around an actual hub page with real, always-visible text, and split the rest into proper reference pages — the one you're reading now among them. It's a good reminder that a rejection framed as a policy problem is sometimes just a content problem wearing a policy hat.",
+      "Until recently, this whole site was effectively one screen: a hero image, a name field, and a couple of buttons. Fine for a returning player who already knows what they're doing, not so fine for anyone landing here cold, or for the ad slot that used to sit right next to all that empty space. We rebuilt the front of the site around a real homepage — a proper pitch, a Play Now button, and a directory to everything else — and split the game itself off onto its own page rather than living at the root URL.",
+      "That \"everything else\" is four brand-new pages: a precise Rules reference (the real numbers, not vibes), a Strategy Guide, a Glossary for the legal and business jargon the game's own UI throws at you, and this Devlog — alongside the illustrated How to Play walkthrough and changelog that already existed. Each one is a real, independently-loadable page, not a modal or a scroll-down section, which mattered for reasons beyond just tidiness (a thin, mostly-empty page next to an ad slot is exactly the kind of thing an ad reviewer flags as low-value).",
+      "Two smaller fixes rounded it out. The cookie-consent banner used to be mounted sitewide, which meant it could pop up over the bottom of the screen mid-round if a player hadn't made a choice yet — a bad moment for a real-time game to ask about advertising cookies. It now lives only on the homepage, asked once, up front, before anyone reaches the game itself. And every one of the new guide pages now carries its own ad placement, each with its own distinct ad unit — the same one-slot-per-placement rule the homepage and Game Over screen already followed, just finally applied everywhere there's real content to sit next to.",
     ],
   },
   {
@@ -99,7 +101,9 @@ export const DEVLOG_ENTRIES: DevlogEntry[] = [
  * `/devlog` — longer-form engineering postmortems, one page (not per-post routes) per
  * this codebase's existing convention of plain pathname-checked static pages rather than
  * slug-based routing — see App.tsx's own doc comment. `DEVLOG_ENTRIES` is exported and
- * covered by Devlog.test.ts's shape/sort checks.
+ * covered by Devlog.test.ts's shape/sort checks. Carries its own manual `AdSlot`
+ * (`VITE_ADSENSE_SLOT_DEVLOG`) below the content, same convention as every other static
+ * page.
  */
 const Devlog: React.FC = () => {
   return (
@@ -142,6 +146,10 @@ const Devlog: React.FC = () => {
           </Button>
         </Group>
       </Paper>
+
+      <Box mt="xl">
+        <AdSlot slot={import.meta.env.VITE_ADSENSE_SLOT_DEVLOG} />
+      </Box>
     </Container>
   );
 };

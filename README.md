@@ -143,6 +143,12 @@ An invite link generated before `/play` existed still works — a `/?room=<id>` 
 through to the game exactly like `/play?room=<id>` does, rather than stranding an
 already-shared link on the new homepage.
 
+`/`, `/rules`, `/strategy`, `/glossary`, `/devlog`, `/how-to-play`, and `/whats-new` each
+carry their own manual Google AdSense `AdSlot`, one distinct ad unit per page (see
+CLAUDE.md). The cookie-consent banner (`ConsentBanner.tsx`) mounts only on `/` — it used
+to be sitewide, which could pop it up over a live game round; now the choice is made once,
+up front, before a player ever reaches `/play`.
+
 ---
 
 ## 🏗️ Architecture
@@ -1569,9 +1575,10 @@ taken out of flow via `position: fixed`).
 A themed popup form — a 1-5 Likert scale rendered as mood-face icons (😢🙁😐🙂😄, via
 `@tabler/icons-react`'s `IconMoodCry`/`IconMoodSad`/`IconMoodNeutral`/`IconMoodSmile`/
 `IconMoodHappy`) plus an optional free-text box — reachable from three places: an inline
-**Feedback** button on both `Home.tsx` (`/`) and `Matchmaking.tsx` (`/play`, next to
-Privacy Policy/Cookie Settings, opening a Modal), and a floating button in the bottom-left
-corner of the game-over/replay screen
+**Feedback** button on both `Home.tsx` (`/`, next to Privacy Policy/Cookie Settings) and
+`Matchmaking.tsx` (`/play`, next to Privacy Policy only — Cookie Settings lives on `Home.tsx`
+alone now, see *Static Content Pages* above), each opening a Modal, and a floating button
+in the bottom-left corner of the game-over/replay screen
 (`GameTimelineView` in `mode="finished"` — the mirror image of the floating **Chat**
 button's bottom-right corner; see *In-Game & Game-Over Chat* above). Both embed the same
 `client/src/components/FeedbackForm.tsx`; only the surrounding shell (Modal vs. floating

@@ -33,13 +33,14 @@ const consentStyles = {
 };
 
 /**
- * Sitewide cookie-consent bar — see CLAUDE.md's *Consent-gated Google Analytics/Ads*
- * section. Mounted unconditionally in App.tsx's final return (alongside BankruptcyModal), visible
- * whenever the player hasn't yet made a choice OR has reopened it via Matchmaking's
- * "Cookie Settings" button (`useConsentStore`'s `settingsOpen`). In practice this only
- * ever shows on the pre-room landing page, since every player passes through it before a
- * room/game exists — but it's mounted sitewide (not landing-page-local) so a decision is
- * never skippable regardless of entry path.
+ * Cookie-consent bar — see CLAUDE.md's *Consent-gated Google Analytics/Ads* section.
+ * Mounted only in `Home.tsx` (`/`), visible whenever the player hasn't yet made a choice
+ * OR has reopened it via Home's "Cookie Settings" button (`useConsentStore`'s
+ * `settingsOpen`). Used to be mounted unconditionally in `App.tsx`, covering every phase
+ * including a live GamePhase round — a fixed bottom overlay asking for a cookie decision
+ * has no good place to sit without covering a real-time game control, so the decision now
+ * happens once, up front, on the hub page before a player ever reaches `/play`, and never
+ * interrupts gameplay again.
  *
  * A first-time visitor (`!hasDecided`) gets no dismiss/close control — Accept All,
  * Reject All, and Customize→Save are the only ways to make this go away, since an

@@ -16,6 +16,7 @@ import { useConsentStore } from '../stores/consentStore';
 import FeedbackForm from '../components/FeedbackForm';
 import PrivacyPolicyModal from '../components/PrivacyPolicyModal';
 import AdSlot from '../components/AdSlot';
+import ConsentBanner from '../components/ConsentBanner';
 
 // "Courtroom Ink" tokens — see CLAUDE.md's *Client-side duplicated pure logic* section
 // for why every page defines its own local copy instead of importing a shared one.
@@ -75,13 +76,24 @@ const GUIDE_LINKS: GuideLink[] = [
  * always-visible content (this pitch plus six real guide descriptions), while `/play`
  * stays lean and conversion-focused with no ad competing for a returning player's
  * attention right next to the Join/Create buttons.
+ *
+ * Also the only page that mounts `ConsentBanner` — moved here from a sitewide App.tsx
+ * mount, since a fixed bottom overlay asking for a cookie decision has no good place to
+ * sit over a live GamePhase round. The cookie decision now happens once, here, before a
+ * player ever reaches `/play`. Reserves the same bottom-padding-while-visible space
+ * App.tsx's old mount used to, so the banner can't silently cover the Privacy/Feedback/
+ * Cookie Settings row or the AdSlot beneath it.
  */
 const Home: React.FC = () => {
   const [privacyOpen, setPrivacyOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const openCookieSettings = useConsentStore((s) => s.openSettings);
+  const hasDecidedConsent = useConsentStore((s) => s.hasDecided);
+  const consentSettingsOpen = useConsentStore((s) => s.settingsOpen);
+  const consentBannerVisible = !hasDecidedConsent || consentSettingsOpen;
 
   return (
+    <Box pb={consentBannerVisible ? 140 : 0}>
     <Container size="sm" py="xl">
       <Paper p="xl" style={homeStyles.paper}>
         <Image
@@ -180,6 +192,8 @@ const Home: React.FC = () => {
         <FeedbackForm source="landing" onClose={() => setFeedbackOpen(false)} />
       </Modal>
     </Container>
+    <ConsentBanner />
+    </Box>
   );
 };
 

@@ -22,6 +22,15 @@ interface ImportMetaEnv {
    * as VITE_ADSENSE_SLOT_LANDING, but its own distinct ad unit/slot id, since AdSense
    * ad units are per-placement. */
   readonly VITE_ADSENSE_SLOT_GAMEOVER?: string;
+  /** AdSense ad-unit slot ids for the six static guide pages' manual ad placements (see
+   * components/AdSlot.tsx and each page's own doc comment) — same unset-is-safe rule as
+   * VITE_ADSENSE_SLOT_LANDING, each its own distinct ad unit/slot id. */
+  readonly VITE_ADSENSE_SLOT_RULES?: string;
+  readonly VITE_ADSENSE_SLOT_STRATEGY?: string;
+  readonly VITE_ADSENSE_SLOT_GLOSSARY?: string;
+  readonly VITE_ADSENSE_SLOT_DEVLOG?: string;
+  readonly VITE_ADSENSE_SLOT_HOWTOPLAY?: string;
+  readonly VITE_ADSENSE_SLOT_WHATSNEW?: string;
 }
 
 interface ImportMeta {

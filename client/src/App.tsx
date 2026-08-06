@@ -14,8 +14,6 @@ import Rules from './pages/Rules';
 import StrategyGuide from './pages/StrategyGuide';
 import Glossary from './pages/Glossary';
 import Devlog from './pages/Devlog';
-import ConsentBanner from './components/ConsentBanner';
-import { useConsentStore } from './stores/consentStore';
 
 const LOST_COPY: Record<'bankrupt' | 'forfeit' | 'merged', { title: string; body: (acquirerName?: string) => string }> = {
   bankrupt: {
@@ -189,7 +187,6 @@ const NotificationBanner: React.FC = () => {
 const App: React.FC = () => {
   const { connect, disconnect, returnToLanding } = useSocketStore();
   const { currentPhase, isRejoining, selfElimination, hasAcknowledgedElimination, acknowledgeElimination, bankruptcyEvents, dismissBankruptcyEvent } = useGameStore();
-  const { hasDecided: hasDecidedConsent, settingsOpen: consentSettingsOpen } = useConsentStore();
   const { pathname, search } = window.location;
   const isAdminRoute = pathname.startsWith('/admin');
   const isWhatsNewRoute = pathname.startsWith('/whats-new');
@@ -287,23 +284,19 @@ const App: React.FC = () => {
     }
   }
 
-  // The consent banner is `position: fixed` at the bottom of the viewport, drawn on top
-  // of whatever page is underneath — with no reserved space, it silently covers (and
-  // intercepts clicks on) anything near the bottom of a normal-height viewport, most
-  // critically Matchmaking's own name input/Create Room button, the very first thing a
-  // new visitor needs to interact with. Reserving bottom padding for exactly as long as
-  // the banner is actually visible (its own `!hasDecided || settingsOpen` condition —
-  // see ConsentBanner's doc comment) keeps that content clickable without permanently
-  // shrinking the page once a choice has been made. The pixel value is an approximation
-  // of the banner's own collapsed height, not an exact fit — same convention as this
-  // app's other fixed-height estimates (see CLAUDE.md's ACTIVE_DECISIONS_MAX_HEIGHT).
-  const consentBannerVisible = !hasDecidedConsent || consentSettingsOpen;
-
+  // ConsentBanner used to be mounted here unconditionally, covering every phase
+  // (Matchmaking, GamePhase, GameOver) — a real UX problem for GamePhase specifically,
+  // since it's a live 120-second round and a fixed bottom overlay asking for a cookie
+  // decision has no good place to sit without covering a real-time control. Moved to
+  // mount only inside Home.tsx (`/`) instead: the consent decision now happens once, up
+  // front, before a player ever reaches the game, and never again interrupts play. See
+  // Home.tsx's own doc comment and CLAUDE.md's *Consent-gated Google Analytics/Ads*
+  // section. Matchmaking.tsx's own "Cookie Settings" button was removed for the same
+  // reason — reopening the banner has nowhere left to render on `/play`.
   return (
     <>
       <NotificationBanner />
-      <Box pb={consentBannerVisible ? 140 : 0}>{page}</Box>
-      <ConsentBanner />
+      {page}
       {bankruptcyEvents.length > 0 && (
         <BankruptcyModal
           playerName={bankruptcyEvents[0].playerName}

@@ -1410,6 +1410,35 @@ guess for free by cross-referencing that against Competitor Intel's visible KPI 
 rather than assuming Dig Deeper is a prerequisite for filing at all. `/strategy` repeats
 this same tip in condensed form as its second strategic principle.
 
+**Every static page now carries its own manual `AdSlot`, not just `Home.tsx`.** `/rules`,
+`/strategy`, `/glossary`, `/devlog`, `/how-to-play`, and `/whats-new` each render an
+`AdSlot` below their content `Paper`, same placement convention as `Home.tsx`'s own —
+each with its own distinct env var (`VITE_ADSENSE_SLOT_RULES`/`_STRATEGY`/`_GLOSSARY`/
+`_DEVLOG`/`_HOWTOPLAY`/`_WHATSNEW`), following the pre-existing "each placement needs its
+own ad unit" rule `VITE_ADSENSE_SLOT_LANDING`/`_GAMEOVER` already established. Wired
+through `client/.env.example`, `vite-env.d.ts`, `client/Dockerfile`'s ARG/ENV pairs, and
+`.github/workflows/docker.yml`'s build-args, same shape as the original two slots — six
+new GitHub Actions repo Variables (`ADSENSE_SLOT_RULES` etc.) need to exist for these to
+actually render in production; until then `AdSlot`'s own "renders nothing without a
+configured slot id" gate keeps them silently absent, same as any other unset slot.
+
+**The cookie-consent banner now mounts only in `Home.tsx`, not sitewide.** It used to be
+mounted unconditionally in `App.tsx`'s final return, which meant it could appear over any
+phase — including a live GamePhase round, where a fixed bottom overlay asking for a
+cookie decision has no good place to sit without covering a real-time control. Moved to
+`Home.tsx` only: the decision now happens once, up front, on the hub page before a player
+ever reaches `/play`, and never interrupts gameplay again. `Home.tsx` reserves the same
+bottom-padding-while-visible space (`consentBannerVisible ? 140 : 0`) `App.tsx`'s old
+mount used to, now scoped locally instead of wrapping the whole app. `Matchmaking.tsx`'s
+own "Cookie Settings" button was removed along with this — reopening the banner has
+nowhere left to render on `/play`, so the button would have been silently dead. A
+consequence worth knowing: a player who reaches `/play` directly (an invite link,
+`?room=`, a bookmark) without ever visiting `/` never sees the consent banner at all —
+`advertising`/`analytics` consent simply stays at its default-denied value for that
+visitor, same as anyone who explicitly rejects. `AdSlot`'s own "no consent, no ad" gate
+already handles this gracefully (nothing renders, nothing crashes); this is a deliberate
+product tradeoff (ask once, don't interrupt play), not an oversight.
+
 ### Admin portal — env-var token, REST-only
 
 Gated by a single shared secret (`ADMIN_TOKEN`), checked via constant-time compare on

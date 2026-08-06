@@ -1,6 +1,7 @@
 import React from 'react';
-import { Container, Paper, Title, Text, Stack, Group, Button, Divider } from '@mantine/core';
+import { Container, Paper, Title, Text, Stack, Group, Button, Divider, Box } from '@mantine/core';
 import { IconArrowLeft } from '@tabler/icons-react';
+import AdSlot from '../components/AdSlot';
 
 // "Courtroom Ink" tokens — see CLAUDE.md's *Client-side duplicated pure logic* section
 // for why every page defines its own local copy instead of importing a shared one.
@@ -75,7 +76,9 @@ const GROUPS: GlossaryGroup[] = [
  * `/glossary` — plain-language definitions of the legal and business jargon the game's
  * own UI uses (case status labels, KPI names, mechanic names), grouped and alphabetized
  * within each group. Exported `LEGAL_TERMS`/`BUSINESS_TERMS` are covered by
- * Glossary.test.ts's shape/sort checks.
+ * Glossary.test.ts's shape/sort checks. Carries its own manual `AdSlot`
+ * (`VITE_ADSENSE_SLOT_GLOSSARY`) below the content, same convention as every other
+ * static page.
  */
 const Glossary: React.FC = () => {
   return (
@@ -115,6 +118,10 @@ const Glossary: React.FC = () => {
           </Button>
         </Group>
       </Paper>
+
+      <Box mt="xl">
+        <AdSlot slot={import.meta.env.VITE_ADSENSE_SLOT_GLOSSARY} />
+      </Box>
     </Container>
   );
 };

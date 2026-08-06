@@ -1,6 +1,7 @@
 import React from 'react';
-import { Container, Paper, Title, Text, Stack, Group, Button, Divider } from '@mantine/core';
+import { Container, Paper, Title, Text, Stack, Group, Button, Divider, Box } from '@mantine/core';
 import { IconArrowLeft } from '@tabler/icons-react';
+import AdSlot from '../components/AdSlot';
 
 // "Courtroom Ink" tokens — see CLAUDE.md's *Client-side duplicated pure logic* section
 // for why every page defines its own local copy instead of importing a shared one.
@@ -136,7 +137,9 @@ const SECTIONS: StrategySection[] = [
  * and `/how-to-play` (how the screens work). Written from real, documented engine
  * behavior (see CLAUDE.md's *Cash-growth balance pass* and *Deck retune* sections for the
  * late-game escalation/company-size cost-scaling mechanics referenced below), not
- * generic game-strategy platitudes.
+ * generic game-strategy platitudes. Carries its own manual `AdSlot`
+ * (`VITE_ADSENSE_SLOT_STRATEGY`) below the content, same convention as every other
+ * static page.
  */
 const StrategyGuide: React.FC = () => {
   return (
@@ -171,6 +174,10 @@ const StrategyGuide: React.FC = () => {
           </Button>
         </Group>
       </Paper>
+
+      <Box mt="xl">
+        <AdSlot slot={import.meta.env.VITE_ADSENSE_SLOT_STRATEGY} />
+      </Box>
     </Container>
   );
 };

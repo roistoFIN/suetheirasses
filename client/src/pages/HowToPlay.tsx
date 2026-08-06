@@ -1,6 +1,7 @@
 import React from 'react';
-import { Container, Paper, Title, Text, Stack, List, Group, Button, Image, Divider, Alert } from '@mantine/core';
+import { Container, Paper, Title, Text, Stack, List, Group, Button, Image, Divider, Alert, Box } from '@mantine/core';
 import { IconArrowLeft, IconBulb } from '@tabler/icons-react';
+import AdSlot from '../components/AdSlot';
 
 // "Courtroom Ink" tokens — same tokens as Matchmaking.tsx's mmStyles/WhatsNew.tsx's
 // wnStyles, defined locally per the codebase's established per-file duplication
@@ -138,15 +139,14 @@ const SECTIONS: GuideSection[] = [
 
 /**
  * A real, crawlable URL (`/how-to-play`) — checked in App.tsx the same way `/admin` and
- * `/whats-new` are, ahead of the game-phase switch. The illustrated, screenshot-heavy
- * companion to Matchmaking.tsx's shorter inline "How to Play" section: that inline copy
- * stays on the landing page itself (it's what gives the landing page's ad slot real
- * adjacent content — see its own doc comment and CLAUDE.md's *Consent-gated Google
- * Analytics/Ads* section for the AdSense rejection that prompted both), while this page is
- * the deeper, illustrated reference for a player who wants the full walkthrough. Screenshots
- * live in `client/public/images/how-to-play/` — resized/re-encoded to webp from the
- * marketing screenshot set, since the originals are multi-megabyte PNGs unfit for a content
- * page's load time.
+ * every other static page are, ahead of the game-phase switch. The illustrated,
+ * screenshot-heavy companion to `/rules` (the precise reference) and Home.tsx's own short
+ * pitch — see CLAUDE.md's *Consent-gated Google Analytics/Ads* section for the AdSense
+ * rejection that originally prompted building this page. Screenshots live in
+ * `client/public/images/how-to-play/` — resized/re-encoded to webp from the marketing
+ * screenshot set, since the originals are multi-megabyte PNGs unfit for a content page's
+ * load time. Carries its own manual `AdSlot` (`VITE_ADSENSE_SLOT_HOWTOPLAY`) below the
+ * content, same convention as every other static page.
  */
 const HowToPlay: React.FC = () => {
   return (
@@ -190,6 +190,10 @@ const HowToPlay: React.FC = () => {
           </Button>
         </Group>
       </Paper>
+
+      <Box mt="xl">
+        <AdSlot slot={import.meta.env.VITE_ADSENSE_SLOT_HOWTOPLAY} />
+      </Box>
     </Container>
   );
 };

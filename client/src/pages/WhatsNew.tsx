@@ -1,6 +1,7 @@
 import React from 'react';
-import { Container, Paper, Title, Text, Stack, List, Badge, Group, Button } from '@mantine/core';
+import { Container, Paper, Title, Text, Stack, List, Badge, Group, Button, Box } from '@mantine/core';
 import { IconArrowLeft } from '@tabler/icons-react';
+import AdSlot from '../components/AdSlot';
 
 // "Courtroom Ink" tokens — same tokens as Matchmaking.tsx's mmStyles/GamePhase.tsx's
 // gpStyles, defined locally per the codebase's established per-file duplication
@@ -35,6 +36,16 @@ export interface WhatsNewEntry {
  * version; the page below renders it with no other changes needed.
  */
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
+  {
+    version: '0.93',
+    date: 'August 6, 2026',
+    tagline: 'A real homepage, four new guides, and a quieter cookie banner',
+    highlights: [
+      "The site has a real homepage now, with a proper pitch and links to everything — Rules, a Strategy Guide, a Glossary for the legal jargon, a Devlog, the illustrated How to Play, and this changelog. The game itself moved to its own page (Play Now takes you there); an old invite link still works exactly like before.",
+      "The cookie-consent banner no longer interrupts a live round. It only ever shows on the new homepage now, asked once before you start playing, instead of potentially popping up mid-game.",
+      'Every new guide page now carries its own ad placement, the same way the homepage and Game Over screen already did — helps keep the game free.',
+    ],
+  },
   {
     version: '0.92',
     date: 'July 30, 2026',
@@ -71,11 +82,12 @@ export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
 
 /**
  * A real, crawlable URL (`/whats-new`) — checked in App.tsx the same way `/admin` is,
- * ahead of the game-phase switch, since it has no relationship to live game state. Exists
- * for two reasons at once: it gives returning/curious players an actual changelog, and it
- * gives the site a second page with substantial original text content — see CLAUDE.md's
- * *Consent-gated Google Analytics/Ads* section and the AdSense "low-value content"
- * rejection that prompted both this page and Matchmaking.tsx's inline How to Play section.
+ * ahead of the game-phase switch, since it has no relationship to live game state. Gives
+ * returning/curious players an actual changelog — see CLAUDE.md's *Consent-gated Google
+ * Analytics/Ads* section for the AdSense "low-value content" rejection that originally
+ * prompted building this page. Carries its own manual `AdSlot`
+ * (`VITE_ADSENSE_SLOT_WHATSNEW`) below the content, same convention as every other static
+ * page.
  */
 const WhatsNew: React.FC = () => {
   return (
@@ -118,6 +130,10 @@ const WhatsNew: React.FC = () => {
           </Button>
         </Group>
       </Paper>
+
+      <Box mt="xl">
+        <AdSlot slot={import.meta.env.VITE_ADSENSE_SLOT_WHATSNEW} />
+      </Box>
     </Container>
   );
 };

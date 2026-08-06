@@ -1,6 +1,7 @@
 import React from 'react';
-import { Container, Paper, Title, Text, Stack, List, Group, Button, Divider, Table } from '@mantine/core';
+import { Container, Paper, Title, Text, Stack, List, Group, Button, Divider, Table, Box } from '@mantine/core';
 import { IconArrowLeft } from '@tabler/icons-react';
+import AdSlot from '../components/AdSlot';
 
 // "Courtroom Ink" tokens — see CLAUDE.md's *Client-side duplicated pure logic* section
 // for why every page defines its own local copy instead of importing a shared one.
@@ -27,7 +28,9 @@ const rulesStyles = {
  * page is the one to open mid-argument about what a rule technically says. Numbers below
  * are the real seeded defaults (`server/src/data/game_config.json`) — every one of them is
  * admin-editable per room's live `GameSettings`, so a specific game could differ; this page
- * documents the defaults new players will actually see.
+ * documents the defaults new players will actually see. Carries its own manual `AdSlot`
+ * (`VITE_ADSENSE_SLOT_RULES`) below the content, same convention as every other static
+ * page — see CLAUDE.md's *Consent-gated Google Analytics/Ads* section.
  */
 const Rules: React.FC = () => {
   return (
@@ -143,6 +146,10 @@ const Rules: React.FC = () => {
           </Button>
         </Group>
       </Paper>
+
+      <Box mt="xl">
+        <AdSlot slot={import.meta.env.VITE_ADSENSE_SLOT_RULES} />
+      </Box>
     </Container>
   );
 };
