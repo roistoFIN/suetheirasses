@@ -50,21 +50,26 @@ export const useConsentStore = create<ConsentState>((set) => ({
   categories: stored ?? ALL_DENIED,
   settingsOpen: false,
 
+  // All three pass backfillPageView: true — each is a live, in-session consent decision,
+  // arriving after the page's own automatic (pre-consent, necessarily denied) page_view
+  // already fired. See pushConsentUpdate's own doc comment for why that backfill matters:
+  // without it, a first-time visitor who accepts analytics still never has a single real,
+  // non-cookieless hit recorded for that visit.
   acceptAll: () => {
     saveConsentCategories(ALL_GRANTED);
-    pushConsentUpdate(ALL_GRANTED);
+    pushConsentUpdate(ALL_GRANTED, true);
     set({ hasDecided: true, categories: ALL_GRANTED, settingsOpen: false });
   },
 
   rejectAll: () => {
     saveConsentCategories(ALL_DENIED);
-    pushConsentUpdate(ALL_DENIED);
+    pushConsentUpdate(ALL_DENIED, true);
     set({ hasDecided: true, categories: ALL_DENIED, settingsOpen: false });
   },
 
   saveCustom: (categories) => {
     saveConsentCategories(categories);
-    pushConsentUpdate(categories);
+    pushConsentUpdate(categories, true);
     set({ hasDecided: true, categories, settingsOpen: false });
   },
 

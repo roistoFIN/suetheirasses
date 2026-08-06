@@ -1789,6 +1789,35 @@ idempotent-when-called-twice, and (for GA4) consent-independent-load cases, all 
 DOM (`window`/`document` are stubbed by hand per test, since this workspace runs Vitest
 without jsdom — no test needs a real browser here).
 
+**A real, reported gap even after the tag-always-installs fix above: "the tag test passes
+but the GA4 property shows zero data."** Root cause is timing, not the tag detection issue
+already fixed — `gtag('config', ...)`'s automatic page_view fires the instant the async
+`gtag.js` script finishes loading, typically within a couple hundred milliseconds of page
+load, almost always before a human has had any chance to even see `ConsentBanner`, let
+alone click it. That means for essentially every first-time visitor, the *only* hit ever
+sent for that pageview is the automatic one, sent while consent is still denied — a
+limited, cookieless "modeled" ping that Google's own tooling requires substantial
+aggregate traffic volume before it'll surface in reports at all (Realtime included, in
+many cases). A new/low-traffic site can realistically never clear that threshold, so the
+property looks like it's receiving nothing even though the tag is, technically, working
+exactly as designed. Fixed by having `pushConsentUpdate` take an optional
+`backfillPageView` parameter (default `false`): when `true` and `categories.analytics` is
+granted, it fires an explicit `gtag('event', 'page_view')` immediately after the `consent
+update` signal — a second, genuinely non-cookieless hit reflecting the just-granted state,
+recorded for that same visit rather than only ever the earlier denied one.
+`ConsentBanner`'s three actions (`acceptAll`/`rejectAll`/`saveCustom` in `consentStore.ts`)
+all pass `true`, since each is a live, in-session consent decision arriving strictly after
+that load's automatic page_view already fired. `initConsentDefaults`'s own replay of an
+*already-stored* decision on a fresh page load deliberately passes `false` (the default)
+instead — that replay's `consent update` lands in `dataLayer` ahead of the upcoming
+`config` call (both happen synchronously before the async script even finishes loading),
+so *that* load's own automatic page_view already correctly reflects the stored consent
+once `gtag.js` processes the queue; backfilling there too would just double-count every
+returning consented visitor's pageviews for no benefit. Regression-tested in
+`googleConsent.test.ts` (backfills only when both the flag and `analytics` are true; never
+backfills on a bare `pushConsentUpdate(categories)` call) and `consentStore.test.ts` (all
+three live actions pass `true`).
+
 All four env vars (`VITE_ADSENSE_CLIENT_ID`/`VITE_GA_MEASUREMENT_ID`/
 `VITE_ADSENSE_SLOT_LANDING`/`VITE_ADSENSE_SLOT_GAMEOVER`) are ordinary Vite build-time env
 vars (see `vite-env.d.ts`) — safe to expose despite the `VITE_*` public-bundle convention

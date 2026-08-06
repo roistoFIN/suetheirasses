@@ -44,10 +44,10 @@ describe('consentStore', () => {
       });
     });
 
-    it('pushes the granted categories to Google Consent Mode', () => {
+    it('pushes the granted categories to Google Consent Mode, backfilling a real page_view', () => {
       useConsentStore.getState().acceptAll();
 
-      expect(googleConsent.pushConsentUpdate).toHaveBeenCalledWith({ analytics: true, advertising: true });
+      expect(googleConsent.pushConsentUpdate).toHaveBeenCalledWith({ analytics: true, advertising: true }, true);
     });
   });
 
@@ -59,7 +59,7 @@ describe('consentStore', () => {
         hasDecided: true,
         categories: { analytics: false, advertising: false },
       });
-      expect(googleConsent.pushConsentUpdate).toHaveBeenCalledWith({ analytics: false, advertising: false });
+      expect(googleConsent.pushConsentUpdate).toHaveBeenCalledWith({ analytics: false, advertising: false }, true);
     });
   });
 
@@ -68,7 +68,7 @@ describe('consentStore', () => {
       useConsentStore.getState().saveCustom({ analytics: true, advertising: false });
 
       expect(useConsentStore.getState().categories).toEqual({ analytics: true, advertising: false });
-      expect(googleConsent.pushConsentUpdate).toHaveBeenCalledWith({ analytics: true, advertising: false });
+      expect(googleConsent.pushConsentUpdate).toHaveBeenCalledWith({ analytics: true, advertising: false }, true);
     });
   });
 

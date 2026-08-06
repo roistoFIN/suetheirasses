@@ -302,4 +302,34 @@ describe('initConsentDefaults / pushConsentUpdate', () => {
     const injected = fakeDocument.head.appendChild.mock.calls[0][0];
     expect(injected.id).toBe('stita-ga-script');
   });
+
+  it('pushConsentUpdate(categories, true) backfills a real page_view when analytics is granted — a live consent decision arrives after the pre-consent automatic page_view already fired denied, so without this a first-time visitor who accepts never has a single non-cookieless hit recorded for that visit', () => {
+    const fakeWindow: FakeWindow = {};
+    vi.stubGlobal('window', fakeWindow);
+
+    pushConsentUpdate({ analytics: true, advertising: false }, true);
+
+    expect(fakeWindow.dataLayer).toEqual([
+      ['consent', 'update', categoriesToSignals({ analytics: true, advertising: false })],
+      ['event', 'page_view'],
+    ]);
+  });
+
+  it('pushConsentUpdate(categories, true) does not backfill a page_view when analytics is still denied', () => {
+    const fakeWindow: FakeWindow = {};
+    vi.stubGlobal('window', fakeWindow);
+
+    pushConsentUpdate(ALL_DENIED, true);
+
+    expect(fakeWindow.dataLayer).toEqual([['consent', 'update', categoriesToSignals(ALL_DENIED)]]);
+  });
+
+  it('pushConsentUpdate never backfills when the caller omits the flag (initConsentDefaults replaying a stored decision on a fresh load)', () => {
+    const fakeWindow: FakeWindow = {};
+    vi.stubGlobal('window', fakeWindow);
+
+    pushConsentUpdate(ALL_GRANTED);
+
+    expect(fakeWindow.dataLayer).toEqual([['consent', 'update', categoriesToSignals(ALL_GRANTED)]]);
+  });
 });

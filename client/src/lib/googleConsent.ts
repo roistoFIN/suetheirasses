@@ -119,7 +119,11 @@ export function loadAnalyticsScript(): void {
  * requires, then immediately layers a returning visitor's already-stored choice on top
  * (both calls happen synchronously in the same tick, before any ad script has been
  * requested, so there's no window where a denied-by-default state is ever actually acted
- * on for a visitor who'd already consented). */
+ * on for a visitor who'd already consented). Deliberately calls `pushConsentUpdate`
+ * without `backfillPageView` — see that function's own doc comment: this replay's
+ * `consent update` lands in `dataLayer` ahead of the `config` call that's about to fire
+ * once the script below finishes loading, so *this* load's own automatic page_view
+ * already reflects the stored consent correctly with no extra event needed. */
 export function initConsentDefaults(stored: ConsentCategories | null): void {
   ensureDataLayer();
   window.gtag?.('consent', 'default', categoriesToSignals(ALL_DENIED));
@@ -136,12 +140,32 @@ export function initConsentDefaults(stored: ConsentCategories | null): void {
  * no-op until `VITE_ADSENSE_CLIENT_ID` is configured — see `loadAdSenseScript`). Also
  * re-attempts `loadAnalyticsScript` unconditionally — a harmless idempotent no-op in the
  * normal case where `initConsentDefaults` already loaded it, but a safety net against any
- * future call-order change. */
-export function pushConsentUpdate(categories: ConsentCategories): void {
+ * future call-order change.
+ *
+ * `backfillPageView` (default `false`) — see `initConsentDefaults`'s own doc comment for
+ * the underlying gap this covers: `gtag('config', ...)`'s automatic page_view fires the
+ * instant the async gtag.js script finishes loading, almost always before a human has had
+ * time to even see the consent banner — so for a first-time visitor, that one automatic
+ * hit is *always* sent under denied consent (a limited, cookieless "modeled" ping that
+ * needs real traffic volume before Google will surface it in reports at all — a genuinely
+ * reported "the tag test passes but the property shows zero data" symptom on a new/
+ * low-traffic site). `ConsentBanner`'s Accept/Reject/Save actions pass `true` here so a
+ * live, in-session consent decision immediately backfills one real `event: page_view`
+ * hit reflecting the just-granted state, rather than only ever recording the earlier
+ * denied one. `initConsentDefaults`'s own replay of an *already-stored* decision on a
+ * fresh page load passes `false` (the default) — that replay's `consent update` is queued
+ * ahead of the upcoming `config` call in `dataLayer`, so that load's own automatic
+ * page_view already correctly reflects the stored consent once gtag.js processes the
+ * queue; backfilling there too would just double-count every returning visitor's
+ * pageviews for no benefit. */
+export function pushConsentUpdate(categories: ConsentCategories, backfillPageView = false): void {
   ensureDataLayer();
   window.gtag?.('consent', 'update', categoriesToSignals(categories));
   if (categories.advertising) {
     loadAdSenseScript();
   }
   loadAnalyticsScript();
+  if (backfillPageView && categories.analytics) {
+    window.gtag?.('event', 'page_view');
+  }
 }
