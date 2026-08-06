@@ -27,6 +27,14 @@ interface FakeWindow {
   gtag?: (...args: unknown[]) => void;
 }
 
+/** `ensureDataLayer`'s gtag stub deliberately pushes the array-LIKE `arguments` object
+ * (see its own doc comment for why), not a real Array — every test in this file except
+ * the one specifically guarding that distinction only cares about the CONTENT of what
+ * got pushed, so this normalizes each entry back to a real Array for comparison. */
+function normalizeDataLayer(dataLayer: unknown[] | undefined): unknown[] {
+  return (dataLayer ?? []).map((entry) => (Array.isArray(entry) ? entry : Array.from(entry as ArrayLike<unknown>)));
+}
+
 function createFakeDocument() {
   const created: Record<string, FakeScriptElement> = {};
   return {
@@ -91,7 +99,7 @@ describe('ensureDataLayer', () => {
     expect(typeof fakeWindow.gtag).toBe('function');
 
     fakeWindow.gtag?.('consent', 'default', { ad_storage: 'denied' });
-    expect(fakeWindow.dataLayer).toEqual([['consent', 'default', { ad_storage: 'denied' }]]);
+    expect(normalizeDataLayer(fakeWindow.dataLayer)).toEqual([['consent', 'default', { ad_storage: 'denied' }]]);
   });
 
   it('is idempotent — never replaces an already-installed dataLayer/gtag', () => {
@@ -103,6 +111,30 @@ describe('ensureDataLayer', () => {
 
     expect(fakeWindow.dataLayer).toEqual(['already-here']);
     expect(fakeWindow.gtag).toBe(existingGtag);
+  });
+
+  it('pushes the array-LIKE `arguments` object, never a real Array — a real, reported bug where a rest-parameter version (`function gtag(...args){dataLayer.push(args)}`) silently broke every GA4 hit', () => {
+    // `toEqual`-style deep-equality checks (see the test above) can't catch this
+    // regression at all — an `arguments` object and a real Array holding the same
+    // elements compare as structurally equal. `Array.isArray()` is the one check that
+    // actually distinguishes them, and it's exactly what gtag.js's own internal
+    // processing apparently keys off of: with a rest-parameter stub, dataLayer looked
+    // completely correct when logged/inspected, `google_tag_manager` still initialized
+    // fully, yet not one `/g/collect` network request was ever attempted, in any
+    // browser, on any network, across three separate real GA4 properties and two
+    // separate Google accounts — confirmed root-caused only by bisecting against a
+    // known-good, unrelated real-world GA4 property as a control. See CLAUDE.md's
+    // *Consent-gated Google Analytics/Ads* section for the full investigation.
+    const fakeWindow: FakeWindow = {};
+    vi.stubGlobal('window', fakeWindow);
+
+    ensureDataLayer();
+    fakeWindow.gtag?.('consent', 'default', { ad_storage: 'denied' });
+
+    const pushedEntry = fakeWindow.dataLayer?.[0];
+    expect(Array.isArray(pushedEntry)).toBe(false);
+    // Still array-LIKE — same elements, accessible the same way — just not a real Array.
+    expect(Array.from(pushedEntry as ArrayLike<unknown>)).toEqual(['consent', 'default', { ad_storage: 'denied' }]);
   });
 });
 
@@ -196,7 +228,7 @@ describe('loadAnalyticsScript', () => {
     const injected = fakeDocument.head.appendChild.mock.calls[0][0];
     injected.onload?.();
 
-    expect(fakeWindow.dataLayer).toEqual([
+    expect(normalizeDataLayer(fakeWindow.dataLayer)).toEqual([
       ['js', expect.any(Date)],
       ['config', 'G-ABC123'],
     ]);
@@ -227,7 +259,7 @@ describe('initConsentDefaults / pushConsentUpdate', () => {
 
     initConsentDefaults(null);
 
-    expect(fakeWindow.dataLayer).toEqual([['consent', 'default', categoriesToSignals(ALL_DENIED)]]);
+    expect(normalizeDataLayer(fakeWindow.dataLayer)).toEqual([['consent', 'default', categoriesToSignals(ALL_DENIED)]]);
   });
 
   it('layers a stored choice on top of the default, in the same synchronous call', () => {
@@ -236,7 +268,7 @@ describe('initConsentDefaults / pushConsentUpdate', () => {
 
     initConsentDefaults(ALL_GRANTED);
 
-    expect(fakeWindow.dataLayer).toEqual([
+    expect(normalizeDataLayer(fakeWindow.dataLayer)).toEqual([
       ['consent', 'default', categoriesToSignals(ALL_DENIED)],
       ['consent', 'update', categoriesToSignals(ALL_GRANTED)],
     ]);
@@ -309,7 +341,7 @@ describe('initConsentDefaults / pushConsentUpdate', () => {
 
     pushConsentUpdate({ analytics: true, advertising: false }, true);
 
-    expect(fakeWindow.dataLayer).toEqual([
+    expect(normalizeDataLayer(fakeWindow.dataLayer)).toEqual([
       ['consent', 'update', categoriesToSignals({ analytics: true, advertising: false })],
       ['event', 'page_view'],
     ]);
@@ -321,7 +353,7 @@ describe('initConsentDefaults / pushConsentUpdate', () => {
 
     pushConsentUpdate(ALL_DENIED, true);
 
-    expect(fakeWindow.dataLayer).toEqual([['consent', 'update', categoriesToSignals(ALL_DENIED)]]);
+    expect(normalizeDataLayer(fakeWindow.dataLayer)).toEqual([['consent', 'update', categoriesToSignals(ALL_DENIED)]]);
   });
 
   it('pushConsentUpdate never backfills when the caller omits the flag (initConsentDefaults replaying a stored decision on a fresh load)', () => {
@@ -330,6 +362,6 @@ describe('initConsentDefaults / pushConsentUpdate', () => {
 
     pushConsentUpdate(ALL_GRANTED);
 
-    expect(fakeWindow.dataLayer).toEqual([['consent', 'update', categoriesToSignals(ALL_GRANTED)]]);
+    expect(normalizeDataLayer(fakeWindow.dataLayer)).toEqual([['consent', 'update', categoriesToSignals(ALL_GRANTED)]]);
   });
 });

@@ -1865,6 +1865,67 @@ returning consented visitor's pageviews for no benefit. Regression-tested in
 backfills on a bare `pushConsentUpdate(categories)` call) and `consentStore.test.ts` (all
 three live actions pass `true`).
 
+**The actual root cause, found after the backfill fix above still didn't resolve a live
+"zero data in GA4" report: `ensureDataLayer`'s `gtag` stub used a rest parameter instead
+of the `arguments` object.** Google's own official installation snippet is written
+`function gtag(){dataLayer.push(arguments)}` — pushing the array-*like* `arguments`
+object. This file's stub was instead written `function gtag(...args: unknown[])
+{ window.dataLayer!.push(args); }` — a rest parameter, which pushes a genuine `Array`.
+The two look interchangeable (both support indexing/`.length`/iteration identically for
+every normal purpose, and `JSON.stringify`/deep-equality comparisons of the two look
+the same), but `gtag.js`'s own internal command processing apparently distinguishes a
+real `gtag()` call from its own internal bookkeeping entries by exactly this
+`Array.isArray()` check, and silently drops anything that doesn't match — with zero
+console errors, a fully-initialized `google_tag_manager` container (Enhanced
+Measurement's scroll-depth auto-tracking and all), and a `dataLayer` array that looks
+completely correct when logged. The observable symptom: the script loads (200), every
+`gtag()` call queues correctly, Google's own Tag Assistant reports the tag as installed —
+but not one single `/g/collect` network request is ever attempted, for the automatic
+page_view or a manually-fired `gtag('event', ..., {debug_mode: true})` alike, and GA4
+Admin shows "data collection is not enabled on your site" indefinitely.
+
+This bug's own diagnostic trail is worth remembering, since every more-obvious suspect
+gets ruled out before it: reproduced identically across three separate GA4 properties and
+two separate Google accounts (ruling out property/account misconfiguration), on two real
+devices/browsers/OSes over both WiFi and mobile data (ruling out the visitor's own
+network/ad-blocker/browser), and even from a completely different sandboxed network with
+a real non-headless Chromium instance (ruling out headless-bot filtering, which is a real
+and separate phenomenon — see below — but was never the actual cause here). The
+confirming step was a control test: a known-good, definitely-live GA4 property borrowed
+from a real, unrelated public site sent a real hit successfully under the exact same test
+harness, proving the harness itself was capable of a real collect request and narrowing
+the search back to this codebase. From there, bisecting by rebuilding progressively
+smaller slices of the real app (full app → consent code alone via a stripped `main.tsx`,
+same Vite build → a hand-copied version of just `ensureDataLayer`) reproduced the failure
+at every step until the literal `arguments`-vs-rest-parameter line was isolated as the
+single change that mattered — confirmed by rebuilding the full production bundle with
+only that one line changed and watching real `204` responses appear from
+`region1.google-analytics.com`, `analytics.google.com`, and the AdSense/DoubleClick
+conversion endpoint simultaneously.
+
+`arguments` is unavailable inside arrow functions, so `ensureDataLayer`'s stub must stay
+a plain `function gtag() {...}` expression, never `() => {}`, if this is ever touched
+again. Regression-tested in `googleConsent.test.ts`'s dedicated `Array.isArray()`
+assertion — deliberately a *separate* test from the ones checking `dataLayer` *content*,
+since `toEqual`-style deep-equality assertions (Vitest's included) DO actually distinguish
+an `arguments` object from a real `Array` holding the same elements, but only if a test
+author thinks to check that specific property — every other test in the file normalizes
+via `Array.from()` before comparing, since they only care about content, not shape.
+
+**A separate, real phenomenon that came up during this investigation but was never the
+actual cause: Google's own tags detect and silently filter headless/automated browser
+traffic** (`navigator.webdriver === true`, a `HeadlessChrome` user-agent string, and
+likely deeper fingerprinting) — confirmed by masking those specific signals and still
+seeing no request in a genuinely bot-detected context, separately from this bug. This
+means any FUTURE automated (Playwright/Puppeteer) check of whether GA4 is *actually*
+sending real hits is fundamentally unreliable as a pass/fail signal — such a script can
+confirm `dataLayer` state and that the script/config load correctly, but proving a real
+`/g/collect` request fires needs either a real, human-driven browser, or a `headless:
+false` real browser context with automation signals explicitly masked (still not
+guaranteed against more sophisticated fingerprinting) — don't trust a headless "no request
+seen" result as proof of a bug on its own; corroborate with DevTools Network tab in a
+real session first, the way this investigation eventually did.
+
 All four env vars (`VITE_ADSENSE_CLIENT_ID`/`VITE_GA_MEASUREMENT_ID`/
 `VITE_ADSENSE_SLOT_LANDING`/`VITE_ADSENSE_SLOT_GAMEOVER`) are ordinary Vite build-time env
 vars (see `vite-env.d.ts`) — safe to expose despite the `VITE_*` public-bundle convention

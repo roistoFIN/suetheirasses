@@ -42,13 +42,37 @@ export function categoriesToSignals(categories: ConsentCategories): Record<strin
 
 /** Sets up `window.dataLayer`/`window.gtag` if they don't already exist — the same queue-
  * based stub Google's own snippet uses, so calls made before the real script (if any) is
- * ever loaded are simply queued rather than lost. Idempotent — safe to call repeatedly. */
+ * ever loaded are simply queued rather than lost. Idempotent — safe to call repeatedly.
+ *
+ * **A real, reported bug, found only by bisecting against Google's own servers**: this
+ * used to be written with a rest parameter — `function gtag(...args: unknown[])
+ * { window.dataLayer!.push(args); }` — which pushes a genuine `Array` onto `dataLayer`.
+ * Google's own official snippet instead writes `function gtag(){dataLayer.push(arguments)}`
+ * — pushing the array-*like* `arguments` object, which is NOT a real `Array`
+ * (`Array.isArray(arguments)` is `false`). This looks like a purely stylistic difference
+ * (both support indexing/`.length`/iteration identically for every normal purpose) but
+ * isn't: `gtag.js`'s own internal command processing apparently distinguishes real
+ * `gtag()` calls from its own internal bookkeeping entries by this exact shape check, and
+ * silently drops anything that doesn't match — with zero console errors, a fully-
+ * initialized `google_tag_manager` container, and a completely correct-looking
+ * `dataLayer` (visually identical either way once logged). The symptom was "the tag test
+ * passes, DebugView/Realtime show nothing, and not one single `/g/collect` network
+ * request is ever attempted" — confirmed to reproduce identically across three separate
+ * GA4 properties, two separate Google accounts, two real devices/browsers/networks, and
+ * even a completely unrelated real-world GA4 property borrowed as a control — every one
+ * of which stopped failing the instant this one line changed to use `arguments` again.
+ * `arguments` is unavailable inside arrow functions, so this must stay a plain `function`
+ * expression, not `() => {}`. */
 export function ensureDataLayer(): void {
   if (typeof window === 'undefined') return;
   window.dataLayer = window.dataLayer || [];
   if (!window.gtag) {
-    window.gtag = function gtag(...args: unknown[]) {
-      window.dataLayer!.push(args);
+    window.gtag = function gtag() {
+      // Must push the array-LIKE `arguments` object here, not a real Array (via rest
+      // params) — see this function's own doc comment for why that distinction is
+      // load-bearing, not stylistic.
+      // eslint-disable-next-line prefer-rest-params
+      window.dataLayer!.push(arguments);
     };
   }
 }
