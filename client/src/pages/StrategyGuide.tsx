@@ -2,6 +2,7 @@ import React from 'react';
 import { Container, Paper, Title, Text, Stack, Group, Button, Divider, Box } from '@mantine/core';
 import { IconArrowLeft } from '@tabler/icons-react';
 import AdSlot from '../components/AdSlot';
+import { usePageMeta } from '../lib/usePageMeta';
 
 // "Courtroom Ink" tokens — see CLAUDE.md's *Client-side duplicated pure logic* section
 // for why every page defines its own local copy instead of importing a shared one.
@@ -142,6 +143,10 @@ const SECTIONS: StrategySection[] = [
  * static page.
  */
 const StrategyGuide: React.FC = () => {
+  usePageMeta(
+    'Strategy Guide | Sue Them Chickens',
+    'Seven strategic principles for Sue Them Chickens, from cash discipline to reading the board and knowing when to sue versus buy shares.',
+  );
   return (
     <Container size="sm" py="xl">
       <Paper p="xl" style={strategyStyles.paper}>

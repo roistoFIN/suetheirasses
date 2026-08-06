@@ -2,6 +2,7 @@ import React from 'react';
 import { Container, Paper, Title, Text, Stack, Group, Button, Divider, Box } from '@mantine/core';
 import { IconArrowLeft } from '@tabler/icons-react';
 import AdSlot from '../components/AdSlot';
+import { usePageMeta } from '../lib/usePageMeta';
 
 // "Courtroom Ink" tokens — see CLAUDE.md's *Client-side duplicated pure logic* section
 // for why every page defines its own local copy instead of importing a shared one.
@@ -81,6 +82,10 @@ const GROUPS: GlossaryGroup[] = [
  * static page.
  */
 const Glossary: React.FC = () => {
+  usePageMeta(
+    'Glossary | Sue Them Chickens',
+    'Plain-language definitions for the legal and business jargon used throughout Sue Them Chickens — Grounds, Stakes, Settled, Dilution, and more.',
+  );
   return (
     <Container size="sm" py="xl">
       <Paper p="xl" style={glossaryStyles.paper}>

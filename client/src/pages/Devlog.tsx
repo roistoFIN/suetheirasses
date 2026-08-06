@@ -2,6 +2,7 @@ import React from 'react';
 import { Container, Paper, Title, Text, Stack, Group, Button, Divider, Badge, Box } from '@mantine/core';
 import { IconArrowLeft } from '@tabler/icons-react';
 import AdSlot from '../components/AdSlot';
+import { usePageMeta } from '../lib/usePageMeta';
 
 // "Courtroom Ink" tokens — see CLAUDE.md's *Client-side duplicated pure logic* section
 // for why every page defines its own local copy instead of importing a shared one.
@@ -106,6 +107,10 @@ export const DEVLOG_ENTRIES: DevlogEntry[] = [
  * page.
  */
 const Devlog: React.FC = () => {
+  usePageMeta(
+    'Devlog | Sue Them Chickens',
+    'Real engineering postmortems from building Sue Them Chickens, told as plain-language stories about bugs found and fixed.',
+  );
   return (
     <Container size="sm" py="xl">
       <Paper p="xl" style={devlogStyles.paper}>

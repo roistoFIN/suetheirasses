@@ -2,6 +2,7 @@ import React from 'react';
 import { Container, Paper, Title, Text, Stack, List, Badge, Group, Button, Box } from '@mantine/core';
 import { IconArrowLeft } from '@tabler/icons-react';
 import AdSlot from '../components/AdSlot';
+import { usePageMeta } from '../lib/usePageMeta';
 
 // "Courtroom Ink" tokens — same tokens as Matchmaking.tsx's mmStyles/GamePhase.tsx's
 // gpStyles, defined locally per the codebase's established per-file duplication
@@ -90,6 +91,10 @@ export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
  * page.
  */
 const WhatsNew: React.FC = () => {
+  usePageMeta(
+    "What's New | Sue Them Chickens",
+    "A running changelog of what's shipped in Sue Them Chickens, version by version.",
+  );
   return (
     <Container size="sm" py="xl">
       <Paper p="xl" style={wnStyles.paper}>

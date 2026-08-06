@@ -2,6 +2,7 @@ import React from 'react';
 import { Container, Paper, Title, Text, Stack, List, Group, Button, Image, Divider, Alert, Box } from '@mantine/core';
 import { IconArrowLeft, IconBulb } from '@tabler/icons-react';
 import AdSlot from '../components/AdSlot';
+import { usePageMeta } from '../lib/usePageMeta';
 
 // "Courtroom Ink" tokens — same tokens as Matchmaking.tsx's mmStyles/WhatsNew.tsx's
 // wnStyles, defined locally per the codebase's established per-file duplication
@@ -149,6 +150,10 @@ const SECTIONS: GuideSection[] = [
  * content, same convention as every other static page.
  */
 const HowToPlay: React.FC = () => {
+  usePageMeta(
+    'How to Play, Illustrated | Sue Them Chickens',
+    'A screenshot-illustrated walkthrough of a full game of Sue Them Chickens, from the lobby to Game Over.',
+  );
   return (
     <Container size="sm" py="xl">
       <Paper p="xl" style={htpStyles.paper}>

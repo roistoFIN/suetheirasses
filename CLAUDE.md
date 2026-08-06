@@ -1439,6 +1439,49 @@ visitor, same as anyone who explicitly rejects. `AdSlot`'s own "no consent, no a
 already handles this gracefully (nothing renders, nothing crashes); this is a deliberate
 product tradeoff (ask once, don't interrupt play), not an oversight.
 
+### Search-engine/crawler files — real favicon, robots.txt, sitemap.xml, per-page metadata
+
+A follow-up audit ("are the search-engine-related files OK?") found several real gaps
+beyond the AdSense content fix above, none of which had ever been addressed since the
+project started from the default Vite template:
+
+- **`client/public/robots.txt`** (new) — `Allow: /` sitewide, `Disallow: /admin` (nothing
+  sensitive would leak since it's token-gated, but an admin panel showing up in search
+  results is still worth avoiding), plus a `Sitemap:` pointer.
+- **`client/public/sitemap.xml`** (new) — lists all 8 real static pages (not `/admin`).
+  Update this by hand whenever a new static page is added — nothing generates it.
+- **The favicon was broken** — `index.html` referenced `/vite.svg`, a file that never
+  actually existed in this project (leftover boilerplate, silently 404ing on every page
+  load). Replaced with a real one: `favicon.ico` (16/32/48px, multi-resolution),
+  `favicon-16x16.png`/`favicon-32x32.png`, and `apple-touch-icon.png` (180px), all cropped
+  from the existing `hero.png` key art (the angry rooster's head/comb — recognizable even
+  at 16×16) via ImageMagick, not new art.
+- **No meta description, Open Graph, or Twitter Card tags existed at all.** Beyond the
+  generic SEO-snippet-quality problem, this directly undercut `ShareButton` (see its own
+  section above) — a shared invite/brag link posted to WhatsApp/Discord/X/Slack rendered
+  as a bare gray URL with no title/image, since those apps' link-preview scrapers read
+  `og:title`/`og:description`/`og:image` from raw HTML and don't execute JavaScript.
+  `index.html` now carries a real description plus `og:*`/`twitter:*` tags, all pointing
+  at a new `client/public/images/og-image.png` — `hero.png` top-cropped to 1200×629 (the
+  bottom row of desk clutter trimmed, title/characters kept) via ImageMagick, same
+  size-vs-quality reasoning as `/how-to-play`'s screenshot re-encoding.
+- **Every route shared one static `<title>`/description** (the homepage's own, since
+  there's no SSR — `index.html` is one file for every path). `client/src/lib/
+  usePageMeta.ts` is a tiny hook (`document.title` + the description `<meta>` tag,
+  updated in a `useEffect`) called from every routable page except `Home.tsx` (whose
+  content already matches the static defaults) — `Matchmaking.tsx`, `Rules.tsx`,
+  `StrategyGuide.tsx`, `Glossary.tsx`, `Devlog.tsx`, `HowToPlay.tsx`, `WhatsNew.tsx`.
+  Safe with no cleanup needed specifically because every one of these routes is a full
+  page load (`<a href>`, never client-side nav — see App.tsx's own doc comment), so a
+  page's own title never has to be "restored" for a previous page that might still be
+  mounted. Deliberately does **not** attempt to vary `og:*`/canonical tags per page the
+  same way — those are read by the same JS-less scrapers as above, so a client-side
+  update would never reach them; true per-page OG tags would need real SSR, judged out of
+  scope here. `og:url`/canonical stay pointed at `/` for every page as a result — a known,
+  accepted limitation, not an oversight.
+- **`ads.txt`** was already correct (added alongside the original AdSense setup) and
+  needed no changes.
+
 ### Admin portal — env-var token, REST-only
 
 Gated by a single shared secret (`ADMIN_TOKEN`), checked via constant-time compare on

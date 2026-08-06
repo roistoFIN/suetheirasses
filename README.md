@@ -149,6 +149,14 @@ CLAUDE.md). The cookie-consent banner (`ConsentBanner.tsx`) mounts only on `/` �
 to be sitewide, which could pop it up over a live game round; now the choice is made once,
 up front, before a player ever reaches `/play`.
 
+**SEO/crawler files**: `client/public/robots.txt` (disallows `/admin`, points at
+`sitemap.xml`) and `client/public/sitemap.xml` (lists all 8 real pages — update by hand
+when adding a new one) both exist now, alongside a real favicon and Open Graph/Twitter
+Card image (`client/public/images/og-image.png`), all cropped from the existing
+`hero.png` key art. Each routable page except `Home.tsx` sets its own `<title>`/meta
+description via `client/src/lib/usePageMeta.ts` — see CLAUDE.md's own section for why
+`og:*`/canonical tags can't be varied per page the same way (no SSR).
+
 ---
 
 ## 🏗️ Architecture

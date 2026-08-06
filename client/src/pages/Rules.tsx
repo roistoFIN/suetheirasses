@@ -2,6 +2,7 @@ import React from 'react';
 import { Container, Paper, Title, Text, Stack, List, Group, Button, Divider, Table, Box } from '@mantine/core';
 import { IconArrowLeft } from '@tabler/icons-react';
 import AdSlot from '../components/AdSlot';
+import { usePageMeta } from '../lib/usePageMeta';
 
 // "Courtroom Ink" tokens — see CLAUDE.md's *Client-side duplicated pure logic* section
 // for why every page defines its own local copy instead of importing a shared one.
@@ -33,6 +34,10 @@ const rulesStyles = {
  * page — see CLAUDE.md's *Consent-gated Google Analytics/Ads* section.
  */
 const Rules: React.FC = () => {
+  usePageMeta(
+    'Rules | Sue Them Chickens',
+    'The precise rules reference for Sue Them Chickens: decision categories, per-turn caps, elimination conditions, and every real default number.',
+  );
   return (
     <Container size="sm" py="xl">
       <Paper p="xl" style={rulesStyles.paper}>

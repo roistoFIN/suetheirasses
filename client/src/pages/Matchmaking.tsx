@@ -27,6 +27,7 @@ import { useChatStore } from '../stores/chatStore';
 import FeedbackForm from '../components/FeedbackForm';
 import ShareButton from '../components/ShareButton';
 import PrivacyPolicyModal from '../components/PrivacyPolicyModal';
+import { usePageMeta } from '../lib/usePageMeta';
 import { ClientEvents, ServerEvents, type RoomInfo } from '@suethemchickens/shared';
 
 /** localStorage key for remembering the player's name across visits — see `Matchmaking`'s name-entry section. */
@@ -104,6 +105,10 @@ function saveName(name: string): void {
  *          Socket.IO events: `rooms:list` → populates available rooms.
  */
 const Matchmaking: React.FC = () => {
+  usePageMeta(
+    'Play | Sue Them Chickens',
+    'Join or create a room and start playing Sue Them Chickens — a free real-time multiplayer business sim where you sue your rivals into bankruptcy.',
+  );
   const [searchParams] = useSearchParams();
   const [playerName, setPlayerName] = useState(loadSavedName);
   const [isNameLocked, setIsNameLocked] = useState(() => !!loadSavedName());
