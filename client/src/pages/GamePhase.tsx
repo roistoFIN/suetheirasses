@@ -1050,7 +1050,7 @@ export default function GamePhase() {
                 estimatePendingCashEffect's own doc comment for what it does and doesn't
                 account for. */}
             <Text style={{ fontSize: '0.7rem', opacity: 0.7 }}>
-              Cash: {fmt(vars.cash)} · Predicted next turn: {fmt(vars.cash + estimatePendingCashEffect(pending, decisions, vars.cash, gameSettings?.decisionCostWealthScaleRate ?? 0))}
+              Cash: {fmt(vars.cash)} · Predicted next turn: {fmt(vars.cash + estimatePendingCashEffect(pending, decisions, vars.cash, gameSettings?.decisionCostWealthScaleRate ?? 0, { materialCostPerTon: vars.materialCostPerTon, logisticsCostPerTon: vars.logisticsCostPerTon, volume: derived.volume }))}
             </Text>
           </Stack>
         }
@@ -1944,24 +1944,74 @@ function getDecisionSortValue(def: DecisionDefinition, field: string): number {
   return impact.schedule[1] ?? impact.schedule['default'] ?? 0;
 }
 
+/** Non-`cash` fields whose ABSOLUTE-type year-1 value is already a raw dollar amount that
+ * flows straight into next turn's cash via the P&L — mirrors `botService.ts`'s own
+ * `DOLLAR_FIELDS`/`FIELD_DIRECTION` exactly (same fields, same signs: a HIGHER
+ * `operatingExpenses`/`staffCost`/`financeCost` costs cash, a HIGHER `otherIncome` adds
+ * it), kept as a local copy per this codebase's "duplicate small pure logic, keep in sync
+ * by hand" convention (see CLAUDE.md) rather than importing a server-side module into the
+ * client bundle. */
+const CASH_DOLLAR_FIELDS: Record<string, -1 | 1> = {
+  operatingExpenses: -1,
+  staffCost: -1,
+  otherIncome: 1,
+  financeCost: -1,
+};
+
+/** Live per-ton cost state needed to convert a `materialCostPerTon`/`logisticsCostPerTon`
+ * impact (always `relative`-type in the seeded library) into a real dollar COGS effect —
+ * mirrors `botService.ts`'s `BotCogsContext` exactly. All three fields are already sitting
+ * in `GamePhase`'s own render scope (`vars.materialCostPerTon`/`vars.logisticsCostPerTon`/
+ * `derived.volume`) by the time the Decision Deck modal renders, so no new prop threading
+ * was needed to pass this through. */
+interface CogsEstimateContext {
+  materialCostPerTon: number;
+  logisticsCostPerTon: number;
+  volume: number;
+}
+
 /** Client-side estimate of the currently-queued (not yet submitted) decisions' combined
  * effect on cash — feeds the Decision Deck modal's "Predicted next turn" figure without a
- * server round trip. Mirrors calcEngine's `applyDecisionImpacts` cash handling closely
- * enough for a live estimate: year-1 schedule value (`getDecisionSortValue`'s same
- * convention), a `relative`-type value scaled against current cash (the one such decision
- * in the library, Excess Dividend — see CLAUDE.md), and the company-size cost surcharge
- * (`decisionCostWealthScaleRate`) on a negative absolute value. Buy/Sell Shares
- * (`shareTransactionType`, empty `impacts`) are read off the entry's own chosen `amount`
- * instead — buy spends it, sell nets it, matching `applyShareTransaction`'s sign
- * convention (ignores its cap against actual cash/holding value — a rare edge case for an
- * estimate). Deliberately approximate: no COGS/tax/legal-exposure or any other field's
- * knock-on P&L effect, unlike the real `predictFutureKpis` prediction shown in the CASH
- * KPI drill-down graph. */
+ * server round trip.
+ *
+ * **A real, reported bug fixed here: this used to read only a decision's literal `cash`
+ * field**, which only 32 of 212 seeded decisions actually carry — for the other ~85%
+ * (e.g. Supplier Scorecard System: `operatingExpenses: +4500`, no `cash` field at all),
+ * queuing a real, costed decision moved the predicted figure by exactly $0, reading to a
+ * player as "it doesn't include what I just queued" even though the function was
+ * technically processing the entry, just too narrowly to represent its real cost. Fixed
+ * by folding in `CASH_DOLLAR_FIELDS` (the same `operatingExpenses`/`staffCost`/
+ * `otherIncome`/`financeCost` fields `botService.ts`'s own `estimatedFirstYearCashEffect`
+ * already accounts for, for the exact same reason — see that function's doc comment for
+ * the server-side version of this same class of bug) and `materialCostPerTon`/
+ * `logisticsCostPerTon`'s real COGS effect (`cogs = (materialCostPerTon +
+ * logisticsCostPerTon) * volume`, per `calcEngine.ts` — "very often the single largest
+ * real cost in this game's P&L," per CLAUDE.md's own bot-COGS postmortem).
+ *
+ * Otherwise mirrors calcEngine's `applyDecisionImpacts` cash handling closely enough for a
+ * live estimate: year-1 schedule value (`getDecisionSortValue`'s same convention), a
+ * `relative`-type `cash` value scaled against current cash (the one such decision in the
+ * library, Excess Dividend), and the company-size cost surcharge
+ * (`decisionCostWealthScaleRate`) on a negative absolute `cash` value only — matches
+ * `calcEngine.ts`'s own scope for that surcharge, not extended to the other dollar fields.
+ * Buy/Sell Shares (`shareTransactionType`, empty `impacts`) are read off the entry's own
+ * chosen `amount` instead — buy spends it, sell nets it, matching
+ * `applyShareTransaction`'s sign convention (ignores its cap against actual cash/holding
+ * value — a rare edge case for an estimate).
+ *
+ * Deliberately still approximate, same as before: no tax/legal-exposure effect, no
+ * `debt`-to-`financeCost` conversion (unlike the bot's own estimator — most debt-carrying
+ * decisions in the library already expose their recurring cost via an explicit
+ * `financeCost` schedule value directly, already covered above; a same-turn "next turn"
+ * estimate has less to gain from also modeling debt's own knock-on effect than the bot's
+ * multi-turn affordability check does), and no other field's further knock-on P&L effect
+ * — unlike the real `predictFutureKpis` prediction shown in the CASH KPI drill-down graph. */
 function estimatePendingCashEffect(
   pending: SubmittedDecisions,
   decisions: DecisionDefinition[],
   currentCash: number,
   costWealthScaleRate: number,
+  cogs: CogsEstimateContext,
 ): number {
   const byName = new Map(decisions.map((d) => [d.decision, d]));
   let total = 0;
@@ -1971,19 +2021,39 @@ function estimatePendingCashEffect(
       if (!def) continue;
       if (def.shareTransactionType === 'buy') {
         total -= entry.amount ?? 0;
+        continue;
       } else if (def.shareTransactionType === 'sell') {
         total += entry.amount ?? 0;
-      } else {
-        const impact = def.impacts.cash;
-        if (!impact) continue;
-        const value = impact.schedule[1] ?? impact.schedule['default'] ?? 0;
-        if (impact.type === 'relative') {
+        continue;
+      }
+
+      const cashImpact = def.impacts.cash;
+      if (cashImpact) {
+        const value = cashImpact.schedule[1] ?? cashImpact.schedule['default'] ?? 0;
+        if (cashImpact.type === 'relative') {
           total += currentCash * value;
         } else {
           total += value < 0 && costWealthScaleRate > 0
             ? value - costWealthScaleRate * Math.max(0, currentCash)
             : value;
         }
+      }
+
+      for (const [field, direction] of Object.entries(CASH_DOLLAR_FIELDS)) {
+        const impact = def.impacts[field];
+        if (!impact) continue;
+        const raw = impact.schedule[1] ?? impact.schedule['default'] ?? 0;
+        if (raw !== 0) total += direction * raw;
+      }
+
+      for (const field of ['materialCostPerTon', 'logisticsCostPerTon'] as const) {
+        const impact = def.impacts[field];
+        if (!impact) continue;
+        const raw = impact.schedule[1] ?? impact.schedule['default'] ?? 0;
+        if (raw === 0) continue;
+        const currentValue = field === 'materialCostPerTon' ? cogs.materialCostPerTon : cogs.logisticsCostPerTon;
+        const dollarPerTonDelta = impact.type === 'relative' ? currentValue * raw : raw;
+        total -= dollarPerTonDelta * cogs.volume; // a positive $/ton delta is a cost
       }
     }
   }

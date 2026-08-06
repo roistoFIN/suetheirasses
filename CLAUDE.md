@@ -733,6 +733,53 @@ diffing the current turn's snapshot against the one previous turn already in mem
 their whole formula against the previous snapshot rather than diffing a field (same
 function, called twice) so the live value and its trend arrow can never drift apart.
 
+### Decision Deck's "Predicted next turn" cash estimate — a client-side approximation, not `predictFutureKpis`
+
+The Decision Deck modal's title shows `Cash: X · Predicted next turn: Y`, computed purely
+client-side by `GamePhase.tsx`'s `estimatePendingCashEffect(pending, decisions,
+vars.cash, decisionCostWealthScaleRate, cogs)` — no server round trip, recomputed on
+every DEPLOY/CANCEL toggle since `pending` is already threaded down to the modal. This is
+deliberately a fast approximation, not the real, full-engine `predictFutureKpis`
+simulation shown in the CASH KPI drill-down graph (see *KPI history + prediction graphs*
+above) — it only estimates the combined effect of whatever's currently queued (not yet
+submitted) this turn, nothing about future turns or already-active decisions maturing.
+
+**A real, reported bug: this used to read only a decision's literal `impacts.cash`
+field**, which only 32 of the 212 seeded decisions actually carry. For the other ~85% —
+e.g. Supplier Scorecard System (`operatingExpenses: +4500`, no `cash` field at all) —
+queuing a real, costed decision moved the predicted figure by exactly $0, which read to a
+player as "it doesn't include what I just queued," even though the function was
+technically processing the entry correctly, just far too narrowly to represent its real
+cost. This is the exact same class of bug `botService.ts`'s own `estimatedFirstYearCashEffect`
+was fixed for earlier (see *Server-injected AI bot player*'s *Self-preservation* section
+above) — fixed here the same way, by folding in the same two additional sources of real
+cash effect:
+- **`CASH_DOLLAR_FIELDS`** (`operatingExpenses`/`staffCost`/`otherIncome`/`financeCost`) —
+  a local client-side copy of `botService.ts`'s `DOLLAR_FIELDS`/`FIELD_DIRECTION` (same
+  fields, same signs), kept in sync by hand per this codebase's *Client-side duplicated
+  pure logic* convention rather than importing a server module into the client bundle.
+- **`materialCostPerTon`/`logisticsCostPerTon`'s real COGS effect** (`cogs =
+  (materialCostPerTon + logisticsCostPerTon) * volume`, per `calcEngine.ts` — "very often
+  the single largest real cost in this game's P&L," per the bot-COGS postmortem
+  referenced above) — mirrors `botService.ts`'s `cogsEffectAtYear`/`BotCogsContext`
+  exactly. The three live inputs it needs (`materialCostPerTon`/`logisticsCostPerTon`/
+  `volume`) were already sitting in `GamePhase`'s own render scope
+  (`vars.materialCostPerTon`/`vars.logisticsCostPerTon`/`derived.volume`) by the time the
+  modal renders, so no new prop threading was needed.
+
+Deliberately still scoped narrower than the bot's own estimator: no `debt`-to-`financeCost`
+conversion (`debtAsFinanceCost`) — most debt-carrying decisions in the library already
+expose their recurring cost via an explicit `financeCost` schedule value directly (already
+covered above), and a same-turn "next turn" estimate has less to gain from also modeling
+debt's own multi-turn knock-on effect than the bot's affordability check does — and still
+no tax/legal-exposure effect or any other field's further P&L knock-on, unlike the real
+`predictFutureKpis` simulation. Regression-tested in `GamePhase.utils.test.ts`'s own
+duplicated copy of `estimatePendingCashEffect` (same "duplicate small pure logic" reasoning
+as `getDecisionSortValue` and friends in that file) — covers the exact Supplier Scorecard
+System reproduction, the `staffCost`/`financeCost`/`otherIncome` sign directions together
+with an existing `cash` field, the COGS conversion using live per-ton rates and volume, and
+the zero-volume edge case.
+
 ### Local LLM annual-report blurbs & AI decision generation (admin-only, experimental)
 
 `GameEngine.getAnnualReport` narrates one sentence of flavor text per active decision via

@@ -193,11 +193,27 @@ interface MinimalPendingForCashEstimate {
   financial: MinimalSubmittedDecisionEntry[];
 }
 
+interface MinimalCogsEstimateContext {
+  materialCostPerTon: number;
+  logisticsCostPerTon: number;
+  volume: number;
+}
+
+const ZERO_COGS: MinimalCogsEstimateContext = { materialCostPerTon: 0, logisticsCostPerTon: 0, volume: 0 };
+
+const CASH_DOLLAR_FIELDS: Record<string, -1 | 1> = {
+  operatingExpenses: -1,
+  staffCost: -1,
+  otherIncome: 1,
+  financeCost: -1,
+};
+
 function estimatePendingCashEffect(
   pending: MinimalPendingForCashEstimate,
   decisions: MinimalDecisionDefForCashEstimate[],
   currentCash: number,
   costWealthScaleRate: number,
+  cogs: MinimalCogsEstimateContext,
 ): number {
   const byName = new Map(decisions.map((d) => [d.decision, d]));
   let total = 0;
@@ -207,19 +223,39 @@ function estimatePendingCashEffect(
       if (!def) continue;
       if (def.shareTransactionType === 'buy') {
         total -= entry.amount ?? 0;
+        continue;
       } else if (def.shareTransactionType === 'sell') {
         total += entry.amount ?? 0;
-      } else {
-        const impact = def.impacts.cash;
-        if (!impact) continue;
-        const value = impact.schedule[1] ?? impact.schedule['default'] ?? 0;
-        if (impact.type === 'relative') {
+        continue;
+      }
+
+      const cashImpact = def.impacts.cash;
+      if (cashImpact) {
+        const value = cashImpact.schedule[1] ?? cashImpact.schedule['default'] ?? 0;
+        if (cashImpact.type === 'relative') {
           total += currentCash * value;
         } else {
           total += value < 0 && costWealthScaleRate > 0
             ? value - costWealthScaleRate * Math.max(0, currentCash)
             : value;
         }
+      }
+
+      for (const [field, direction] of Object.entries(CASH_DOLLAR_FIELDS)) {
+        const impact = def.impacts[field];
+        if (!impact) continue;
+        const raw = impact.schedule[1] ?? impact.schedule['default'] ?? 0;
+        if (raw !== 0) total += direction * raw;
+      }
+
+      for (const field of ['materialCostPerTon', 'logisticsCostPerTon'] as const) {
+        const impact = def.impacts[field];
+        if (!impact) continue;
+        const raw = impact.schedule[1] ?? impact.schedule['default'] ?? 0;
+        if (raw === 0) continue;
+        const currentValue = field === 'materialCostPerTon' ? cogs.materialCostPerTon : cogs.logisticsCostPerTon;
+        const dollarPerTonDelta = impact.type === 'relative' ? currentValue * raw : raw;
+        total -= dollarPerTonDelta * cogs.volume;
       }
     }
   }
@@ -1151,7 +1187,7 @@ describe('GamePhase utilities', () => {
         operational: [{ name: 'Aggressive Sale' }],
         financial: [],
       };
-      expect(estimatePendingCashEffect(pending, decisions, 500000, 0)).toBe(-115000);
+      expect(estimatePendingCashEffect(pending, decisions, 500000, 0, ZERO_COGS)).toBe(-115000);
     });
 
     it('scales a relative-type cash impact against current cash, matching Excess Dividend\'s real formula', () => {
@@ -1159,7 +1195,7 @@ describe('GamePhase utilities', () => {
         { decision: 'Excess Dividend', impacts: { cash: { type: 'relative', schedule: { 1: -0.12, default: 0 } } } },
       ];
       const pending = { strategic: [], operational: [{ name: 'Excess Dividend' }], financial: [] };
-      expect(estimatePendingCashEffect(pending, decisions, 200000, 0)).toBe(-24000);
+      expect(estimatePendingCashEffect(pending, decisions, 200000, 0, ZERO_COGS)).toBe(-24000);
     });
 
     it('applies the company-size cost surcharge to a negative absolute value, never to a windfall', () => {
@@ -1171,8 +1207,8 @@ describe('GamePhase utilities', () => {
       ];
       const costPending = { strategic: [{ name: 'New Factory' }], operational: [], financial: [] };
       const windfallPending = { strategic: [], operational: [{ name: 'Aggressive Fundraising' }], financial: [] };
-      expect(estimatePendingCashEffect(costPending, costDecision, 300000, 0.01)).toBe(-100000 - 0.01 * 300000);
-      expect(estimatePendingCashEffect(windfallPending, windfallDecision, 300000, 0.01)).toBe(50000);
+      expect(estimatePendingCashEffect(costPending, costDecision, 300000, 0.01, ZERO_COGS)).toBe(-100000 - 0.01 * 300000);
+      expect(estimatePendingCashEffect(windfallPending, windfallDecision, 300000, 0.01, ZERO_COGS)).toBe(50000);
     });
 
     it('reads a Buy Shares entry\'s chosen amount as a cash cost, and Sell Shares\' as a cash gain', () => {
@@ -1182,16 +1218,65 @@ describe('GamePhase utilities', () => {
       ];
       const buyPending = { strategic: [], operational: [], financial: [{ name: 'Buy Shares', amount: 40000 }] };
       const sellPending = { strategic: [], operational: [], financial: [{ name: 'Sell Shares', amount: 25000 }] };
-      expect(estimatePendingCashEffect(buyPending, decisions, 100000, 0)).toBe(-40000);
-      expect(estimatePendingCashEffect(sellPending, decisions, 100000, 0)).toBe(25000);
+      expect(estimatePendingCashEffect(buyPending, decisions, 100000, 0, ZERO_COGS)).toBe(-40000);
+      expect(estimatePendingCashEffect(sellPending, decisions, 100000, 0, ZERO_COGS)).toBe(25000);
     });
 
-    it('ignores a decision with no impacts.cash field at all and one not found in the library', () => {
+    it('ignores a decision with no cash-relevant field at all and one not found in the library', () => {
       const decisions: MinimalDecisionDefForCashEstimate[] = [
         { decision: 'Union Agitation', impacts: { 'target.capacityUtilization': { type: 'relative', schedule: { default: -0.3 } } } },
       ];
       const pending = { strategic: [{ name: 'Union Agitation' }, { name: 'Deleted Decision' }], operational: [], financial: [] };
-      expect(estimatePendingCashEffect(pending, decisions, 100000, 0)).toBe(0);
+      expect(estimatePendingCashEffect(pending, decisions, 100000, 0, ZERO_COGS)).toBe(0);
+    });
+
+    it('folds operatingExpenses into the estimate for a decision with no cash field at all — the real, reported bug (Supplier Scorecard System: operatingExpenses +4500, no cash field) that made a queued decision move the prediction by $0', () => {
+      const decisions: MinimalDecisionDefForCashEstimate[] = [
+        { decision: 'Supplier Scorecard System', impacts: {
+          supplySecurity: { type: 'relative', schedule: { default: 0.042 } },
+          operatingExpenses: { type: 'absolute', schedule: { default: 4500 } },
+        } },
+      ];
+      const pending = { strategic: [], operational: [{ name: 'Supplier Scorecard System' }], financial: [] };
+      expect(estimatePendingCashEffect(pending, decisions, 100000, 0, ZERO_COGS)).toBe(-4500);
+    });
+
+    it('folds staffCost/financeCost (costs) and otherIncome (a benefit) in the correct directions, alongside an existing cash field', () => {
+      const decisions: MinimalDecisionDefForCashEstimate[] = [
+        { decision: 'Multi-Field Decision', impacts: {
+          cash: { type: 'absolute', schedule: { 1: -5000, default: 0 } },
+          staffCost: { type: 'absolute', schedule: { 1: 3000, default: 0 } },
+          financeCost: { type: 'absolute', schedule: { 1: 1000, default: 0 } },
+          otherIncome: { type: 'absolute', schedule: { 1: 2000, default: 0 } },
+        } },
+      ];
+      const pending = { strategic: [{ name: 'Multi-Field Decision' }], operational: [], financial: [] };
+      // -5000 (cash) - 3000 (staffCost, a cost) - 1000 (financeCost, a cost) + 2000 (otherIncome, a benefit)
+      expect(estimatePendingCashEffect(pending, decisions, 100000, 0, ZERO_COGS)).toBe(-7000);
+    });
+
+    it('converts a relative materialCostPerTon/logisticsCostPerTon impact into a real dollar COGS effect using the live per-ton rates and volume', () => {
+      const decisions: MinimalDecisionDefForCashEstimate[] = [
+        { decision: 'Predatory Logistics Squeeze', impacts: {
+          'target.logisticsCostPerTon': { type: 'relative', schedule: { default: 0.105 } },
+        } },
+        { decision: 'Raw Material Deal', impacts: {
+          materialCostPerTon: { type: 'relative', schedule: { 1: -0.1, default: 0 } },
+        } },
+      ];
+      const pending = { strategic: [{ name: 'Raw Material Deal' }], operational: [], financial: [] };
+      // materialCostPerTon 200 * -0.1 = -20 $/ton delta (a saving), * 400 volume, negated (cost sign) = +8000
+      expect(estimatePendingCashEffect(pending, decisions, 100000, 0, { materialCostPerTon: 200, logisticsCostPerTon: 150, volume: 400 })).toBe(8000);
+    });
+
+    it('produces zero COGS effect when volume is zero, even with a real per-ton impact queued', () => {
+      const decisions: MinimalDecisionDefForCashEstimate[] = [
+        { decision: 'Raw Material Deal', impacts: {
+          materialCostPerTon: { type: 'relative', schedule: { 1: -0.1, default: 0 } },
+        } },
+      ];
+      const pending = { strategic: [{ name: 'Raw Material Deal' }], operational: [], financial: [] };
+      expect(estimatePendingCashEffect(pending, decisions, 100000, 0, { materialCostPerTon: 200, logisticsCostPerTon: 150, volume: 0 })).toBe(0);
     });
   });
 
